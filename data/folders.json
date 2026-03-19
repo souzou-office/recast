@@ -1,0 +1,468 @@
+{
+  "baseFolder": {
+    "id": "1QhQZ_5zMMp5o3Xj2pl0y-e2nsOHS5LyE",
+    "name": "進行中",
+    "provider": "google"
+  },
+  "globalCommon": [],
+  "defaultCommonPatterns": [
+    "01.定款",
+    "02.登記",
+    "05.履歴事項全部証明書",
+    "04.株主名簿"
+  ],
+  "companies": [
+    {
+      "id": "11K-Yglns4w-UPdpNqOGAQ1fgUwc1KXtB",
+      "name": "030.株式会社AZNICS",
+      "subfolders": [
+        {
+          "id": "1F47VdRaB3YEm1rdJ-zUqeYUwjdLFkyE-",
+          "name": "01.定款",
+          "role": "common",
+          "active": true,
+          "files": [
+            {
+              "id": "1AHjHe0l69MBX3NgOi7G9vsLk1b5L8CnG",
+              "name": "定款（署名済）.pdf",
+              "mimeType": "application/pdf",
+              "size": 453419,
+              "modifiedTime": "2023-01-30T04:14:59.000Z",
+              "enabled": true
+            },
+            {
+              "id": "1zEk8zOiTAn5p7aFnRJDnQXkVxx09mty2",
+              "name": "【最新】ATAC謄本_221220.pdf",
+              "mimeType": "application/pdf",
+              "size": 446955,
+              "modifiedTime": "2022-12-22T02:52:43.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1RGlRKEkybfnczdVTfNecNLTwK44P6-N4",
+              "name": "（古澤）印鑑証明、免許証.pdf",
+              "mimeType": "application/pdf",
+              "size": 1718412,
+              "modifiedTime": "2022-12-20T06:45:35.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1_fZsF4VzsgRLPtiUSscBap2a8inzBBcc",
+              "name": "定款作成シート_ATAC_高宮研_v5.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 1357652,
+              "modifiedTime": "2022-12-16T01:35:38.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1c4oAoQtfhLil2Ztg71xwLlmG_nn124sm",
+              "name": "ATAC株主名簿_20220831_PWなし.docx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "size": 24993,
+              "modifiedTime": "2022-12-01T05:42:37.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1-bvutN14cs7AMvnkqbNoVfAO4_r9xPYK",
+              "name": "ATAC印鑑証明_20221011.pdf",
+              "mimeType": "application/pdf",
+              "size": 241760,
+              "modifiedTime": "2022-12-01T03:52:39.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1krg-0yeHMCO3x7rq8gtD2RLQGQE7QilR",
+              "name": "ATAC履歴事項証明書_20220913 .pdf",
+              "mimeType": "application/pdf",
+              "size": 473073,
+              "modifiedTime": "2022-12-01T03:52:37.000Z",
+              "enabled": false
+            }
+          ]
+        },
+        {
+          "id": "1Iwe5QSK7yrALQ1ZBZ1FCdLv7eZHUnFt7",
+          "name": "04.株主名簿",
+          "role": "common",
+          "active": true,
+          "files": [
+            {
+              "id": "1dvmuqdoXWPKMauumA4qrvBxPtL7aM94z",
+              "name": "【最新版】株主名簿_AZNICS.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 16960,
+              "modifiedTime": "2025-10-09T07:48:59.000Z",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "id": "1JZH4jCEtiBtEFQ4hCs1tG3_ffnQEbxY8",
+          "name": "05.履歴事項全部証明書",
+          "role": "common",
+          "active": true,
+          "files": [
+            {
+              "id": "1tyriAoatsg01S_Vtm2gWV-23btJEzPjL",
+              "name": "20260129_履歴事項全部証明書_株式会社AZNICS.pdf",
+              "mimeType": "application/pdf",
+              "size": 4697188,
+              "modifiedTime": "2026-01-30T08:13:24.336Z",
+              "enabled": true
+            },
+            {
+              "id": "16E_i_-7gYYnzWvkabGyOswguyWIRkIHQ",
+              "name": "20250522_履歴事項全部証明書（株式会社AZNICS）.pdf",
+              "mimeType": "application/pdf",
+              "size": 1228203,
+              "modifiedTime": "2025-05-23T05:54:15.491Z",
+              "enabled": false
+            },
+            {
+              "id": "1GXmfiRjxirxnp-sJtbMztP-tdwpFoArQ",
+              "name": "20231017_履歴事項全部証明書  (株式会社AZNICS).pdf",
+              "mimeType": "application/pdf",
+              "size": 6732853,
+              "modifiedTime": "2023-10-17T04:57:55.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1pP9_YlA2-t1twSmgqu31bCZ_lYBag8Wo",
+              "name": "20230608_履歴事項全部証明書（株式会社ANZICS様）.pdf",
+              "mimeType": "application/pdf",
+              "size": 2427339,
+              "modifiedTime": "2023-06-12T05:12:50.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1BvfFDkWLUp8ZieLPu0f79ZDjJZ5nKHgT",
+              "name": "20230207_履歴事項全部証明書（株式会社ANZICS様）.pdf",
+              "mimeType": "application/pdf",
+              "size": 475187,
+              "modifiedTime": "2023-02-15T07:05:28.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1pm-bWbvoOiaFWTgmb5M1vX6nC-kNqwne",
+              "name": "20240827履歴全部事項証明書（株式会社AZNICS）.pdf",
+              "mimeType": "application/pdf",
+              "size": 1636456,
+              "modifiedTime": "2024-08-28T09:19:06.000Z",
+              "enabled": false
+            },
+            {
+              "id": "150SByYg401NvBLONGZejooo6BVCv3YA8",
+              "name": "20240617履歴全部事項証明書.pdf",
+              "mimeType": "application/pdf",
+              "size": 6642128,
+              "modifiedTime": "2024-06-24T06:31:15.000Z",
+              "enabled": false
+            },
+            {
+              "id": "10UyMSrMyvHTGzwIjYp1DcStTA1HpXFlO",
+              "name": "20240409_履歴全部事項証明書（株式会社AZNICS）.pdf",
+              "mimeType": "application/pdf",
+              "size": 1290200,
+              "modifiedTime": "2024-04-11T10:01:12.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1uh174AxKCFwNyPZFxbN_VzG3qmJvjnXq",
+              "name": "20230221_履歴事項全部証明書（株式会社ANZICS様）.pdf.pdf",
+              "mimeType": "application/pdf",
+              "size": 1097617,
+              "modifiedTime": "2023-02-26T08:12:09.000Z",
+              "enabled": false
+            }
+          ]
+        },
+        {
+          "id": "1zJJXnIVWwHwAq-jhdIPT6sCH9U3jlTnZ",
+          "name": "202208dd_新株予約権発行",
+          "role": "job",
+          "active": false,
+          "files": [
+            {
+              "id": "1CHwDL9oMd4wf3_MEr99axybiTvdnzLC1",
+              "name": "00.新株予約権発行関連書類、スケジュール.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 12716,
+              "modifiedTime": "2023-08-16T04:44:35.000Z",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "id": "1qCoH2xToxjV73-G5TyrXzqTU-x7ZVUQF",
+          "name": "202302dd_役員就任",
+          "role": "job",
+          "active": false
+        },
+        {
+          "id": "1Mo-CfS_NcvXNl3R51d3tmWrIbpQzAEcy",
+          "name": "202308dd_役員就任",
+          "role": "job",
+          "active": true,
+          "files": [
+            {
+              "id": "1EOiretYhZS9ToAWDNAYtnmY8i9iy_EEb",
+              "name": "00.取締役追加関連書類、スケジュール.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 14018,
+              "modifiedTime": "2023-08-16T04:43:12.000Z",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "id": "1jvg0vsztLIU6ZJ9ybfZg3ITMvxFZQgMv",
+          "name": "202403_増資",
+          "role": "job",
+          "active": false
+        }
+      ],
+      "profile": {
+        "summary": "会社法人等番号: 0100-01-232624\n商号: 株式会社AZNICS\n本店所在地: 東京都文京区本郷六丁目25番14号\n設立年月日: 令和5年1月27日\n事業目的:\n  (1) 電子部品の研究、開発、設計、製造及び販売\n  (2) 電子機器及び電気機器の研究、開発、設計、製造及び販売\n  (3) 前各号に関連するシステム及びソフトウェアの開発、設計、製造、販売\n      及び保守\n  (4) 前各号に関連するコンサルティング\n  (5) 前各号に関連する役務の提供\n  (6) 前各号に関連する事業への投資\n  (7) 前各号に附帯又は関連する一切の事業\n資本金: 金62,997,959円\n発行可能株式総数: 100,000,000株\n発行済株式総数: 15,266,469株\n株式の譲渡制限: 当会社の株式を譲渡によって取得するには、株主総会の承認を受けなければならない\n役員:\n  代表取締役 古澤利成 / 住所: 東京都中央区明石町7番13-201号 / 就任: 令和5年1月27日 / 任期満了: 2035年12月（定時株主総会終結時）\n新株予約権: 第1回新株予約権 300,000個、第2回新株予約権 500,000個\n公告方法: 官報に掲載してする\n決算期: 10月1日〜9月30日\n役員の任期: 選任後10年以内に終了する事業年度のうち最終のものに関する定時株主総会の終結の時まで\n株主構成:\n  株式会社先端技術共創機構 / 東京都文京区本郷六丁目25番14号宗文館ビル３階 / 1,010,000株 / 74.81%\n  高宮真 / 神奈川県川崎市麻生区上麻生2-35-18 / 300,000株 / 22.22%\n  ポニー電機株式会社 / 群馬県藤岡市立石新田２３番地 / 20,000株 / 1.48%\n  長岡パワーエレクトロニクス株式会社 / 新潟県長岡市深沢町2085-16ながおか新産業創造センター / 20,000株 / 1.48%",
+        "updatedAt": "2026-03-19T18:05:55.928Z",
+        "sourceFiles": [
+          {
+            "name": "【最新版】株主名簿_AZNICS.xlsx",
+            "id": "1dvmuqdoXWPKMauumA4qrvBxPtL7aM94z"
+          },
+          {
+            "name": "定款（署名済）.pdf",
+            "id": "1AHjHe0l69MBX3NgOi7G9vsLk1b5L8CnG"
+          },
+          {
+            "name": "20260129_履歴事項全部証明書_株式会社AZNICS.pdf",
+            "id": "1tyriAoatsg01S_Vtm2gWV-23btJEzPjL"
+          }
+        ]
+      }
+    },
+    {
+      "id": "12fkd01PpaGy5l6nFO-7xiBqPdKVJiap9",
+      "name": "059.Portus AI 株式会社_D_新株予約権",
+      "subfolders": [
+        {
+          "id": "1fXAFdmQrjVi9LLSjC5eqyYVhqkBJa4if",
+          "name": "01.定款",
+          "role": "common",
+          "active": true,
+          "files": [
+            {
+              "id": "1T1klkCJ12z-AaDE1M8DFHSesWVPj2XX3",
+              "name": "電子定款20230817改訂.doc.pdf",
+              "mimeType": "application/pdf",
+              "size": 691796,
+              "modifiedTime": "2024-01-04T04:54:29.000Z",
+              "enabled": true
+            },
+            {
+              "id": "1E9vHKNlj9k6HjKzE0hJVwCCbUvRCZz2T",
+              "name": "定款作成シート_決算期加筆.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 448191,
+              "modifiedTime": "2023-11-13T04:55:32.000Z",
+              "enabled": false
+            }
+          ]
+        },
+        {
+          "id": "1rgGbTWGJ4--wIJkjHVc2G9Sg6lbNrWm_",
+          "name": "05.履歴事項全部証明書",
+          "role": "common",
+          "active": true,
+          "files": [
+            {
+              "id": "1DpTZ3TlKQ5kr8cdBEhZ6NpATLg0fAuoo",
+              "name": "20251028履歴事項全部証明書_Portus AI株式会社.pdf",
+              "mimeType": "application/pdf",
+              "size": 362460,
+              "modifiedTime": "2025-10-28T05:35:01.060Z",
+              "enabled": true
+            },
+            {
+              "id": "1zxKuGar7ft_0UgBvz9mgIZsMehW8THEm",
+              "name": "20231222_履歴事項全部証明書_Portus AI株式会社.pdf",
+              "mimeType": "application/pdf",
+              "size": 369401,
+              "modifiedTime": "2023-12-25T06:34:28.000Z",
+              "enabled": false
+            },
+            {
+              "id": "1NwCKD_9dMwGChb1vOIOmOK2YgK7eEsri",
+              "name": "20251001_株主名簿_PortusAI.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 92780,
+              "modifiedTime": "2025-10-08T16:50:18.000Z",
+              "enabled": false
+            }
+          ]
+        },
+        {
+          "id": "1wBDDjw2p6FuGZvqT4NZKpWxnvGdfbPOT",
+          "name": "04.株主名簿",
+          "role": "common",
+          "active": true,
+          "files": [
+            {
+              "id": "1MCeegiX7ePHzssva5W5nZYZ5bPp4FFIr",
+              "name": "20251001_株主名簿_PortusAI.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 125135,
+              "modifiedTime": "2026-01-28T04:05:11.000Z",
+              "enabled": true
+            },
+            {
+              "id": "1QefkeIFE2MRoaliIP1LeqSNizEy9m3HS",
+              "name": "20231213_株主名簿_PortusAI.xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 92719,
+              "modifiedTime": "2023-12-28T03:56:01.000Z",
+              "enabled": false
+            }
+          ]
+        },
+        {
+          "id": "1w4DhAG8OLvhxOeMjPjusNjQT_8qOUN7U",
+          "name": "20250919.第三者割当",
+          "role": "job",
+          "active": false,
+          "files": [
+            {
+              "id": "1iZ5QeQqwsZ7IGohVww_brfCPt0rErUXh",
+              "name": "入金明細.pdf",
+              "mimeType": "application/pdf",
+              "size": 6934,
+              "modifiedTime": "2025-09-19T00:01:49.000Z",
+              "enabled": true
+            },
+            {
+              "id": "10blhbW6skw5gMg63jmqCuZLp8SahguMB",
+              "name": "00.増資関連書類、スケジュール (Unicode エンコードの競合).xlsx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "size": 15127,
+              "modifiedTime": "2025-09-02T00:45:30.000Z",
+              "enabled": true
+            },
+            {
+              "id": "1S9grgr1Pd-68Uv02nA2t-bBYNcjSr-bc",
+              "name": "02.普通株投資契約書_PortusAI.docx",
+              "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "size": 31392,
+              "modifiedTime": "2025-08-22T04:15:17.000Z",
+              "enabled": true
+            },
+            {
+              "id": "1XliDVqVMTzBU0KO-uAIi9_npiwNpSc5Z",
+              "name": "マイナンバー_宮本遼人.pdf",
+              "mimeType": "application/pdf",
+              "size": 116717,
+              "modifiedTime": "2025-08-20T09:15:35.000Z",
+              "enabled": true
+            },
+            {
+              "id": "1G7HTLAhQZP5jFK-fETPTUlFlQGs8OUm6",
+              "name": "マイナンバー_渡邉一功.pdf",
+              "mimeType": "application/pdf",
+              "size": 110575,
+              "modifiedTime": "2025-08-20T09:15:34.000Z",
+              "enabled": true
+            }
+          ]
+        }
+      ],
+      "profile": {
+        "summary": "会社法人等番号: 0100-01-240869\n\n商号: Portus AI株式会社\n\n本店所在地: 東京都文京区本郷六丁目25番14号\n\n設立年月日: 2023年12月13日\n\n事業目的:\n  (1) 人工知能・ソフトウェア・システムの研究及び開発事業\n  (2) 人工知能技術を活用した製品販売・サービス事業\n  (3) 人工知能・ブロックチェーン等のデジタル技術を活用したソリューション、プラットフォーム、アプリケーション、各種トークン、電子認証等の企画、設計、開発、運営、管理の受託及び提供\n  (4) 教育及び研修\n  (5) コンサルティング\n  (6) 前各号に附帯又は関連する一切の事業\n\n資本金: 13,979,776円\n\n発行可能株式総数: 1億株\n\n発行済株式総数: 31,578株\n\n株式の譲渡制限: 当会社の株式を譲渡によって取得するには、株主総会の承認を受けなければならない\n\n役員:\n  代表取締役 渡邉一功 / 住所: 東京都新宿区高田馬場1-16-6 トールマンハウス202 / 就任: 2023年12月13日 / 任期満了: 2033年12月（定時株主総会終結時）\n  取締役 宮本遼人 / 住所: 不明 / 就任: 2023年12月13日 / 任期満了: 2033年12月（定時株主総会終結時）\n\n新株予約権: なし\n\n公告方法: 官報に掲載する方法により行う\n\n決算期: 12月1日～11月30日\n\n役員の任期: 選任後10年以内に終了する事業年度のうち最終のものに関する定時株主総会の終結の時まで\n\n株主構成:\n  渡邉一功 / 東京都新宿区高田馬場1-16-6 トールマンハウス202 / 21,000株 / 66.50%\n  宮本遼人 / 千葉県八千代市萱田2264-23 / 8,850株 / 28.03%\n  Ｄｅｅｐ３０投資事業有限責任組合 / 東京都文京区本郷一丁目５番１７号 / 1,578株 / 5.00%\n  株式会社Deep30 / 東京都文京区本郷一丁目5番17号 / 150株 / 0.48%",
+        "updatedAt": "2026-03-19T18:06:48.148Z",
+        "sourceFiles": [
+          {
+            "name": "20251001_株主名簿_PortusAI.xlsx",
+            "id": "1MCeegiX7ePHzssva5W5nZYZ5bPp4FFIr"
+          },
+          {
+            "name": "電子定款20230817改訂.doc.pdf",
+            "id": "1T1klkCJ12z-AaDE1M8DFHSesWVPj2XX3"
+          },
+          {
+            "name": "20251028履歴事項全部証明書_Portus AI株式会社.pdf",
+            "id": "1DpTZ3TlKQ5kr8cdBEhZ6NpATLg0fAuoo"
+          }
+        ]
+      }
+    },
+    {
+      "id": "1w1WLtMd4lGJcv8pat5nq5bmejWrA9hKd",
+      "name": "093.株式会社もみじAI_D",
+      "subfolders": []
+    },
+    {
+      "id": "1UgXfb7g9G-UjYgCV_THlD_kMvPj553Tz",
+      "name": "110.株式会社クレボーロ_O",
+      "subfolders": []
+    },
+    {
+      "id": "1zKrqXfPPhWpNmY1PpsID7-erDBQ0--uK",
+      "name": "112.一般社団法人My Medicine Institute",
+      "subfolders": []
+    },
+    {
+      "id": "1bV2vbJCfkbfEeD_p16F2B9HaK2LYQ9Hd",
+      "name": "117_Treee株式会社[305]_D",
+      "subfolders": []
+    },
+    {
+      "id": "11frtWHcD3bKXrJLekZBp_arFxZipYh_j",
+      "name": "120_株式会社Cargit[308]_D",
+      "subfolders": []
+    },
+    {
+      "id": "1JDEd6DuS8G9nQg1Uq5uMOEGEqcdno0tk",
+      "name": "121_株式会社カイゼン[309]_★D",
+      "subfolders": [
+        {
+          "id": "1rDJjlRPoecKcaI3kjku928nNCjSh7uAM",
+          "name": "01.法務",
+          "role": "common",
+          "active": true
+        },
+        {
+          "id": "1E1HHCOTJi4EI7ACzOQxp6yiIb31DeFS-",
+          "name": "02.税務",
+          "role": "job",
+          "active": false
+        },
+        {
+          "id": "1BBBpkbE4hTqVi02GuPjrXgnIzInt_WqB",
+          "name": "03.労務",
+          "role": "job",
+          "active": false
+        },
+        {
+          "id": "11Qyk6rwx1VljtvDw89-PYcBUsC8v9YAA",
+          "name": "04.会計",
+          "role": "job",
+          "active": false
+        },
+        {
+          "id": "1L-9kHgWaD2TMojc8rF_fW6pb8yV91Tiz",
+          "name": "202603dd_本店移転+株式譲渡",
+          "role": "job",
+          "active": false
+        }
+      ]
+    },
+    {
+      "id": "17ikOhEVKAfnCmiqNvjurVMHDlENZjJIe",
+      "name": "122_株式会社NeurestX[310]_J",
+      "subfolders": []
+    },
+    {
+      "id": "14em2YXEEyGq6pntuiavem7GOdIfgjTiB",
+      "name": "先端技術共創機構",
+      "subfolders": []
+    }
+  ],
+  "selectedCompanyId": "12fkd01PpaGy5l6nFO-7xiBqPdKVJiap9"
+}
