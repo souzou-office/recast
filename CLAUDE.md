@@ -122,6 +122,63 @@ selectedCompanyId: 選択中の会社
 
 ### Phase 3: 自動転記 ❌ 未着手
 
+## 次の実装予定
+
+### A. 共通フォルダのファイル重複排除AI化
+
+**目的:** 名前が違っても実質同じ書類ならAIが判定して最新だけONにする（人間の手動管理を削減）
+
+- **対象:** 共通フォルダ（role: "common"）のみ。案件フォルダ（role: "job"）は対象外
+- **現状:** `normalizeName()` 正規表現で文字列一致グループ化 → 限界あり（「登記簿謄本」と「履歴事項全部証明書」が別扱い）
+- **変更:** 正規表現を廃止 → Haiku（claude-haiku-4-5-20251001）にファイル名一覧を投げて意味レベルでグループ化
+- **トリガー:** scan-files時（フォルダスキャン、新ファイル検出時）
+- **フロー:**
+  1. Google Driveからファイル一覧取得（今と同じ）
+  2. ファイル名の配列をHaikuに投げる
+  3. Haikuが「実質同じ書類」をグループ化してJSON返却
+  4. 各グループ内でmodifiedTime最新だけ `enabled: true`
+  5. ユーザーは手動toggle可能（今と同じ）
+- **判定例:**
+  - 「登記簿謄本」=「履歴事項全部証明書」→ 同グループ
+  - 「定款」=「定款_改定版」=「定款(公証役場認証済み)」→ 同グループ
+  - 「株主名簿」≠「株主総会議事録」→ 別グループ
+- **normalizeName() / deduplicateFiles() は削除してHaikuに完全置き換え**
+
+### B. 基本情報の構造化（横断検索対応）
+
+**目的:** 複数会社の横断検索を可能にする。全社のstructuredをtoolで渡してClaudeが検索。
+
+- **変更点:** 基本情報生成時に `summary`（フリーテキスト）と同時に `structured`（JSON）も生成・保存
+- **型定義:**
+  ```ts
+  CompanyProfile {
+    summary: string              // 今と同じ（表示・チャット用）
+    structured: {                // 追加（横断検索用）
+      会社法人等番号: string
+      商号: string
+      本店所在地: string
+      設立年月日: string
+      事業目的: string[]
+      資本金: string
+      発行可能株式総数: string
+      発行済株式総数: string
+      株式の譲渡制限: string
+      役員: { 役職: string, 氏名: string, 住所?: string, 就任日?: string, 任期満了?: string }[]
+      新株予約権: string
+      公告方法: string
+      決算期: string
+      役員の任期: string
+      株主: { 氏名: string, 住所?: string, 持株数?: string, 持株比率?: string }[]
+      備考?: string
+    }
+    updatedAt: string
+    sourceFiles: ...
+  }
+  ```
+- **項目:** 現行のプロンプト（EXTRACT_PROMPT）と同一。チェック項目としても横断検索としても必要
+- **横断検索:** 新tool `search_all_companies` → 全社の `structured` を渡す（200社で約40Kトークン、許容範囲）
+- **個社深掘り:** 今と同じ `get_company_profile` で `summary` を返す
+
 ## 設計判断の変更履歴
 
 - **クラウドストレージ**: ローカル同期フォルダ経由 → **Google Drive API直接連携**に変更（ウェブデプロイ前提）
@@ -130,6 +187,8 @@ selectedCompanyId: 選択中の会社
 - **基本情報**: チャットに毎回渡す → **tool useで必要時のみ参照**
 - **テンプレート**: source区分（サマリー/指示書/原文）あり → **全AI読み取りに統一**（シンプル化）
 - **テンプレート作成**: 手動で1項目ずつ → **AIが案件タイプ名から自動生成**
+- **ファイル重複排除**: 正規表現ベースの文字列一致 → **Haikuによる意味レベルのグループ化**に変更予定（共通フォルダのみ）
+- **基本情報**: フリーテキストsummaryのみ → **structured（JSON）を追加**予定（横断検索対応）
 
 ## 運用ルール
 
