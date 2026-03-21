@@ -179,6 +179,16 @@ selectedCompanyId: 選択中の会社
 - **横断検索:** 新tool `search_all_companies` → 全社の `structured` を渡す（200社で約40Kトークン、許容範囲）
 - **個社深掘り:** 今と同じ `get_company_profile` で `summary` を返す
 
+### C. 複数ルートフォルダ対応
+
+**目的:** 会社が複数のGoogle Driveフォルダに分かれている場合に対応（例：1〜100社はフォルダA、101〜200社はフォルダB）
+
+- **変更:** `baseFolder: string` → `baseFolders: { id, name, folderId }[]` + `selectedBaseFolderId: string`
+- **表示・操作は1ルートずつ** — 選択中のルート配下の会社のみ会社セレクターに表示
+- **横断検索は全ルート対象** — Bのstructuredは全社分保存されているので、ルートに関係なく検索可能
+- **前回選択を記憶** — `selectedBaseFolderId` を保存。次回起動時はそのまま前回のルートが出る。切り替えは必要な時だけ
+- **UIはベース変更ボタンを拡張** — 複数ルートの登録・切り替えをここで行う
+
 ## 設計判断の変更履歴
 
 - **クラウドストレージ**: ローカル同期フォルダ経由 → **Google Drive API直接連携**に変更（ウェブデプロイ前提）
