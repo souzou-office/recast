@@ -144,16 +144,17 @@ selectedCompanyId: 選択中の会社
   - 「株主名簿」≠「株主総会議事録」→ 別グループ
 - **normalizeName() / deduplicateFiles() は削除してHaikuに完全置き換え**
 
-### B. 基本情報の構造化（横断検索対応）
+### B. 全データのstructured JSON統一
 
-**目的:** 複数会社の横断検索を可能にする。全社のstructuredをtoolで渡してClaudeが検索。
+**目的:** 基本情報・テンプレート実行結果（マスターシート）を全てstructured JSONで保存。横断検索・将来の自動転記（Phase 3）に対応。
 
-- **変更点:** 基本情報生成時に `summary`（フリーテキスト）と同時に `structured`（JSON）も生成・保存
-- **型定義:**
+- **方針:** summary（フリーテキスト）を廃止し、structured JSONに統一
+- **表示:** JSONからテーブル/カード型にレンダリング（人間も読める）
+- **チャット:** `get_company_profile` toolにはJSONをそのまま渡す（Claudeは構造化データを読める）
+- **基本情報の型定義:**
   ```ts
   CompanyProfile {
-    summary: string              // 今と同じ（表示・チャット用）
-    structured: {                // 追加（横断検索用）
+    structured: {
       会社法人等番号: string
       商号: string
       本店所在地: string
@@ -175,9 +176,9 @@ selectedCompanyId: 選択中の会社
     sourceFiles: ...
   }
   ```
-- **項目:** 現行のプロンプト（EXTRACT_PROMPT）と同一。チェック項目としても横断検索としても必要
+- **マスターシート（テンプレート実行結果）:** テンプレートのitemsがJSONのキーになる。業務ごとの必要情報を構造化して保存
+  - 例（役員就任）: `{ サマリー: "...", 新取締役: { 氏名: "...", 住所: "..." }, スケジュール: "..." }`
 - **横断検索:** 新tool `search_all_companies` → 全社の `structured` を渡す（200社で約40Kトークン、許容範囲）
-- **個社深掘り:** 今と同じ `get_company_profile` で `summary` を返す
 
 ### C. 複数ルートフォルダ対応
 
@@ -198,7 +199,7 @@ selectedCompanyId: 選択中の会社
 - **テンプレート**: source区分（サマリー/指示書/原文）あり → **全AI読み取りに統一**（シンプル化）
 - **テンプレート作成**: 手動で1項目ずつ → **AIが案件タイプ名から自動生成**
 - **ファイル重複排除**: 正規表現ベースの文字列一致 → **Haikuによる意味レベルのグループ化**に変更予定（共通フォルダのみ）
-- **基本情報**: フリーテキストsummaryのみ → **structured（JSON）を追加**予定（横断検索対応）
+- **基本情報・テンプレート実行結果**: フリーテキスト（summary/マークダウン） → **structured JSONに統一**予定（横断検索・自動転記対応）
 
 ## 運用ルール
 
