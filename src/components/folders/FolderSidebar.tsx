@@ -25,6 +25,7 @@ export default function FolderSidebar({ onOpenRegistration }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [scanningAll, setScanningAll] = useState(false);
   const [scanProgress, setScanProgress] = useState("");
+  const scanAbortRef = useRef<AbortController | null>(null);
   const [showPatternsModal, setShowPatternsModal] = useState(false);
   const [setupCompany, setSetupCompany] = useState<Company | null>(null);
   const [setupFolders, setSetupFolders] = useState<{ id: string; name: string }[]>([]);
@@ -65,6 +66,11 @@ export default function FolderSidebar({ onOpenRegistration }: Props) {
     return null;
   };
 
+  // スキャンキャンセル
+  const handleCancelScan = () => {
+    scanAbortRef.current?.abort();
+  };
+
   // 共通フォルダパターン保存
   const handleSavePatterns = async (patterns: string[]) => {
     await patchConfig({ action: "setDefaultCommonPatterns", patterns });
@@ -74,6 +80,8 @@ export default function FolderSidebar({ onOpenRegistration }: Props) {
   // パターン保存 + 全社一括スキャン（SSE）
   const handleSavePatternsAndScanAll = async (patterns: string[], reset: boolean) => {
     await patchConfig({ action: "setDefaultCommonPatterns", patterns });
+    const abortController = new AbortController();
+    scanAbortRef.current = abortController;
     setScanningAll(true);
     setScanProgress("開始中...");
     try {
@@ -81,6 +89,7 @@ export default function FolderSidebar({ onOpenRegistration }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reset }),
+        signal: abortController.signal,
       });
       const reader = res.body?.getReader();
       if (!reader) return;
@@ -108,8 +117,9 @@ export default function FolderSidebar({ onOpenRegistration }: Props) {
           }
         }
       }
-    } catch { /* ignore */ }
+    } catch { /* abort or error */ }
     finally {
+      scanAbortRef.current = null;
       setScanningAll(false);
       setScanProgress("");
       setShowPatternsModal(false);
@@ -484,6 +494,7 @@ export default function FolderSidebar({ onOpenRegistration }: Props) {
           patterns={config.defaultCommonPatterns || []}
           onSave={handleSavePatterns}
           onScanAll={handleSavePatternsAndScanAll}
+          onCancelScan={handleCancelScan}
           scanning={scanningAll}
           scanProgress={scanProgress}
           onClose={() => setShowPatternsModal(false)}

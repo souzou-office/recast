@@ -6,12 +6,13 @@ interface Props {
   patterns: string[];
   onSave: (patterns: string[]) => void;
   onScanAll: (patterns: string[], reset: boolean) => void;
+  onCancelScan?: () => void;
   scanning: boolean;
   scanProgress: string;
   onClose: () => void;
 }
 
-export default function CommonPatternsModal({ patterns, onSave, onScanAll, scanning, scanProgress, onClose }: Props) {
+export default function CommonPatternsModal({ patterns, onSave, onScanAll, onCancelScan, scanning, scanProgress, onClose }: Props) {
   const [items, setItems] = useState<string[]>([...patterns]);
   const [newItem, setNewItem] = useState("");
 
@@ -79,7 +80,15 @@ export default function CommonPatternsModal({ patterns, onSave, onScanAll, scann
 
         <div className="flex flex-col gap-3 border-t border-gray-200 px-5 py-4">
           {scanning && scanProgress && (
-            <p className="text-xs text-blue-600 text-center">{scanProgress}</p>
+            <div className="flex items-center justify-center gap-3">
+              <p className="text-xs text-blue-600">{scanProgress}</p>
+              <button
+                onClick={onCancelScan}
+                className="text-xs text-red-500 hover:text-red-700"
+              >
+                中止
+              </button>
+            </div>
           )}
           <div className="flex justify-end gap-3">
             <button

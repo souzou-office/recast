@@ -28,8 +28,8 @@ export async function POST(request: NextRequest) {
 
   const config = await getWorkspaceConfig();
 
-  if (config.baseFolders.length === 0) {
-    return new Response(JSON.stringify({ error: "ルートフォルダが未設定です" }), {
+  if (config.companies.length === 0) {
+    return new Response(JSON.stringify({ error: "会社が未登録です" }), {
       status: 400, headers: { "Content-Type": "application/json" },
     });
   }
@@ -49,34 +49,21 @@ export async function POST(request: NextRequest) {
       };
 
       try {
-        // 全ルートフォルダから会社一覧を取得
-        const allCompanyFolders: { id: string; name: string; baseFolderId: string }[] = [];
+        const total = config.companies.length;
+        send({ type: "progress", current: 0, total, message: `${total}社をスキャン` });
 
-        for (const base of config.baseFolders) {
-          if (base.provider !== "google") continue;
-          const baseResult = await listFoldersGoogle(base.folderId);
-          for (const d of baseResult.dirs) {
-            allCompanyFolders.push({ id: d.path, name: d.name, baseFolderId: base.id });
-          }
-        }
-
-        const total = allCompanyFolders.length;
-        send({ type: "progress", current: 0, total, message: `${total}社を検出` });
-
-        const existingCompanyMap = new Map(config.companies.map(c => [c.id, c]));
         let registeredCount = 0;
 
-        for (let i = 0; i < allCompanyFolders.length; i++) {
-          const cf = allCompanyFolders[i];
-          send({ type: "progress", current: i + 1, total, message: cf.name });
+        for (let i = 0; i < config.companies.length; i++) {
+          const company = config.companies[i];
+          send({ type: "progress", current: i + 1, total, message: company.name });
 
-          let company = existingCompanyMap.get(cf.id);
-          if (!company) {
-            company = { id: cf.id, name: cf.name, subfolders: [], baseFolderId: cf.baseFolderId };
-            config.companies.push(company);
+          // 追加登録モードで既に共通フォルダがある会社はスキップ
+          if (!reset && company.subfolders.some(s => s.role === "common")) {
+            continue;
           }
 
-          const allFolders = await scanAllSubfolders(cf.id);
+          const allFolders = await scanAllSubfolders(company.id);
           const existingSubMap = new Map(company.subfolders.map(s => [s.id, s]));
 
           if (reset) {
