@@ -94,7 +94,7 @@ export async function* streamChat(
 
   // tool useが必要か判定するため最初は非ストリーミング
   let response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6",
     max_tokens: 4096,
     system,
     messages: apiMessages,
@@ -167,7 +167,7 @@ export async function* streamChat(
 
     // まだtool useが続くか確認
     response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 4096,
       system,
       messages: apiMessages,
@@ -190,7 +190,7 @@ export async function* streamChat(
     } else {
       // tool use無し → ストリーミングで最初からやり直し
       const stream = client.messages.stream({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 4096,
         system,
         messages: apiMessages,

@@ -142,7 +142,7 @@ export default function ChatWindow() {
       const res = await fetch("/api/templates/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateId, companyId: null }), // companyIdはサーバー側でconfigから取る
+        body: JSON.stringify({ templateId, companyId: null }),
       });
 
       if (!res.ok) {
@@ -150,20 +150,42 @@ export default function ChatWindow() {
         throw new Error(err.error || "実行に失敗しました");
       }
 
-      const result = await res.json();
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("ストリーム取得に失敗");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const match = line.match(/^data: (.+)$/m);
+          if (!match) continue;
+          const data = JSON.parse(match[1]);
+
+          if (data.type === "text") {
+            setMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last.role === "assistant") {
+                updated[updated.length - 1] = {
+                  ...last,
+                  content: last.content + data.text,
+                };
+              }
+              return updated;
+            });
+          }
+        }
+      }
 
       setIsLoading(false);
-      setMessages(prev => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-        if (last.role === "assistant") {
-          updated[updated.length - 1] = {
-            ...last,
-            content: result.content,
-          };
-        }
-        return updated;
-      });
     } catch (error) {
       setIsLoading(false);
       setMessages(prev => {
