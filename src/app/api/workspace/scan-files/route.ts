@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import Anthropic from "@anthropic-ai/sdk";
 import { getValidGoogleToken } from "@/lib/tokens";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 import type { CachedFile } from "@/types";
 
 const API_BASE = "https://www.googleapis.com/drive/v3";
+const anthropic = new Anthropic();
 
 const SUPPORTED_MIME_TYPES = new Set([
   "text/plain", "text/csv", "text/html", "text/xml",
@@ -16,41 +18,66 @@ const SUPPORTED_MIME_TYPES = new Set([
   "application/vnd.google-apps.spreadsheet",
 ]);
 
-// ファイル名を正規化（日付・バージョン・マーカーを除去）
-function normalizeName(name: string): string {
-  return name
-    .replace(/\.[^.]+$/, "")                  // 拡張子除去
-    .replace(/【[^】]*】/g, "")                // 【最新】等を除去
-    .replace(/\(.*?\)/g, "")                   // (カッコ内)除去
-    .replace(/（.*?）/g, "")                   // （全角カッコ）除去
-    .replace(/_?\d{6,8}/g, "")                 // 日付 20220913, 221220 等
-    .replace(/_?v\d+/gi, "")                   // バージョン _v5 等
-    .replace(/[\s_\-]+/g, " ")                 // 空白正規化
-    .trim()
-    .toLowerCase();
-}
-
-// 類似ファイルをグループ化し、最新だけenabledにする
-function deduplicateFiles(files: CachedFile[]): CachedFile[] {
-  const groups = new Map<string, CachedFile[]>();
-
-  for (const file of files) {
-    const key = normalizeName(file.name);
-    const group = groups.get(key) || [];
-    group.push(file);
-    groups.set(key, group);
+// Haikuにファイル名一覧を投げて意味レベルでグループ化し、最新だけenabledにする
+async function deduplicateFiles(files: CachedFile[]): Promise<CachedFile[]> {
+  if (files.length <= 1) {
+    return files.map(f => ({ ...f, enabled: true }));
   }
 
-  const result: CachedFile[] = [];
-  for (const group of groups.values()) {
-    // modifiedTimeで降順ソート
-    group.sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime());
-    for (let i = 0; i < group.length; i++) {
-      result.push({ ...group[i], enabled: i === 0 }); // 最新だけenabled
+  const fileList = files.map((f, i) => `${i}: ${f.name}`).join("\n");
+
+  const response = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1024,
+    messages: [{
+      role: "user",
+      content: `以下はGoogle Driveフォルダ内のファイル名一覧です。
+「実質同じ書類」をグループ化してください。
+
+判定ルール：
+- 日付・バージョン違いは同じ書類（例：「定款」と「定款_改定版」と「定款(公証役場認証済み)」）
+- 正式名称と通称は同じ書類（例：「登記簿謄本」と「履歴事項全部証明書」）
+- 内容が異なるものは別グループ（例：「株主名簿」と「株主総会議事録」）
+
+ファイル一覧：
+${fileList}
+
+回答はJSONのみ。番号の配列の配列で返してください。
+例: [[0,3],[1],[2,4]]`
+    }],
+  });
+
+  try {
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) {
+      return files.map(f => ({ ...f, enabled: true }));
     }
-  }
+    const groups: number[][] = JSON.parse(match[0]);
 
-  return result;
+    const result: CachedFile[] = [];
+    for (const group of groups) {
+      const groupFiles = group.map(i => files[i]).filter(Boolean);
+      // modifiedTimeで降順ソート → 最新だけenabled
+      groupFiles.sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime());
+      for (let i = 0; i < groupFiles.length; i++) {
+        result.push({ ...groupFiles[i], enabled: i === 0 });
+      }
+    }
+
+    // グループに含まれなかったファイルがあれば全てenabled
+    const grouped = new Set(groups.flat());
+    for (let i = 0; i < files.length; i++) {
+      if (!grouped.has(i)) {
+        result.push({ ...files[i], enabled: true });
+      }
+    }
+
+    return result;
+  } catch {
+    // パース失敗時は全てenabledにする
+    return files.map(f => ({ ...f, enabled: true }));
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -98,8 +125,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 重複排除（最新だけenabled）
-    const files = deduplicateFiles(rawFiles);
+    // 重複排除（Haikuで意味レベルグループ化、最新だけenabled）
+    const files = await deduplicateFiles(rawFiles);
 
     // configに保存 + 新規ファイル検出
     const config = await getWorkspaceConfig();
