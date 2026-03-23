@@ -31,7 +31,7 @@ export default function MessageBubble({ message, streaming }: Props) {
   return (
     <div className="mb-6">
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-xs font-medium text-gray-500">recast</span>
+        <img src="/logo.png" alt="recast" className="h-4" />
       </div>
       {streaming ? (
         <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">

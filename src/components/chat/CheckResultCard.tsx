@@ -20,7 +20,7 @@ export default function CheckResultCard({ data }: Props) {
   return (
     <div className="mb-6">
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-xs font-medium text-gray-500">recast</span>
+        <img src="/logo.png" alt="recast" className="h-4" />
         <span className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
           {data.templateName}
         </span>

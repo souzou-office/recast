@@ -187,9 +187,7 @@ export default function ChatWindow() {
         {messages.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <div className="text-center text-gray-400">
-              <h2 className="mb-2 text-2xl font-semibold text-gray-600">
-                recast
-              </h2>
+              <img src="/logo.png" alt="recast" className="mx-auto mb-2 h-10" />
               <p className="text-sm">
                 サイドバーからフォルダを追加して、
                 <br />
