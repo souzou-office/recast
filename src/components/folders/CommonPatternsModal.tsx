@@ -38,9 +38,9 @@ export default function CommonPatternsModal({ patterns, onSave, onScanAll, scann
         </div>
 
         <div className="px-5 py-4 space-y-3">
-          {/* 登録済みパターン */}
+          {/* 登録済みフォルダ名 */}
           {items.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-2">パターンがありません</p>
+            <p className="text-sm text-gray-400 text-center py-2">フォルダ名がありません</p>
           ) : (
             <ul className="space-y-1">
               {items.map((item, i) => (
@@ -82,32 +82,32 @@ export default function CommonPatternsModal({ patterns, onSave, onScanAll, scann
             <p className="text-xs text-blue-600 text-center">{scanProgress}</p>
           )}
           <div className="flex justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
-          >
-            キャンセル
-          </button>
-          <button
-            onClick={() => onSave(items)}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-          >
-            保存
-          </button>
-          <button
-            onClick={() => onScanAll(items, false)}
-            disabled={scanning || items.length === 0}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
-          >
-            {scanning ? "スキャン中..." : "追加登録"}
-          </button>
-          <button
-            onClick={() => onScanAll(items, true)}
-            disabled={scanning || items.length === 0}
-            className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:bg-gray-300 transition-colors"
-          >
-            {scanning ? "スキャン中..." : "リセットして再登録"}
-          </button>
+            <button
+              onClick={onClose}
+              className="rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              キャンセル
+            </button>
+            <button
+              onClick={() => onSave(items)}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+            >
+              保存
+            </button>
+            <button
+              onClick={() => onScanAll(items, false)}
+              disabled={scanning || items.length === 0}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+            >
+              {scanning ? "スキャン中..." : "追加登録"}
+            </button>
+            <button
+              onClick={() => onScanAll(items, true)}
+              disabled={scanning || items.length === 0}
+              className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:bg-gray-300 transition-colors"
+            >
+              {scanning ? "スキャン中..." : "リセットして再登録"}
+            </button>
           </div>
         </div>
       </div>

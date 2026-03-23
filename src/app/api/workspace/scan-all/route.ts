@@ -55,7 +55,6 @@ export async function POST(request: NextRequest) {
       };
 
       try {
-        // 1. 会社一覧取得
         const baseResult = await listFoldersGoogle(config.baseFolder!.id);
         const companyFolders = baseResult.dirs.map(d => ({ id: d.path, name: d.name }));
         const total = companyFolders.length;
@@ -65,10 +64,9 @@ export async function POST(request: NextRequest) {
         const existingCompanyMap = new Map(config.companies.map(c => [c.id, c]));
         let registeredCount = 0;
 
-        // 2. 各会社をスキャン
         for (let i = 0; i < companyFolders.length; i++) {
           const cf = companyFolders[i];
-          send({ type: "progress", current: i + 1, total, message: `${cf.name}` });
+          send({ type: "progress", current: i + 1, total, message: cf.name });
 
           let company = existingCompanyMap.get(cf.id);
           if (!company) {
