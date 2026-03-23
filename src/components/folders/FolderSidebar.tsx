@@ -11,8 +11,9 @@ type View = "main" | "pickBase" | "setup";
 
 export default function FolderSidebar() {
   const [config, setConfig] = useState<WorkspaceConfig>({
-    baseFolder: null,
+    baseFolders: [],
     globalCommon: [],
+    defaultCommonPatterns: [],
     companies: [],
     selectedCompanyId: null,
   });
@@ -62,22 +63,29 @@ export default function FolderSidebar() {
     return null;
   };
 
-  // ベースフォルダ設定
-  const handleSetBase = async (folderId: string, folderName?: string) => {
+  // ルートフォルダ追加
+  const handleAddBase = async (folderId: string, folderName?: string) => {
     const res = await fetch("/api/workspace", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: folderId, name: folderName || folderId, provider: "google" }),
+      body: JSON.stringify({ folderId, name: folderName || folderId, provider: "google" }),
     });
     if (res.ok) {
       const data = await res.json();
       setConfig(data);
       setView("main");
+      // 新しく追加したルートの会社をスキャン
       scanCompanies(folderId, "google", data);
     }
   };
 
-  // 会社一覧スキャン
+  // ルートフォルダ削除
+  const handleRemoveBase = async (baseFolderId: string) => {
+    if (!confirm("このルートフォルダと配下の会社を削除しますか？")) return;
+    await patchConfig({ action: "removeBaseFolder", baseFolderId });
+  };
+
+  // 会社一覧スキャン（1ルート分）
   const scanCompanies = async (folderId: string, provider: string, currentConfig?: WorkspaceConfig) => {
     setScanning(true);
     try {
@@ -91,12 +99,25 @@ export default function FolderSidebar() {
         const cfg = currentConfig || config;
         const existingIds = new Set(cfg.companies.map(c => c.id));
         const newCompanies: Company[] = [...cfg.companies];
+        // このルートのbaseFolderIdを特定
+        const base = cfg.baseFolders.find(b => b.folderId === folderId);
         for (const f of folders) {
           if (!existingIds.has(f.id)) {
-            newCompanies.push({ id: f.id, name: f.name, subfolders: [] });
+            newCompanies.push({ id: f.id, name: f.name, subfolders: [], baseFolderId: base?.id });
           }
         }
         await patchConfig({ action: "setCompanies", companies: newCompanies });
+      }
+    } catch { /* ignore */ }
+    finally { setScanning(false); }
+  };
+
+  // 全ルートの会社を更新
+  const scanAllCompanies = async () => {
+    setScanning(true);
+    try {
+      for (const base of config.baseFolders) {
+        await scanCompanies(base.folderId, base.provider, config);
       }
     } catch { /* ignore */ }
     finally { setScanning(false); }
@@ -182,10 +203,15 @@ export default function FolderSidebar() {
   const loadSetupFolders = async (folderId: string, autoApplyPatterns?: boolean) => {
     setSetupScanning(true);
     try {
+      // setupCompanyのproviderを特定
+      const company = setupCompany || config.companies.find(c => c.id === folderId);
+      const base = config.baseFolders.find(b => b.id === company?.baseFolderId);
+      const provider = base?.provider || "google";
+
       const res = await fetch("/api/workspace/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderId, provider: config.baseFolder?.provider || "google" }),
+        body: JSON.stringify({ folderId, provider }),
       });
       if (res.ok) {
         const { folders, files: scannedFiles } = await res.json();
@@ -266,10 +292,10 @@ export default function FolderSidebar() {
     ? config.companies.find(c => c.id === setupCompany.id) || setupCompany
     : null;
 
-  // フィルタリング
-  const filteredCompanies = config.companies.filter(c =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // フィルタリング（全ルートの会社をまとめて表示）
+  const filteredCompanies = config.companies
+    .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   // --- 設定モード画面 ---
   if (view === "setup" && currentSetupCompany) {
@@ -400,15 +426,15 @@ export default function FolderSidebar() {
         <img src="/logo.png" alt="Recast" className="h-11" />
       </div>
 
-      {/* ベースフォルダ未設定 */}
-      {!config.baseFolder ? (
+      {/* ルートフォルダ未設定 */}
+      {config.baseFolders.length === 0 ? (
         <>
           <div className="flex-1 p-4">
             <button
               onClick={() => setView("pickBase")}
               className="w-full rounded-lg border border-dashed border-gray-300 py-4 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
             >
-              ベースフォルダを設定
+              ルートフォルダを追加
             </button>
           </div>
           <div className="border-t border-gray-200 px-3 py-2">
@@ -491,6 +517,30 @@ export default function FolderSidebar() {
             <CloudStatus />
           </div>
 
+          {/* ルートフォルダ一覧 */}
+          <div className="border-t border-gray-200 px-3 py-2">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] text-gray-400">ルートフォルダ</span>
+              <button
+                onClick={() => setView("pickBase")}
+                className="text-[10px] text-blue-500 hover:text-blue-700"
+              >
+                + 追加
+              </button>
+            </div>
+            {config.baseFolders.map(b => (
+              <div key={b.id} className="group flex items-center justify-between rounded px-1.5 py-0.5 hover:bg-gray-100">
+                <span className="text-[10px] text-gray-600 truncate">{b.name}</span>
+                <button
+                  onClick={() => handleRemoveBase(b.id)}
+                  className="hidden text-[10px] text-red-400 group-hover:block"
+                >
+                  削除
+                </button>
+              </div>
+            ))}
+          </div>
+
           {/* フッター: 設定 */}
           <div className="border-t border-gray-200 p-3">
             <div className="flex gap-3">
@@ -501,13 +551,7 @@ export default function FolderSidebar() {
                 共通フォルダ
               </button>
               <button
-                onClick={() => setView("pickBase")}
-                className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                ベース変更
-              </button>
-              <button
-                onClick={() => config.baseFolder && scanCompanies(config.baseFolder.id, config.baseFolder.provider)}
+                onClick={scanAllCompanies}
                 disabled={scanning}
                 className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors disabled:text-gray-300"
               >
@@ -518,16 +562,16 @@ export default function FolderSidebar() {
         </>
       )}
 
-      {/* ベースフォルダ選択 */}
+      {/* フォルダブラウザ */}
       {view === "pickBase" && (
         <FolderBrowser
           provider="google"
-          onSelect={(path, name) => handleSetBase(path, name)}
+          onSelect={(path, name) => handleAddBase(path, name)}
           onClose={() => setView("main")}
         />
       )}
 
-      {/* 共通パターン設定 */}
+      {/* 共通フォルダ設定 */}
       {showPatternsModal && (
         <CommonPatternsModal
           patterns={config.defaultCommonPatterns || []}

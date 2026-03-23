@@ -28,14 +28,8 @@ export async function POST(request: NextRequest) {
 
   const config = await getWorkspaceConfig();
 
-  if (!config.baseFolder) {
-    return new Response(JSON.stringify({ error: "ベースフォルダが未設定です" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  if (config.baseFolder.provider !== "google") {
-    return new Response(JSON.stringify({ error: "現在Googleのみ対応" }), {
+  if (config.baseFolders.length === 0) {
+    return new Response(JSON.stringify({ error: "ルートフォルダが未設定です" }), {
       status: 400, headers: { "Content-Type": "application/json" },
     });
   }
@@ -55,22 +49,30 @@ export async function POST(request: NextRequest) {
       };
 
       try {
-        const baseResult = await listFoldersGoogle(config.baseFolder!.id);
-        const companyFolders = baseResult.dirs.map(d => ({ id: d.path, name: d.name }));
-        const total = companyFolders.length;
+        // 全ルートフォルダから会社一覧を取得
+        const allCompanyFolders: { id: string; name: string; baseFolderId: string }[] = [];
 
+        for (const base of config.baseFolders) {
+          if (base.provider !== "google") continue;
+          const baseResult = await listFoldersGoogle(base.folderId);
+          for (const d of baseResult.dirs) {
+            allCompanyFolders.push({ id: d.path, name: d.name, baseFolderId: base.id });
+          }
+        }
+
+        const total = allCompanyFolders.length;
         send({ type: "progress", current: 0, total, message: `${total}社を検出` });
 
         const existingCompanyMap = new Map(config.companies.map(c => [c.id, c]));
         let registeredCount = 0;
 
-        for (let i = 0; i < companyFolders.length; i++) {
-          const cf = companyFolders[i];
+        for (let i = 0; i < allCompanyFolders.length; i++) {
+          const cf = allCompanyFolders[i];
           send({ type: "progress", current: i + 1, total, message: cf.name });
 
           let company = existingCompanyMap.get(cf.id);
           if (!company) {
-            company = { id: cf.id, name: cf.name, subfolders: [] };
+            company = { id: cf.id, name: cf.name, subfolders: [], baseFolderId: cf.baseFolderId };
             config.companies.push(company);
           }
 

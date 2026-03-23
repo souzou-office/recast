@@ -6,8 +6,9 @@ import type { FileContent } from "@/types";
 
 export async function GET() {
   const config = await getWorkspaceConfig();
-  const provider = config.baseFolder?.provider ?? "local";
   const company = config.companies.find(c => c.id === config.selectedCompanyId);
+  const baseFolder = config.baseFolders.find(b => b.id === company?.baseFolderId);
+  const provider = baseFolder?.provider ?? "google";
 
   const result: {
     config: typeof config;
