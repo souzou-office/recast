@@ -28,6 +28,7 @@ export async function POST(request: NextRequest) {
   // 全資料を収集
   const allTexts: string[] = [];
   const pdfFiles: { name: string; base64: string; mimeType: string }[] = [];
+  const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
   if (company.profile) {
     allTexts.push(`--- 基本情報サマリー ---\n${company.profile.summary}`);
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
       if (!f.enabled) continue;
       const content = await readFileById(f.id, f.name, f.mimeType);
       if (!content) continue;
+      sourceFiles.push({ id: f.id, name: f.name, mimeType: f.mimeType });
       if (content.base64) {
         pdfFiles.push({ name: content.name, base64: content.base64, mimeType: content.mimeType || "application/pdf" });
       } else {
@@ -98,6 +100,7 @@ ${allTexts.join("\n\n")}`;
           type: "meta",
           templateId: template.id,
           templateName: template.name,
+          sourceFiles,
         })}\n\n`));
 
         const aiStream = client.messages.stream({

@@ -7,10 +7,17 @@ import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import TemplateSelectModal from "./TemplateSelectModal";
 
-export default function ChatWindow() {
+interface Props {
+  onLoadingChange?: (loading: boolean) => void;
+}
+
+export default function ChatWindow({ onLoadingChange }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [previewFileId, setPreviewFileId] = useState<string | null>(null);
+
+  useEffect(() => { onLoadingChange?.(isLoading); }, [isLoading, onLoadingChange]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -169,7 +176,16 @@ export default function ChatWindow() {
           if (!match) continue;
           const data = JSON.parse(match[1]);
 
-          if (data.type === "text") {
+          if (data.type === "meta" && data.sourceFiles) {
+            setMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last.role === "assistant") {
+                updated[updated.length - 1] = { ...last, sourceFiles: data.sourceFiles };
+              }
+              return updated;
+            });
+          } else if (data.type === "text") {
             setMessages(prev => {
               const updated = [...prev];
               const last = updated[updated.length - 1];
@@ -202,50 +218,114 @@ export default function ChatWindow() {
     }
   }, []);
 
+  // sourceFilesを持つメッセージから全ファイルを集める
+  const allSourceFiles = messages.flatMap(m => m.sourceFiles || []);
+  const hasSourceFiles = allSourceFiles.length > 0;
+
   return (
-    <div className="flex h-full flex-col">
-      {/* メッセージエリア */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
-        {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center text-gray-400">
-              <img src="/logo.png" alt="recast" className="mx-auto mb-2 h-10" />
-              <p className="text-sm">
-                サイドバーからフォルダを追加して、
-                <br />
-                資料について質問してみましょう
-              </p>
+    <div className="flex h-full">
+      {/* 左側: チャット */}
+      <div className={`flex flex-col ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+        {/* メッセージエリア */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
+          {messages.length === 0 ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="text-center text-gray-400">
+                <img src="/logo.png" alt="recast" className="mx-auto mb-2 h-10" />
+                <p className="text-sm">
+                  サイドバーからフォルダを追加して、
+                  <br />
+                  資料について質問してみましょう
+                </p>
+              </div>
             </div>
-          </div>
-        ) : (
-          messages.map((msg, i) => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              streaming={isLoading && i === messages.length - 1 && msg.role === "assistant"}
-            />
-          ))
-        )}
-        {isLoading &&
-          messages[messages.length - 1]?.content === "" && (
-            <div className="flex justify-start mb-4">
-              <div className="bg-gray-100 rounded-2xl px-4 py-3">
-                <div className="flex gap-1">
-                  <span className="animate-bounce text-gray-400">●</span>
-                  <span className="animate-bounce text-gray-400 [animation-delay:0.15s]">●</span>
-                  <span className="animate-bounce text-gray-400 [animation-delay:0.3s]">●</span>
+          ) : (
+            messages.map((msg, i) => (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                streaming={isLoading && i === messages.length - 1 && msg.role === "assistant"}
+              />
+            ))
+          )}
+          {isLoading &&
+            messages[messages.length - 1]?.content === "" && (
+              <div className="flex justify-start mb-4">
+                <div className="bg-gray-100 rounded-2xl px-4 py-3">
+                  <div className="flex gap-1">
+                    <span className="animate-bounce text-gray-400">●</span>
+                    <span className="animate-bounce text-gray-400 [animation-delay:0.15s]">●</span>
+                    <span className="animate-bounce text-gray-400 [animation-delay:0.3s]">●</span>
+                  </div>
                 </div>
+              </div>
+            )}
+
+          {/* 参照元資料リンク */}
+          {hasSourceFiles && !isLoading && (
+            <div className="mt-4 border-t border-gray-100 pt-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400">参照元資料</p>
+              <div className="flex flex-wrap gap-1.5">
+                {allSourceFiles.map((f, i) => (
+                  <button
+                    key={`${f.id}-${i}`}
+                    onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
+                    className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
+                      previewFileId === f.id
+                        ? "bg-blue-100 text-blue-700"
+                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                    }`}
+                  >
+                    {f.mimeType.includes("pdf") ? "📄 " :
+                     f.mimeType.includes("word") || f.mimeType.includes("document") ? "📝 " :
+                     f.mimeType.includes("sheet") || f.mimeType.includes("excel") ? "📊 " : "📎 "}
+                    {f.name}
+                  </button>
+                ))}
               </div>
             </div>
           )}
+        </div>
+
+        {/* 入力エリア */}
+        <ChatInput
+          onSend={handleSend}
+          onOpenTemplateModal={() => setShowTemplateModal(true)}
+          disabled={isLoading}
+        />
       </div>
 
-      {/* 入力エリア */}
-      <ChatInput
-        onSend={handleSend}
-        onOpenTemplateModal={() => setShowTemplateModal(true)}
-        disabled={isLoading}
-      />
+      {/* 右側: ファイルプレビュー */}
+      {previewFileId && (
+        <div className="flex w-1/2 flex-col border-l border-gray-200">
+          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
+            <span className="text-xs text-gray-600 truncate">
+              {allSourceFiles.find(f => f.id === previewFileId)?.name}
+            </span>
+            <div className="flex items-center gap-2">
+              <a
+                href={`https://drive.google.com/file/d/${previewFileId}/view`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-blue-500 hover:text-blue-700"
+              >
+                別タブで開く
+              </a>
+              <button
+                onClick={() => setPreviewFileId(null)}
+                className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <iframe
+            src={`https://drive.google.com/file/d/${previewFileId}/preview`}
+            className="flex-1 w-full"
+            allow="autoplay"
+          />
+        </div>
+      )}
 
       {/* テンプレート選択モーダル */}
       {showTemplateModal && (

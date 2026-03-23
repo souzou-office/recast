@@ -13,6 +13,7 @@ export default function Home() {
   const [tab, setTab] = useState<MainTab>("chat");
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
   const [showRegistration, setShowRegistration] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
 
   const fetchConfig = useCallback(async () => {
     const res = await fetch("/api/workspace");
@@ -76,21 +77,21 @@ export default function Home() {
             {/* タブ */}
             <div className="flex border-b border-gray-200 bg-white">
               <button
-                onClick={() => setTab("chat")}
+                onClick={() => !chatLoading && setTab("chat")}
                 className={`px-6 py-3 text-sm font-medium transition-colors ${
                   tab === "chat"
                     ? "border-b-2 border-blue-500 text-blue-600"
-                    : "text-gray-500 hover:text-gray-700"
+                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
                 }`}
               >
                 チャット
               </button>
               <button
-                onClick={() => setTab("profile")}
+                onClick={() => !chatLoading && setTab("profile")}
                 className={`px-6 py-3 text-sm font-medium transition-colors ${
                   tab === "profile"
                     ? "border-b-2 border-blue-500 text-blue-600"
-                    : "text-gray-500 hover:text-gray-700"
+                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
                 }`}
               >
                 基本情報
@@ -99,7 +100,7 @@ export default function Home() {
 
             {/* タブ内容 */}
             <div className="flex-1 overflow-hidden">
-              {tab === "chat" && <ChatWindow />}
+              {tab === "chat" && <ChatWindow onLoadingChange={setChatLoading} />}
               {tab === "profile" && (
                 <CompanyProfile
                   company={selectedCompany || null}

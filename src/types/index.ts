@@ -85,4 +85,5 @@ export interface ChatMessage {
     items: { label: string; result: string; note?: string }[];
     createdAt: string;
   };
+  sourceFiles?: { id: string; name: string; mimeType: string }[];
 }
