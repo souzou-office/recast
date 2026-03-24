@@ -12,21 +12,21 @@ const TEMPLATES_PATH = path.join(process.cwd(), "data", "templates.json");
 export async function GET() {
   const config = await getWorkspaceConfig();
   const company = config.companies.find(c => c.id === config.selectedCompanyId);
-  if (!company) {
-    return NextResponse.json({ error: "会社未選択" }, { status: 400 });
-  }
-
-  const activeJobs = company.subfolders.filter(s => s.role === "job" && s.active);
-  if (activeJobs.length === 0) {
-    return NextResponse.json({ error: "案件フォルダが未選択" }, { status: 400 });
-  }
-
   let templates: CheckTemplate[] = [];
   try {
     const raw = await fs.readFile(TEMPLATES_PATH, "utf-8");
     templates = JSON.parse(raw);
   } catch {
-    return NextResponse.json({ suggested: null, templates: [], jobNames: activeJobs.map(j => j.name) });
+    return NextResponse.json({ suggested: null, templates: [], jobNames: [] });
+  }
+
+  if (!company) {
+    return NextResponse.json({ suggested: null, templates, jobNames: [] });
+  }
+
+  const activeJobs = company.subfolders.filter(s => s.role === "job" && s.active);
+  if (activeJobs.length === 0) {
+    return NextResponse.json({ suggested: null, templates, jobNames: [] });
   }
 
   if (templates.length === 0) {

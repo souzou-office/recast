@@ -304,7 +304,7 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
                   await fetch(`/api/chat-history?companyId=${companyId}`, { method: "DELETE" });
                 }
               }}
-              className="text-[10px] text-gray-400 hover:text-red-500 transition-colors"
+              className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
             >
               履歴を削除
             </button>
