@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "recast - バックオフィス支援AI",
   description: "起きた事実を、相手の要求仕様に合う型に流し込み直す",
+  icons: { icon: "/favicon.png" },
 };
 
 export default function RootLayout({

@@ -8,10 +8,16 @@ interface DirEntry {
   path: string;
 }
 
+interface FileEntry {
+  name: string;
+  mimeType: string;
+}
+
 interface BrowseResult {
   current: string;
   parent: string | null;
   dirs: DirEntry[];
+  files?: FileEntry[];
 }
 
 interface Props {
@@ -115,6 +121,25 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
                   </button>
                 </li>
               ))}
+              {data.files && data.files.length > 0 && (
+                <>
+                  <li className="border-t border-gray-100 mt-1 pt-1">
+                    <span className="px-3 py-1 text-[10px] text-gray-400">ファイル</span>
+                  </li>
+                  {data.files.map((file, i) => (
+                    <li key={`file-${i}`}
+                        className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-gray-400">
+                      <span className="shrink-0 text-xs">
+                        {file.mimeType.includes("pdf") ? "📄" :
+                         file.mimeType.includes("word") || file.mimeType.includes("document") ? "📝" :
+                         file.mimeType.includes("sheet") || file.mimeType.includes("excel") ? "📊" :
+                         file.mimeType.includes("image") ? "🖼️" : "📎"}
+                      </span>
+                      <span className="truncate">{file.name}</span>
+                    </li>
+                  ))}
+                </>
+              )}
             </ul>
           )}
         </div>

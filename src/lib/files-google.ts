@@ -170,10 +170,10 @@ export async function readFileContentGoogle(
           mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
           mimeType === "application/vnd.ms-excel"
         ) {
-          const workbook = XLSX.read(buffer, { type: "buffer" });
+          const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
           let text = "";
           for (const sheetName of workbook.SheetNames) {
-            const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+            const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { dateNF: "yyyy/mm/dd" });
             text += `[シート: ${sheetName}]\n${csv}\n\n`;
           }
           if (text.trim()) return { name: fileName, path: fileId, content: text.trim() };
@@ -253,7 +253,7 @@ export async function readAllFilesInFolderGoogle(
 // フォルダ一覧（ブラウザ用）
 export async function listFoldersGoogle(
   parentId: string = "root"
-): Promise<{ current: string; parent: string | null; dirs: { name: string; path: string }[] }> {
+): Promise<{ current: string; parent: string | null; dirs: { name: string; path: string }[]; files?: { name: string; mimeType: string }[] }> {
   const token = await getValidGoogleToken();
   if (!token) throw new Error("Google Drive未接続");
 
@@ -329,7 +329,7 @@ async function listDriveFolders(
   parentId: string,
   token: string,
   driveId?: string
-): Promise<{ current: string; parent: string | null; dirs: { name: string; path: string }[] }> {
+): Promise<{ current: string; parent: string | null; dirs: { name: string; path: string }[]; files?: { name: string; mimeType: string }[] }> {
   const q = `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   const fields = "files(id,name)";
   const searchParams = new URLSearchParams({
@@ -349,7 +349,27 @@ async function listDriveFolders(
     .map((f: { id: string; name: string }) => ({ name: f.name, path: f.id }))
     .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
 
-  return { current: currentId, parent: parentId, dirs };
+  // ファイル一覧も取得（フォルダ以外）
+  const fileQ = `'${folderId}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
+  const fileParams = new URLSearchParams({
+    q: fileQ, fields: "files(name,mimeType)", pageSize: "50",
+    includeItemsFromAllDrives: "true",
+    supportsAllDrives: "true",
+  });
+  if (driveId) {
+    fileParams.set("driveId", driveId);
+    fileParams.set("corpora", "drive");
+  }
+  const fileRes = await driveRequest(`/files?${fileParams}`, token);
+  let files: { name: string; mimeType: string }[] = [];
+  if (fileRes.ok) {
+    const fileData = await fileRes.json();
+    files = (fileData.files || [])
+      .map((f: { name: string; mimeType: string }) => ({ name: f.name, mimeType: f.mimeType }))
+      .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+  }
+
+  return { current: currentId, parent: parentId, dirs, files };
 }
 
 // 単一ファイル読み取り（chat APIから使う）

@@ -3,24 +3,33 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { WorkspaceConfig, Company, Subfolder, SubfolderRole } from "@/types";
 import CloudStatus from "./CloudStatus";
-import FolderBrowser from "./FolderBrowser";
 import CompanyMainView from "./CompanyMainView";
+import CommonPatternsModal from "./CommonPatternsModal";
 
-type View = "main" | "pickBase" | "setup";
+type View = "main" | "setup";
 
-export default function FolderSidebar() {
+interface Props {
+  onOpenRegistration?: () => void;
+}
+
+export default function FolderSidebar({ onOpenRegistration }: Props) {
   const [config, setConfig] = useState<WorkspaceConfig>({
-    baseFolder: null,
+    baseFolders: [],
     globalCommon: [],
+    defaultCommonPatterns: [],
     companies: [],
     selectedCompanyId: null,
   });
   const [view, setView] = useState<View>("main");
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [scanning, setScanning] = useState(false);
+  const [scanningAll, setScanningAll] = useState(false);
+  const [scanProgress, setScanProgress] = useState("");
+  const scanAbortRef = useRef<AbortController | null>(null);
+  const [showPatternsModal, setShowPatternsModal] = useState(false);
   const [setupCompany, setSetupCompany] = useState<Company | null>(null);
   const [setupFolders, setSetupFolders] = useState<{ id: string; name: string }[]>([]);
+  const [setupFiles, setSetupFiles] = useState<{ name: string; mimeType: string }[]>([]);
   const [setupBreadcrumbs, setSetupBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
   const [setupScanning, setSetupScanning] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -57,44 +66,64 @@ export default function FolderSidebar() {
     return null;
   };
 
-  // ベースフォルダ設定
-  const handleSetBase = async (folderId: string, folderName?: string) => {
-    const res = await fetch("/api/workspace", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: folderId, name: folderName || folderId, provider: "google" }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setConfig(data);
-      setView("main");
-      scanCompanies(folderId, "google", data);
-    }
+  // スキャンキャンセル
+  const handleCancelScan = () => {
+    scanAbortRef.current?.abort();
   };
 
-  // 会社一覧スキャン
-  const scanCompanies = async (folderId: string, provider: string, currentConfig?: WorkspaceConfig) => {
-    setScanning(true);
+  // 共通フォルダパターン保存
+  const handleSavePatterns = async (patterns: string[]) => {
+    await patchConfig({ action: "setDefaultCommonPatterns", patterns });
+    setShowPatternsModal(false);
+  };
+
+  // パターン保存 + 全社一括スキャン（SSE）
+  const handleSavePatternsAndScanAll = async (patterns: string[], reset: boolean) => {
+    await patchConfig({ action: "setDefaultCommonPatterns", patterns });
+    const abortController = new AbortController();
+    scanAbortRef.current = abortController;
+    setScanningAll(true);
+    setScanProgress("開始中...");
     try {
-      const res = await fetch("/api/workspace/scan", {
+      const res = await fetch("/api/workspace/scan-all", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderId, provider }),
+        body: JSON.stringify({ reset }),
+        signal: abortController.signal,
       });
-      if (res.ok) {
-        const { folders } = await res.json();
-        const cfg = currentConfig || config;
-        const existingIds = new Set(cfg.companies.map(c => c.id));
-        const newCompanies: Company[] = [...cfg.companies];
-        for (const f of folders) {
-          if (!existingIds.has(f.id)) {
-            newCompanies.push({ id: f.id, name: f.name, subfolders: [] });
+      const reader = res.body?.getReader();
+      if (!reader) return;
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const match = line.match(/^data: (.+)$/m);
+          if (!match) continue;
+          const data = JSON.parse(match[1]);
+
+          if (data.type === "progress") {
+            setScanProgress(`${data.current}/${data.total} ${data.message}`);
+          } else if (data.type === "done") {
+            setConfig(data.config);
           }
         }
-        await patchConfig({ action: "setCompanies", companies: newCompanies });
       }
-    } catch { /* ignore */ }
-    finally { setScanning(false); }
+    } catch { /* abort or error */ }
+    finally {
+      scanAbortRef.current = null;
+      setScanningAll(false);
+      setScanProgress("");
+      setShowPatternsModal(false);
+    }
   };
 
   // 会社選択
@@ -126,14 +155,20 @@ export default function FolderSidebar() {
   const loadSetupFolders = async (folderId: string, autoApplyPatterns?: boolean) => {
     setSetupScanning(true);
     try {
+      // setupCompanyのproviderを特定
+      const company = setupCompany || config.companies.find(c => c.id === folderId);
+      const base = config.baseFolders.find(b => b.id === company?.baseFolderId);
+      const provider = base?.provider || "google";
+
       const res = await fetch("/api/workspace/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderId, provider: config.baseFolder?.provider || "google" }),
+        body: JSON.stringify({ folderId, provider }),
       });
       if (res.ok) {
-        const { folders } = await res.json();
+        const { folders, files: scannedFiles } = await res.json();
         setSetupFolders(folders);
+        setSetupFiles(scannedFiles || []);
 
         // デフォルトパターンを自動適用
         if (autoApplyPatterns && setupCompany && config.defaultCommonPatterns?.length > 0) {
@@ -209,10 +244,10 @@ export default function FolderSidebar() {
     ? config.companies.find(c => c.id === setupCompany.id) || setupCompany
     : null;
 
-  // フィルタリング
-  const filteredCompanies = config.companies.filter(c =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // フィルタリング（全ルートの会社をまとめて表示）
+  const filteredCompanies = config.companies
+    .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   // --- 設定モード画面 ---
   if (view === "setup" && currentSetupCompany) {
@@ -309,6 +344,25 @@ export default function FolderSidebar() {
                   </li>
                 );
               })}
+              {setupFiles.length > 0 && (
+                <>
+                  <li className="border-t border-gray-100 mt-1 pt-1">
+                    <span className="px-2 py-1 text-[10px] text-gray-400">ファイル</span>
+                  </li>
+                  {setupFiles.map((file, i) => (
+                    <li key={`file-${i}`}
+                        className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs text-gray-400">
+                      <span className="shrink-0">
+                        {file.mimeType.includes("pdf") ? "📄" :
+                         file.mimeType.includes("word") || file.mimeType.includes("document") ? "📝" :
+                         file.mimeType.includes("sheet") || file.mimeType.includes("excel") ? "📊" :
+                         file.mimeType.includes("image") ? "🖼️" : "📎"}
+                      </span>
+                      <span className="truncate">{file.name}</span>
+                    </li>
+                  ))}
+                </>
+              )}
             </ul>
           )}
         </div>
@@ -320,25 +374,24 @@ export default function FolderSidebar() {
   return (
     <aside className="flex h-full w-72 flex-col border-r border-gray-200 bg-gray-50">
       {/* ヘッダー */}
-      <div className="border-b border-gray-200 p-4">
-        <h1 className="text-lg font-bold text-gray-800">recast</h1>
-        <p className="text-xs text-gray-500">バックオフィス支援AI</p>
+      <div className="border-b border-gray-200 px-4 py-2 flex justify-center">
+        <img src="/logo.png" alt="Recast" className="h-11" />
       </div>
 
-      {/* ベースフォルダ未設定 */}
-      {!config.baseFolder ? (
-        <div className="flex-1 p-4">
-          <div className="mb-4">
-            <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">クラウド接続</h2>
+      {config.companies.length === 0 ? (
+        <>
+          <div className="flex-1 p-4">
+            <button
+              onClick={onOpenRegistration}
+              className="w-full rounded-lg border border-dashed border-gray-300 py-4 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
+            >
+              会社フォルダを登録
+            </button>
+          </div>
+          <div className="border-t border-gray-200 px-3 py-2">
             <CloudStatus />
           </div>
-          <button
-            onClick={() => setView("pickBase")}
-            className="w-full rounded-lg border border-dashed border-gray-300 py-4 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
-          >
-            ベースフォルダを設定
-          </button>
-        </div>
+        </>
       ) : (
         <>
           {/* 会社セレクター */}
@@ -410,31 +463,41 @@ export default function FolderSidebar() {
             </div>
           )}
 
+          {/* クラウド接続（常時表示） */}
+          <div className="border-t border-gray-200 px-3 py-2">
+            <CloudStatus />
+          </div>
+
           {/* フッター: 設定 */}
-          <div className="border-t border-gray-200 p-3 flex gap-2">
-            <button
-              onClick={() => setView("pickBase")}
-              className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
-            >
-              ベース変更
-            </button>
-            <button
-              onClick={() => config.baseFolder && scanCompanies(config.baseFolder.id, config.baseFolder.provider)}
-              disabled={scanning}
-              className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors disabled:text-gray-300"
-            >
-              {scanning ? "更新中..." : "会社更新"}
-            </button>
+          <div className="border-t border-gray-200 p-3">
+            <div className="flex gap-3">
+              <button
+                onClick={onOpenRegistration}
+                className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                会社登録
+              </button>
+              <button
+                onClick={() => setShowPatternsModal(true)}
+                className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                共通フォルダ
+              </button>
+            </div>
           </div>
         </>
       )}
 
-      {/* ベースフォルダ選択 */}
-      {view === "pickBase" && (
-        <FolderBrowser
-          provider="google"
-          onSelect={(path, name) => handleSetBase(path, name)}
-          onClose={() => setView("main")}
+      {/* 共通フォルダ設定 */}
+      {showPatternsModal && (
+        <CommonPatternsModal
+          patterns={config.defaultCommonPatterns || []}
+          onSave={handleSavePatterns}
+          onScanAll={handleSavePatternsAndScanAll}
+          onCancelScan={handleCancelScan}
+          scanning={scanningAll}
+          scanProgress={scanProgress}
+          onClose={() => setShowPatternsModal(false)}
         />
       )}
     </aside>

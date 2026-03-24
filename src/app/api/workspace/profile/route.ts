@@ -51,8 +51,30 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
   }
 
-  // 共通フォルダのenabledファイルを読む
+  // 共通フォルダのenabledファイルを読む（未スキャンなら自動スキャン）
   const commonSubs = company.subfolders.filter(s => s.role === "common");
+  let configUpdated = false;
+
+  for (const sub of commonSubs) {
+    if (!sub.files || sub.files.length === 0) {
+      // ファイル未スキャン → scan-files相当の処理
+      const scanRes = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/workspace/scan-files`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, subfolderId: sub.id }),
+      });
+      if (scanRes.ok) {
+        const { files } = await scanRes.json();
+        sub.files = files;
+        configUpdated = true;
+      }
+    }
+  }
+
+  if (configUpdated) {
+    await saveWorkspaceConfig(config);
+  }
+
   const textFiles: { id: string; name: string; content: string }[] = [];
   const pdfFiles: { id: string; name: string; base64: string; mimeType: string }[] = [];
 
@@ -99,7 +121,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 2048,
       messages: [{
         role: "user",
@@ -167,7 +189,7 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 2048,
       messages: [{
         role: "user",

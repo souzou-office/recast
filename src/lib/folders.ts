@@ -5,7 +5,7 @@ import type { WorkspaceConfig } from "@/types";
 const DATA_PATH = path.join(process.cwd(), "data", "folders.json");
 
 const DEFAULT_CONFIG: WorkspaceConfig = {
-  baseFolder: null,
+  baseFolders: [],
   globalCommon: [],
   defaultCommonPatterns: [],
   companies: [],
@@ -20,7 +20,21 @@ export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
     if ("common" in data || "jobs" in data) {
       return { ...DEFAULT_CONFIG };
     }
-    return { ...DEFAULT_CONFIG, ...data };
+
+    const config = { ...DEFAULT_CONFIG, ...data };
+
+    // 旧形式 baseFolder → baseFolders に移行
+    if (data.baseFolder && !data.baseFolders) {
+      config.baseFolders = [{
+        id: data.baseFolder.id,
+        name: data.baseFolder.name,
+        folderId: data.baseFolder.id,
+        provider: data.baseFolder.provider,
+      }];
+      delete (config as Record<string, unknown>).baseFolder;
+    }
+
+    return config;
   } catch {
     return { ...DEFAULT_CONFIG };
   }
@@ -28,5 +42,8 @@ export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
 
 export async function saveWorkspaceConfig(config: WorkspaceConfig): Promise<void> {
   await fs.mkdir(path.dirname(DATA_PATH), { recursive: true });
-  await fs.writeFile(DATA_PATH, JSON.stringify(config, null, 2), "utf-8");
+  // 旧形式のbaseFolderが残っていたら削除
+  const toSave = { ...config };
+  delete (toSave as Record<string, unknown>).baseFolder;
+  await fs.writeFile(DATA_PATH, JSON.stringify(toSave, null, 2), "utf-8");
 }

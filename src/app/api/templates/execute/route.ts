@@ -28,6 +28,7 @@ export async function POST(request: NextRequest) {
   // 全資料を収集
   const allTexts: string[] = [];
   const pdfFiles: { name: string; base64: string; mimeType: string }[] = [];
+  const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
   if (company.profile) {
     allTexts.push(`--- 基本情報サマリー ---\n${company.profile.summary}`);
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
       if (!f.enabled) continue;
       const content = await readFileById(f.id, f.name, f.mimeType);
       if (!content) continue;
+      sourceFiles.push({ id: f.id, name: f.name, mimeType: f.mimeType });
       if (content.base64) {
         pdfFiles.push({ name: content.name, base64: content.base64, mimeType: content.mimeType || "application/pdf" });
       } else {
@@ -90,22 +92,43 @@ ${allTexts.join("\n\n")}`;
   contentBlocks.push({ type: "text", text: promptText });
 
   try {
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
-      messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        // 最初にメタ情報を送る
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          type: "meta",
+          templateId: template.id,
+          templateName: template.name,
+          sourceFiles,
+        })}\n\n`));
+
+        const aiStream = client.messages.stream({
+          model: "claude-sonnet-4-6",
+          max_tokens: 4096,
+          messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
+        });
+
+        for await (const event of aiStream) {
+          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+              type: "text",
+              text: event.delta.text,
+            })}\n\n`));
+          }
+        }
+
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
+        controller.close();
+      },
     });
 
-    const text = response.content
-      .filter(b => b.type === "text")
-      .map(b => b.type === "text" ? b.text : "")
-      .join("");
-
-    return NextResponse.json({
-      templateId: template.id,
-      templateName: template.name,
-      content: text,
-      createdAt: new Date().toISOString(),
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
     });
   } catch (e) {
     return NextResponse.json(

@@ -35,16 +35,20 @@ export interface Company {
   name: string;
   subfolders: Subfolder[];
   profile?: CompanyProfile;
+  baseFolderId?: string; // どのルートフォルダから来たか
+}
+
+export interface BaseFolder {
+  id: string;          // エントリの一意ID
+  name: string;        // 表示名
+  folderId: string;    // クラウド上のフォルダID
+  provider: FolderProvider;
 }
 
 export interface WorkspaceConfig {
-  baseFolder: {
-    id: string;
-    name: string;
-    provider: FolderProvider;
-  } | null;
+  baseFolders: BaseFolder[];
   globalCommon: { id: string; name: string }[];
-  defaultCommonPatterns: string[]; // デフォルト共通フォルダ名パターン
+  defaultCommonPatterns: string[];
   companies: Company[];
   selectedCompanyId: string | null;
 }
@@ -81,4 +85,5 @@ export interface ChatMessage {
     items: { label: string; result: string; note?: string }[];
     createdAt: string;
   };
+  sourceFiles?: { id: string; name: string; mimeType: string }[];
 }

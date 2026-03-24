@@ -8,23 +8,31 @@ export async function GET() {
   return NextResponse.json(config);
 }
 
-// ベースフォルダ設定
+// ルートフォルダ追加
 export async function POST(request: NextRequest) {
-  const { id, name, provider } = await request.json() as {
-    id: string;
+  const { folderId, name, provider } = await request.json() as {
+    folderId: string;
     name: string;
     provider: FolderProvider;
   };
 
-  if (!id || !name || !provider) {
-    return NextResponse.json({ error: "id, name, provider は必須です" }, { status: 400 });
+  if (!folderId || !name || !provider) {
+    return NextResponse.json({ error: "folderId, name, provider は必須です" }, { status: 400 });
   }
 
   const config = await getWorkspaceConfig();
-  config.baseFolder = { id, name, provider };
-  config.globalCommon = [];
-  config.companies = [];
-  config.selectedCompanyId = null;
+
+  // 既に登録済みなら追加しない
+  if (config.baseFolders.some(b => b.folderId === folderId)) {
+    return NextResponse.json(config);
+  }
+
+  config.baseFolders.push({
+    id: `base_${Date.now()}`,
+    name,
+    folderId,
+    provider,
+  });
 
   await saveWorkspaceConfig(config);
   return NextResponse.json(config);
@@ -84,7 +92,6 @@ export async function PATCH(request: NextRequest) {
     }
 
     case "applyDefaultCommon": {
-      // 全会社にデフォルト共通パターンを適用
       for (const company of config.companies) {
         for (const sub of company.subfolders) {
           const matchesPattern = config.defaultCommonPatterns.some(pattern =>
@@ -107,6 +114,16 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "removeBaseFolder": {
+      const baseFolderId = body.baseFolderId;
+      config.baseFolders = config.baseFolders.filter(b => b.id !== baseFolderId);
+      config.companies = config.companies.filter(c => c.baseFolderId !== baseFolderId);
+      if (config.companies.length > 0 && !config.companies.find(c => c.id === config.selectedCompanyId)) {
+        config.selectedCompanyId = null;
+      }
+      break;
+    }
+
     default:
       return NextResponse.json({ error: "不明なaction" }, { status: 400 });
   }
@@ -118,8 +135,9 @@ export async function PATCH(request: NextRequest) {
 // リセット
 export async function DELETE() {
   const config = {
-    baseFolder: null,
+    baseFolders: [],
     globalCommon: [],
+    defaultCommonPatterns: [],
     companies: [],
     selectedCompanyId: null,
   };
