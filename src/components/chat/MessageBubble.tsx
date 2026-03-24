@@ -38,27 +38,37 @@ export default function MessageBubble({ message, streaming, sourceLinks, onPrevi
   const renderWithCompanyLinks = (text: string): React.ReactNode => {
     if (!companies || companies.length === 0 || !onNavigateToCompany) return text;
 
-    // 会社名を長い順にソート（部分一致の誤検出を防ぐ）
-    const sorted = [...companies].sort((a, b) => b.name.length - a.name.length);
+    // 会社名から番号プレフィックスを除いた名前も用意し、長い順にソート
+    const matchers = companies.flatMap(c => {
+      const names = [c.name];
+      // "030.株式会社AZNICS" → "株式会社AZNICS" も追加
+      const withoutNum = c.name.replace(/^\d+[._\s]*/, "");
+      if (withoutNum !== c.name) names.push(withoutNum);
+      // "_D" や "_O" 等のサフィックスも除去したバージョン
+      const withoutSuffix = withoutNum.replace(/[_\s]*[A-Z]$/, "").trim();
+      if (withoutSuffix !== withoutNum && withoutSuffix.length > 3) names.push(withoutSuffix);
+      return names.map(name => ({ name, id: c.id, fullName: c.name }));
+    }).sort((a, b) => b.name.length - a.name.length);
+
     const parts: React.ReactNode[] = [text];
 
-    for (const company of sorted) {
+    for (const matcher of matchers) {
       const newParts: React.ReactNode[] = [];
       for (const part of parts) {
         if (typeof part !== "string") { newParts.push(part); continue; }
-        const idx = part.indexOf(company.name);
+        const idx = part.indexOf(matcher.name);
         if (idx === -1) { newParts.push(part); continue; }
         if (idx > 0) newParts.push(part.slice(0, idx));
         newParts.push(
           <button
-            key={`${company.id}-${idx}`}
-            onClick={() => onNavigateToCompany(company.id)}
+            key={`${matcher.id}-${idx}-${Math.random()}`}
+            onClick={() => onNavigateToCompany(matcher.id)}
             className="text-blue-600 hover:text-blue-800 hover:underline"
           >
-            {company.name}
+            {matcher.name}
           </button>
         );
-        if (idx + company.name.length < part.length) newParts.push(part.slice(idx + company.name.length));
+        if (idx + matcher.name.length < part.length) newParts.push(part.slice(idx + matcher.name.length));
       }
       parts.length = 0;
       parts.push(...newParts);
