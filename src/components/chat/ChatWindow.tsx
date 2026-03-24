@@ -18,6 +18,9 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
+  const [showMasterJson, setShowMasterJson] = useState(false);
+  const [masterJson, setMasterJson] = useState<string>("");
+  const [masterJsonDirty, setMasterJsonDirty] = useState(false);
 
   useEffect(() => { onLoadingChange?.(isLoading); }, [isLoading, onLoadingChange]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -314,9 +317,35 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
     <div className="flex h-full">
       {/* 左側: チャット */}
       <div className={`flex flex-col ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
-        {/* 履歴削除ボタン */}
+        {/* ツールバー */}
         {messages.length > 0 && !isLoading && (
-          <div className="flex justify-end px-4 pt-2">
+          <div className="flex justify-end gap-3 px-4 pt-2">
+            {companyId && (
+              <button
+                onClick={async () => {
+                  if (showMasterJson) {
+                    setShowMasterJson(false);
+                    return;
+                  }
+                  const res = await fetch(`/api/workspace/master-sheet?companyId=${companyId}`);
+                  if (res.ok) {
+                    const { masterSheet } = await res.json();
+                    if (masterSheet?.structured) {
+                      setMasterJson(JSON.stringify(masterSheet.structured, null, 2));
+                      setMasterJsonDirty(false);
+                      setShowMasterJson(true);
+                    } else {
+                      alert("マスターシートのJSONがありません。案件整理を実行してください。");
+                    }
+                  }
+                }}
+                className={`text-[10px] transition-colors ${
+                  showMasterJson ? "text-blue-600 font-medium" : "text-gray-400 hover:text-gray-600"
+                }`}
+              >
+                {showMasterJson ? "チャット表示" : "JSON表示"}
+              </button>
+            )}
             <button
               onClick={async () => {
                 if (!confirm("チャット履歴を削除しますか？")) return;
@@ -333,7 +362,47 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
             </button>
           </div>
         )}
-        {/* メッセージエリア */}
+        {/* JSONエディタ or メッセージエリア */}
+        {showMasterJson ? (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto p-4">
+              <textarea
+                value={masterJson}
+                onChange={e => { setMasterJson(e.target.value); setMasterJsonDirty(true); }}
+                className="w-full h-full min-h-[400px] rounded-lg bg-gray-900 text-gray-200 text-xs font-mono p-4 border-0 focus:outline-none resize-none leading-relaxed"
+                spellCheck={false}
+              />
+            </div>
+            {masterJsonDirty && (
+              <div className="flex justify-end gap-2 px-4 py-2 border-t border-gray-200">
+                <button
+                  onClick={() => { setMasterJsonDirty(false); setShowMasterJson(false); }}
+                  className="rounded-lg px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100"
+                >
+                  キャンセル
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const parsed = JSON.parse(masterJson);
+                      await fetch("/api/workspace/master-sheet", {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ companyId, type: "masterSheet", structured: parsed }),
+                      });
+                      setMasterJsonDirty(false);
+                    } catch {
+                      alert("JSONの形式が正しくありません");
+                    }
+                  }}
+                  className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-700"
+                >
+                  保存
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
           {messages.length === 0 ? (
             <div className="flex h-full items-center justify-center">
@@ -372,6 +441,7 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
             )}
 
         </div>
+        )}
 
         {/* 入力エリア */}
         <ChatInput

@@ -171,6 +171,8 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [splitRatio, setSplitRatio] = useState(50);
   const [dragging, setDragging] = useState(false);
   const [showJson, setShowJson] = useState(false);
+  const [profileJson, setProfileJson] = useState("");
+  const [profileJsonDirty, setProfileJsonDirty] = useState(false);
 
   if (!company) {
     return (
@@ -228,7 +230,13 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             <div className="flex items-center gap-2">
               {profile?.structured && (
                 <button
-                  onClick={() => setShowJson(!showJson)}
+                  onClick={() => {
+                    if (!showJson && profile?.structured) {
+                      setProfileJson(JSON.stringify({ structured: profile.structured, 変更履歴: profile.変更履歴 || [] }, null, 2));
+                      setProfileJsonDirty(false);
+                    }
+                    setShowJson(!showJson);
+                  }}
                   className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                     showJson
                       ? "bg-gray-800 text-white"
@@ -253,12 +261,47 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
         {profile && showJson && profile.structured ? (
           <div className="space-y-4">
             <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
-              <div className="bg-gray-800 border-b border-gray-700 px-4 py-2.5">
+              <div className="bg-gray-800 border-b border-gray-700 px-4 py-2.5 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-200">Structured JSON</h3>
+                {profileJsonDirty && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        setProfileJson(JSON.stringify({ structured: profile.structured, 変更履歴: profile.変更履歴 || [] }, null, 2));
+                        setProfileJsonDirty(false);
+                      }}
+                      className="text-xs text-gray-400 hover:text-gray-200"
+                    >
+                      リセット
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const parsed = JSON.parse(profileJson);
+                          await fetch("/api/workspace/master-sheet", {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ companyId: company.id, type: "profile", structured: parsed.structured || parsed }),
+                          });
+                          setProfileJsonDirty(false);
+                          onUpdate();
+                        } catch {
+                          alert("JSONの形式が正しくありません");
+                        }
+                      }}
+                      className="rounded bg-blue-600 px-2 py-0.5 text-xs text-white hover:bg-blue-700"
+                    >
+                      保存
+                    </button>
+                  </div>
+                )}
               </div>
-              <pre className="p-4 text-xs text-gray-300 bg-gray-900 overflow-x-auto leading-relaxed">
-                {JSON.stringify({ structured: profile.structured, 変更履歴: profile.変更履歴 || [] }, null, 2)}
-              </pre>
+              <textarea
+                value={profileJson}
+                onChange={e => { setProfileJson(e.target.value); setProfileJsonDirty(true); }}
+                className="w-full min-h-[400px] p-4 text-xs text-gray-300 bg-gray-900 font-mono border-0 focus:outline-none resize-none leading-relaxed"
+                spellCheck={false}
+              />
             </div>
           </div>
         ) : profile && sections.length > 0 ? (
