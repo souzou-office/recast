@@ -100,7 +100,7 @@ export default function Home() {
 
             {/* タブ内容 */}
             <div className="flex-1 overflow-hidden">
-              {tab === "chat" && <ChatWindow companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} />}
+              {tab === "chat" && <ChatWindow key={config?.selectedCompanyId || "none"} companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} />}
               {tab === "profile" && (
                 <CompanyProfile
                   key={config?.selectedCompanyId || "none"}
