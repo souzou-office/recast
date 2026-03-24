@@ -103,6 +103,7 @@ export default function Home() {
               {tab === "chat" && <ChatWindow companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} />}
               {tab === "profile" && (
                 <CompanyProfile
+                  key={config?.selectedCompanyId || "none"}
                   company={selectedCompany || null}
                   onUpdate={fetchConfig}
                 />

@@ -170,6 +170,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [viewerFile, setViewerFile] = useState<ViewerFile | null>(null);
   const [splitRatio, setSplitRatio] = useState(50);
   const [dragging, setDragging] = useState(false);
+  const [showJson, setShowJson] = useState(false);
 
   if (!company) {
     return (
@@ -224,18 +225,43 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                 </p>
               )}
             </div>
-            <button
-              onClick={generateProfile}
-              disabled={generating || commonSubs.length === 0}
-              className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white
-                         hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              {generating ? "生成中..." : profile ? "再生成" : "基本情報を生成"}
-            </button>
+            <div className="flex items-center gap-2">
+              {profile?.structured && (
+                <button
+                  onClick={() => setShowJson(!showJson)}
+                  className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                    showJson
+                      ? "bg-gray-800 text-white"
+                      : "border border-gray-300 text-gray-600 hover:bg-gray-100"
+                  }`}
+                >
+                  {showJson ? "テーブル表示" : "JSON表示"}
+                </button>
+              )}
+              <button
+                onClick={generateProfile}
+                disabled={generating || commonSubs.length === 0}
+                className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white
+                           hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                {generating ? "生成中..." : profile ? "再生成" : "基本情報を生成"}
+              </button>
+            </div>
           </div>
         </div>
 
-        {profile && sections.length > 0 ? (
+        {profile && showJson && profile.structured ? (
+          <div className="space-y-4">
+            <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
+              <div className="bg-gray-800 border-b border-gray-700 px-4 py-2.5">
+                <h3 className="text-sm font-semibold text-gray-200">Structured JSON</h3>
+              </div>
+              <pre className="p-4 text-xs text-gray-300 bg-gray-900 overflow-x-auto leading-relaxed">
+                {JSON.stringify({ structured: profile.structured, 変更履歴: profile.変更履歴 || [] }, null, 2)}
+              </pre>
+            </div>
+          </div>
+        ) : profile && sections.length > 0 ? (
           <div className="space-y-4">
             {sections.map((section, si) => (
               <div key={si} className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
