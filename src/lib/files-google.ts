@@ -170,10 +170,10 @@ export async function readFileContentGoogle(
           mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
           mimeType === "application/vnd.ms-excel"
         ) {
-          const workbook = XLSX.read(buffer, { type: "buffer" });
+          const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
           let text = "";
           for (const sheetName of workbook.SheetNames) {
-            const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+            const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { dateNF: "yyyy/mm/dd" });
             text += `[シート: ${sheetName}]\n${csv}\n\n`;
           }
           if (text.trim()) return { name: fileName, path: fileId, content: text.trim() };
