@@ -46,7 +46,7 @@ export default function MessageBubble({ message, streaming, sourceLinks, onPrevi
         )?.[1];
 
       return (
-        <div className="flex flex-wrap items-center gap-2 mt-6 mb-2">
+        <div className="flex flex-wrap items-center gap-2 mt-3 mb-1">
           <h2 {...props} className="text-base font-semibold text-gray-900 m-0">{children}</h2>
           {files && files.map((f, i) => (
             <button
@@ -79,9 +79,9 @@ export default function MessageBubble({ message, streaming, sourceLinks, onPrevi
       ) : (
         <div className="prose prose-sm max-w-none text-gray-800
                         prose-headings:text-gray-900 prose-headings:font-semibold
-                        prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
-                        prose-p:leading-relaxed prose-p:my-2
-                        prose-table:border-collapse prose-table:w-full prose-table:my-3
+                        prose-h1:text-lg prose-h2:text-base prose-h2:mt-3 prose-h2:mb-1 prose-h3:text-sm
+                        prose-p:leading-relaxed prose-p:my-1
+                        prose-table:border-collapse prose-table:w-full prose-table:my-1
                         prose-th:border prose-th:border-gray-300 prose-th:bg-gray-50 prose-th:px-2 prose-th:py-1 prose-th:text-left prose-th:text-xs prose-th:font-medium prose-th:text-gray-600
                         prose-td:border prose-td:border-gray-300 prose-td:px-2 prose-td:py-1 prose-td:text-sm
                         prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
