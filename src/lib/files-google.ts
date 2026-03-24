@@ -28,7 +28,7 @@ const BINARY_MIME_TYPES = new Set([
 // Google Docs系はエクスポートで対応
 const GOOGLE_EXPORT_TYPES: Record<string, string> = {
   "application/vnd.google-apps.document": "text/plain",
-  "application/vnd.google-apps.spreadsheet": "text/csv",
+  "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 
 // Office系
@@ -111,6 +111,29 @@ export async function readFileContentGoogle(
       const params = new URLSearchParams({ mimeType: exportMime });
       const res = await driveRequest(`/files/${fileId}/export?${params}`, token);
       if (!res.ok) return null;
+
+      // Google Spreadsheet → xlsx でエクスポートしてパース
+      if (exportMime.includes("spreadsheet")) {
+        const buffer = Buffer.from(await res.arrayBuffer());
+        const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
+        let text = "";
+        for (const sheetName of workbook.SheetNames) {
+          const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { dateNF: "yyyy/mm/dd" });
+          // 残存するExcelシリアル値(5桁の数値)を日付に変換
+          const fixed = csv.replace(/(?<=,|^)(\d{5})(?=,|$)/gm, (match) => {
+            const num = parseInt(match, 10);
+            if (num >= 40000 && num <= 55000) { // 2009年〜2050年の範囲
+              const date = new Date((num - 25569) * 86400 * 1000);
+              return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+            }
+            return match;
+          });
+          text += `[シート: ${sheetName}]\n${fixed}\n\n`;
+        }
+        if (text.trim()) return { name: fileName, path: fileId, content: text.trim() };
+        return null;
+      }
+
       const content = await res.text();
       return { name: fileName, path: fileId, content };
     }
@@ -174,7 +197,15 @@ export async function readFileContentGoogle(
           let text = "";
           for (const sheetName of workbook.SheetNames) {
             const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { dateNF: "yyyy/mm/dd" });
-            text += `[シート: ${sheetName}]\n${csv}\n\n`;
+            const fixed = csv.replace(/(?<=,|^)(\d{5})(?=,|$)/gm, (match: string) => {
+              const num = parseInt(match, 10);
+              if (num >= 40000 && num <= 55000) {
+                const date = new Date((num - 25569) * 86400 * 1000);
+                return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+              }
+              return match;
+            });
+            text += `[シート: ${sheetName}]\n${fixed}\n\n`;
           }
           if (text.trim()) return { name: fileName, path: fileId, content: text.trim() };
         }

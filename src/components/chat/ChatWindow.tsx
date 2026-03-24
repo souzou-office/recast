@@ -8,10 +8,11 @@ import ChatInput from "./ChatInput";
 import TemplateSelectModal from "./TemplateSelectModal";
 
 interface Props {
+  companyId?: string | null;
   onLoadingChange?: (loading: boolean) => void;
 }
 
-export default function ChatWindow({ onLoadingChange }: Props) {
+export default function ChatWindow({ companyId, onLoadingChange }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -20,6 +21,40 @@ export default function ChatWindow({ onLoadingChange }: Props) {
 
   useEffect(() => { onLoadingChange?.(isLoading); }, [isLoading, onLoadingChange]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // 会社が変わったら履歴を読み込み
+  useEffect(() => {
+    if (!companyId) { setMessages([]); setSourceLinks({}); return; }
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/chat-history?companyId=${companyId}`);
+        if (res.ok) {
+          const { messages: saved } = await res.json();
+          setMessages(saved);
+          // 最後のメッセージのsourceLinksを復元
+          const lastWithLinks = [...saved].reverse().find((m: ChatMessage) => m.sourceLinks);
+          setSourceLinks(lastWithLinks?.sourceLinks || {});
+        }
+      } catch { /* ignore */ }
+    };
+    load();
+    setPreviewFileId(null);
+  }, [companyId]);
+
+  // メッセージが変わったら保存（ローディング中は除く）
+  useEffect(() => {
+    if (!companyId || messages.length === 0 || isLoading) return;
+    const save = async () => {
+      try {
+        await fetch("/api/chat-history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId, messages }),
+        });
+      } catch { /* ignore */ }
+    };
+    save();
+  }, [messages, companyId, isLoading]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -221,6 +256,15 @@ export default function ChatWindow({ onLoadingChange }: Props) {
           if (linkRes.ok) {
             const { links } = await linkRes.json();
             setSourceLinks(links);
+            // sourceLinksをメッセージに保存
+            setMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last.role === "assistant") {
+                updated[updated.length - 1] = { ...last, sourceLinks: links };
+              }
+              return updated;
+            });
           }
         } catch { /* ignore */ }
       }
@@ -247,6 +291,25 @@ export default function ChatWindow({ onLoadingChange }: Props) {
     <div className="flex h-full">
       {/* 左側: チャット */}
       <div className={`flex flex-col ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+        {/* 履歴削除ボタン */}
+        {messages.length > 0 && !isLoading && (
+          <div className="flex justify-end px-4 pt-2">
+            <button
+              onClick={async () => {
+                if (!confirm("チャット履歴を削除しますか？")) return;
+                setMessages([]);
+                setSourceLinks({});
+                setPreviewFileId(null);
+                if (companyId) {
+                  await fetch(`/api/chat-history?companyId=${companyId}`, { method: "DELETE" });
+                }
+              }}
+              className="text-[10px] text-gray-400 hover:text-red-500 transition-colors"
+            >
+              履歴を削除
+            </button>
+          </div>
+        )}
         {/* メッセージエリア */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
           {messages.length === 0 ? (
