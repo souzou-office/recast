@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        for await (const text of streamChat(messages, contextFiles, companyProfile, commonFiles)) {
+        for await (const text of streamChat(messages, contextFiles, companyProfile, commonFiles, config.companies)) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
         }
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));

@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { FileContent, CompanyProfile, CachedFile } from "@/types";
+import type { FileContent, CompanyProfile, CachedFile, Company } from "@/types";
 import { readFileById } from "@/lib/files-google";
 
 const client = new Anthropic();
@@ -37,6 +37,15 @@ const TOOLS: Anthropic.Tool[] = [
       required: ["file_id", "file_name"],
     },
   },
+  {
+    name: "search_all_companies",
+    description: "全会社の基本情報（structured JSON）とマスターシートを横断検索します。特定の条件に合う会社を探したり、複数社の情報を比較する場合に使います。",
+    input_schema: {
+      type: "object" as const,
+      properties: {},
+      required: [],
+    },
+  },
 ];
 
 type MessageContent =
@@ -47,7 +56,8 @@ export async function* streamChat(
   messages: { role: "user" | "assistant"; content: string }[],
   contextFiles: FileContent[],
   companyProfile?: CompanyProfile | null,
-  commonFiles?: CachedFile[]
+  commonFiles?: CachedFile[],
+  allCompanies?: Company[]
 ) {
   const textFiles = contextFiles.filter(f => !f.base64);
   const binaryFiles = contextFiles.filter(f => f.base64);
@@ -161,6 +171,22 @@ export async function* streamChat(
             content: "ファイルの読み取りに失敗しました。",
           });
         }
+      } else if (tool.name === "search_all_companies") {
+        const companies = allCompanies || [];
+        const summaries = companies.map(c => {
+          const info: Record<string, unknown> = { 会社名: c.name };
+          if (c.profile?.structured) info.基本情報 = c.profile.structured;
+          if (c.profile?.変更履歴) info.変更履歴 = c.profile.変更履歴;
+          if (c.masterSheet?.structured) info.マスターシート = c.masterSheet.structured;
+          return info;
+        }).filter(c => Object.keys(c).length > 1); // 基本情報かマスターシートがある会社のみ
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tool.id,
+          content: summaries.length > 0
+            ? JSON.stringify(summaries, null, 2)
+            : "基本情報が登録されている会社がありません。",
+        });
       }
     }
 
