@@ -198,6 +198,8 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let metaTemplateId = "";
+      let metaTemplateName = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -212,15 +214,19 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
           if (!match) continue;
           const data = JSON.parse(match[1]);
 
-          if (data.type === "meta" && data.sourceFiles) {
-            setMessages(prev => {
-              const updated = [...prev];
-              const last = updated[updated.length - 1];
-              if (last.role === "assistant") {
-                updated[updated.length - 1] = { ...last, sourceFiles: data.sourceFiles };
-              }
-              return updated;
-            });
+          if (data.type === "meta") {
+            metaTemplateId = data.templateId || "";
+            metaTemplateName = data.templateName || "";
+            if (data.sourceFiles) {
+              setMessages(prev => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last.role === "assistant") {
+                  updated[updated.length - 1] = { ...last, sourceFiles: data.sourceFiles };
+                }
+                return updated;
+              });
+            }
           } else if (data.type === "text") {
             setMessages(prev => {
               const updated = [...prev];
@@ -267,6 +273,23 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
             });
           }
         } catch { /* ignore */ }
+
+        // マスターシートとして保存
+        if (companyId && finalMsg.content) {
+          try {
+            await fetch("/api/templates/save-master", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                companyId,
+                templateId: metaTemplateId,
+                templateName: metaTemplateName,
+                content: finalMsg.content,
+                sourceFiles: finalMsg.sourceFiles,
+              }),
+            });
+          } catch { /* ignore */ }
+        }
       }
     } catch (error) {
       setIsLoading(false);

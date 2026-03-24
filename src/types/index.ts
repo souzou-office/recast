@@ -72,11 +72,21 @@ export interface CompanyProfile {
   sourceFiles: (string | SourceFile)[];
 }
 
+export interface MasterSheet {
+  templateId: string;
+  templateName: string;
+  content: string; // マークダウン表示用
+  structured?: Record<string, unknown>; // JSON構造化データ
+  sourceFiles?: { id: string; name: string; mimeType: string }[];
+  createdAt: string;
+}
+
 export interface Company {
   id: string;
   name: string;
   subfolders: Subfolder[];
   profile?: CompanyProfile;
+  masterSheet?: MasterSheet; // テンプレート実行結果
   baseFolderId?: string; // どのルートフォルダから来たか
 }
 
