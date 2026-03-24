@@ -120,7 +120,7 @@ export async function readFileContentGoogle(
         for (const sheetName of workbook.SheetNames) {
           const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { rawNumbers: true });
           // 残存するExcelシリアル値(5桁の数値)を日付に変換
-          const fixed = csv.replace(/\b(\d{5})\b/g, (match) => {
+          const fixed = csv.replace(/\b(\d{5})\b/g, (match: string) => {
             const num = parseInt(match, 10);
             if (num >= 40000 && num <= 55000) { // 2009年〜2050年の範囲
               const date = new Date((num - 25569) * 86400 * 1000);

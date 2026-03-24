@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Company } from "@/types";
+import type { Company, StructuredProfile, OfficerInfo, ShareholderInfo, ChangeHistoryEntry } from "@/types";
 
 interface ViewerFile {
   id: string;
@@ -13,167 +13,168 @@ interface Props {
   onUpdate: () => void;
 }
 
-interface ProfileSection {
-  title: string;
-  rows: { key: string; value: string }[];
-}
+// structured JSONからセクション別にレンダリング
+function renderStructured(data: StructuredProfile) {
+  const simpleFields: { label: string; key: keyof StructuredProfile }[] = [
+    { label: "会社法人等番号", key: "会社法人等番号" },
+    { label: "商号", key: "商号" },
+    { label: "本店所在地", key: "本店所在地" },
+    { label: "設立年月日", key: "設立年月日" },
+    { label: "資本金", key: "資本金" },
+    { label: "発行可能株式総数", key: "発行可能株式総数" },
+    { label: "発行済株式総数", key: "発行済株式総数" },
+    { label: "株式の譲渡制限", key: "株式の譲渡制限" },
+    { label: "新株予約権", key: "新株予約権" },
+    { label: "公告方法", key: "公告方法" },
+    { label: "決算期", key: "決算期" },
+    { label: "役員の任期", key: "役員の任期" },
+  ];
 
-// AIの出力を項目ごとにパースしてセクション分け
-function parseProfile(summary: string): ProfileSection[] {
-  const lines = summary.split("\n");
-  const allRows: { key: string; value: string }[] = [];
+  return (
+    <div className="space-y-4">
+      {/* 登記簿・定款情報 */}
+      <Section title="登記簿・定款情報">
+        <table className="w-full">
+          <tbody>
+            {simpleFields.map(({ label, key }) => {
+              const val = data[key];
+              if (!val || val === "不明") return null;
+              return (
+                <tr key={key} className="border-b border-gray-100 last:border-0">
+                  <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 w-44 align-top bg-gray-50/50 whitespace-nowrap">
+                    {label}
+                  </th>
+                  <td className="px-4 py-3 text-sm text-gray-800 leading-relaxed">
+                    {typeof val === "string" ? val : JSON.stringify(val)}
+                  </td>
+                </tr>
+              );
+            })}
+            {/* 事業目的 */}
+            {data.事業目的 && data.事業目的.length > 0 && (
+              <tr className="border-b border-gray-100">
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 w-44 align-top bg-gray-50/50 whitespace-nowrap">
+                  事業目的
+                </th>
+                <td className="px-4 py-3 text-sm text-gray-800 leading-relaxed">
+                  <ol className="list-decimal list-inside space-y-0.5">
+                    {data.事業目的.map((item, i) => (
+                      <li key={i}>{item.replace(/^\(\d+\)\s*/, "")}</li>
+                    ))}
+                  </ol>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </Section>
 
-  let currentKey = "";
-  let currentValue = "";
-
-  for (const line of lines) {
-    const raw = line.replace(/\*+/g, "");
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-
-    // 【セクション見出し】はスキップ
-    if (/^【.+】$/.test(trimmed)) {
-      if (currentKey) allRows.push({ key: currentKey, value: currentValue.trim() });
-      currentKey = "";
-      currentValue = "";
-      continue;
-    }
-
-    // インデント行（スペース2つ以上 or タブ始まり）→ 前のキーの値の続き
-    const isIndented = raw.match(/^[ \t]{2,}/) || raw.match(/^　/);
-
-    if (isIndented && currentKey) {
-      currentValue += "\n" + trimmed;
-      continue;
-    }
-
-    // 「キー: 値」形式
-    const match = trimmed.match(/^([^:：]+?)[：:](.*)$/);
-    if (match) {
-      if (currentKey) allRows.push({ key: currentKey, value: currentValue.trim() });
-      currentKey = match[1].replace(/^[\-•]\s*/, "").trim();
-      currentValue = match[2].trim();
-    } else if (currentKey) {
-      currentValue += "\n" + trimmed;
-    }
-  }
-  if (currentKey) allRows.push({ key: currentKey, value: currentValue.trim() });
-
-  // セクション分け（キー名で判定）
-  const registryKeys = ["会社法人等番号", "商号", "本店", "設立", "事業目的", "資本金", "発行可能", "発行済", "譲渡制限", "役員", "新株予約権", "公告", "その他登記"];
-  const articlesKeys = ["決算", "任期"];
-  const tenureKeys: string[] = []; // 役員の中に含めるので独立セクションは不要
-  const shareholderKeys = ["株主"];
-  const otherKeys = ["備考"];
-
-  function matchSection(key: string, keywords: string[]): boolean {
-    return keywords.some(kw => key.includes(kw));
-  }
-
-  const registry: { key: string; value: string }[] = [];
-  const articles: { key: string; value: string }[] = [];
-  const tenure: { key: string; value: string }[] = [];
-  const shareholders: { key: string; value: string }[] = [];
-  const other: { key: string; value: string }[] = [];
-
-  for (const row of allRows) {
-    const k = row.key;
-    if (matchSection(k, tenureKeys)) {
-      tenure.push(row);
-    } else if (matchSection(k, articlesKeys)) {
-      articles.push(row);
-    } else if (matchSection(k, shareholderKeys)) {
-      shareholders.push(row);
-    } else if (matchSection(k, otherKeys)) {
-      other.push(row);
-    } else if (matchSection(k, registryKeys)) {
-      registry.push(row);
-    } else {
-      registry.push(row);
-    }
-  }
-
-  const sections: ProfileSection[] = [];
-  if (registry.length > 0) sections.push({ title: "登記簿情報", rows: registry });
-  if (articles.length > 0) sections.push({ title: "定款情報", rows: articles });
-  if (tenure.length > 0) sections.push({ title: "任期満了時期", rows: tenure });
-  if (shareholders.length > 0) sections.push({ title: "株主名簿", rows: shareholders });
-  if (other.length > 0) sections.push({ title: "備考", rows: other });
-
-  if (sections.length === 0 && allRows.length > 0) {
-    sections.push({ title: "基本情報", rows: allRows });
-  }
-
-  return sections;
-}
-
-// 値をレンダリング。複数行で「/」区切りがあればカード形式で表示
-function renderValue(value: string) {
-  const lines = value.split("\n").filter(l => l.trim());
-
-  // 複数行で「/」区切りが含まれるか判定
-  const hasSlashFormat = lines.length > 1 && lines.filter(l => l.includes("/")).length >= 2;
-
-  if (hasSlashFormat) {
-    return (
-      <div className="space-y-2">
-        {lines.map((line, i) => {
-          const trimmed = line.trim().replace(/^[\-•・]\s*/, "");
-          if (!trimmed) return null;
-
-          // 「/」で分割してフィールドに
-          const fields = trimmed.split("/").map(f => f.trim()).filter(Boolean);
-
-          if (fields.length >= 2) {
-            return (
+      {/* 役員 */}
+      {data.役員 && data.役員.length > 0 && (
+        <Section title="役員">
+          <div className="px-4 py-3 space-y-2">
+            {data.役員.map((officer: OfficerInfo, i: number) => (
               <div key={i} className="rounded-lg border border-gray-100 bg-gray-50/50 px-3 py-2">
-                {fields.map((field, fi) => {
-                  // 「ラベル: 値」形式か判定
-                  const labelMatch = field.match(/^(.+?)[：:](.+)$/);
-                  if (labelMatch) {
-                    return (
-                      <div key={fi} className="flex gap-2 py-0.5">
-                        <span className="text-xs text-gray-400 shrink-0 w-20">{labelMatch[1].trim()}</span>
-                        <span className="text-sm text-gray-800">{labelMatch[2].trim()}</span>
-                      </div>
-                    );
-                  }
-                  // 最初のフィールドは名前として太字
-                  if (fi === 0) {
-                    return <div key={fi} className="text-sm font-medium text-gray-900 pb-0.5">{field}</div>;
-                  }
-                  return <div key={fi} className="text-sm text-gray-700 py-0.5">{field}</div>;
-                })}
+                <div className="text-sm font-medium text-gray-900">{officer.役職} {officer.氏名}</div>
+                {officer.住所 && <div className="text-xs text-gray-500 mt-0.5">住所: {officer.住所}</div>}
+                <div className="flex gap-4 mt-0.5">
+                  {officer.就任日 && <span className="text-xs text-gray-500">就任: {officer.就任日}</span>}
+                  {officer.任期満了 && <span className="text-xs text-gray-500">任期満了: {officer.任期満了}</span>}
+                </div>
               </div>
-            );
-          }
+            ))}
+          </div>
+        </Section>
+      )}
 
-          // 「/」なしの行（注釈等）
-          return <p key={i} className="text-xs text-gray-500">{trimmed}</p>;
-        })}
+      {/* 株主 */}
+      {data.株主 && data.株主.length > 0 && (
+        <Section title="株主構成">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-200">
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">氏名</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">住所</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">持株数</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">持株比率</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.株主.map((sh: ShareholderInfo, i: number) => (
+                <tr key={i} className="border-b border-gray-100 last:border-0">
+                  <td className="px-4 py-2 text-sm text-gray-800">{sh.氏名}</td>
+                  <td className="px-4 py-2 text-sm text-gray-600">{sh.住所 || "-"}</td>
+                  <td className="px-4 py-2 text-sm text-gray-800">{sh.持株数 || "-"}</td>
+                  <td className="px-4 py-2 text-sm text-gray-800">{sh.持株比率 || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
+
+      {/* 備考 */}
+      {data.備考 && data.備考 !== "不明" && (
+        <Section title="備考">
+          <div className="px-4 py-3 text-sm text-gray-700">{data.備考}</div>
+        </Section>
+      )}
+    </div>
+  );
+}
+
+function renderChangeHistory(history: ChangeHistoryEntry[]) {
+  if (!history || history.length === 0) return null;
+  return (
+    <Section title="変更履歴">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-gray-200">
+            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 w-28">日付</th>
+            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">内容</th>
+            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 w-48">根拠ファイル</th>
+          </tr>
+        </thead>
+        <tbody>
+          {history.map((entry, i) => (
+            <tr key={i} className="border-b border-gray-100 last:border-0">
+              <td className="px-4 py-2 text-sm text-gray-600">{entry.日付}</td>
+              <td className="px-4 py-2 text-sm text-gray-800">{entry.内容}</td>
+              <td className="px-4 py-2 text-sm text-gray-500">{entry.根拠ファイル}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
+      <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5">
+        <h3 className="text-sm font-semibold text-gray-700">{title}</h3>
       </div>
-    );
-  }
+      {children}
+    </div>
+  );
+}
 
-  // 複数行だが「/」区切りでない場合
-  if (lines.length > 1) {
-    return (
-      <div className="space-y-1">
-        {lines.map((line, i) => (
-          <div key={i} className="text-sm">{line.trim()}</div>
-        ))}
-      </div>
-    );
-  }
-
-  // 単一行
-  return <span>{value}</span>;
+// 旧フリーテキスト形式のフォールバック表示
+function renderLegacySummary(summary: string) {
+  return (
+    <div className="rounded-xl bg-white shadow-sm border border-gray-200 p-6">
+      <pre className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
+        {summary}
+      </pre>
+    </div>
+  );
 }
 
 export default function CompanyProfile({ company, onUpdate }: Props) {
   const [generating, setGenerating] = useState(false);
   const [viewerFile, setViewerFile] = useState<ViewerFile | null>(null);
-  const [splitRatio, setSplitRatio] = useState(50); // 左パネルの幅%
+  const [splitRatio, setSplitRatio] = useState(50);
   const [dragging, setDragging] = useState(false);
 
   if (!company) {
@@ -208,7 +209,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   };
 
   const profile = company.profile;
-  const sections = profile ? parseProfile(profile.summary) : [];
+  const hasStructured = profile?.structured;
 
   const profileContent = (
     <div className="h-full overflow-y-auto bg-gray-50">
@@ -237,77 +238,49 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
           </div>
         </div>
 
-        {profile && sections.length > 0 ? (
-          <div className="space-y-4">
-            {sections.map((section, si) => (
-              <div key={si} className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
-                <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5">
-                  <h3 className="text-sm font-semibold text-gray-700">{section.title}</h3>
-                </div>
-                <table className="w-full">
-                  <tbody>
-                    {section.rows.map((row, ri) => (
-                      <tr key={ri} className="border-b border-gray-100 last:border-0">
-                        <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 w-44 align-top bg-gray-50/50 whitespace-nowrap">
-                          {row.key}
-                        </th>
-                        <td className="px-4 py-3 text-sm text-gray-800 leading-relaxed">
-                          {renderValue(row.value)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
+        {profile && hasStructured ? (
+          <>
+            {renderStructured(profile.structured!)}
+            {renderChangeHistory(profile.変更履歴 || [])}
 
             {/* 元資料リスト */}
-            <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
-              <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5">
-                <h3 className="text-sm font-semibold text-gray-700">参照元資料</h3>
-              </div>
-              <div className="px-4 py-3">
-                <ul className="space-y-1">
-                  {profile.sourceFiles.map((f, i) => {
-                    const name = typeof f === "string" ? f : f.name;
-                    const fileId = typeof f === "string" ? null : f.id;
-                    const url = fileId ? `https://drive.google.com/file/d/${fileId}/view` : null;
-                    return (
-                      <li key={i} className="text-sm flex items-center gap-2">
-                        <span className="text-gray-400 text-xs">&#128196;</span>
-                        {fileId ? (
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => setViewerFile({ id: fileId, name })}
-                              className="text-blue-600 hover:text-blue-800 hover:underline text-left"
-                            >
-                              {name}
-                            </button>
-                            <a
-                              href={url!}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-[10px] text-gray-400 hover:text-gray-600 shrink-0"
-                            >
-                              別タブ
-                            </a>
-                          </div>
-                        ) : (
-                          <span className="text-gray-600">{name}</span>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
+            <div className="mt-4">
+              <Section title="参照元資料">
+                <div className="px-4 py-3">
+                  <ul className="space-y-1">
+                    {profile.sourceFiles.map((f, i) => {
+                      const name = typeof f === "string" ? f : f.name;
+                      const fileId = typeof f === "string" ? null : f.id;
+                      const url = fileId ? `https://drive.google.com/file/d/${fileId}/view` : null;
+                      return (
+                        <li key={i} className="text-sm flex items-center gap-2">
+                          <span className="text-gray-400 text-xs">&#128196;</span>
+                          {fileId ? (
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => setViewerFile({ id: fileId, name })}
+                                className="text-blue-600 hover:text-blue-800 hover:underline text-left"
+                              >
+                                {name}
+                              </button>
+                              <a href={url!} target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] text-gray-400 hover:text-gray-600 shrink-0">
+                                別タブ
+                              </a>
+                            </div>
+                          ) : (
+                            <span className="text-gray-600">{name}</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              </Section>
             </div>
-          </div>
-        ) : profile ? (
-          <div className="rounded-xl bg-white shadow-sm border border-gray-200 p-6">
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
-              {profile.summary}
-            </pre>
-          </div>
+          </>
+        ) : profile?.summary ? (
+          renderLegacySummary(profile.summary)
         ) : (
           <div className="rounded-xl border-2 border-dashed border-gray-300 p-12 text-center bg-white">
             <p className="text-4xl mb-4">&#128203;</p>
@@ -336,7 +309,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
     );
   }
 
-  // ビューワーあり → 左右分割（左: 基本情報、右: プレビュー）
+  // ビューワーあり → 左右分割
   const previewUrl = `https://drive.google.com/file/d/${viewerFile.id}/preview`;
   const openUrl = `https://drive.google.com/file/d/${viewerFile.id}/view`;
 
@@ -360,47 +333,32 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
 
   return (
     <div id="split-container" className="flex h-full" style={{ userSelect: dragging ? "none" : undefined }}>
-      {/* 左: 基本情報 */}
       <div className="min-w-0 overflow-hidden" style={{ width: `${splitRatio}%` }}>
         {profileContent}
       </div>
-
-      {/* ドラッグハンドル */}
       <div
         onMouseDown={handleMouseDown}
         className="w-1.5 shrink-0 cursor-col-resize bg-gray-200 hover:bg-blue-400 transition-colors"
       />
-
-      {/* 右: プレビュー */}
       <div className="flex min-w-0 flex-1 flex-col bg-white overflow-hidden">
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 shrink-0">
           <h3 className="text-sm font-medium text-gray-700 truncate" title={viewerFile.name}>
             {viewerFile.name}
           </h3>
           <div className="flex items-center gap-3 shrink-0">
-            <a
-              href={openUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-blue-600 hover:text-blue-800"
-            >
+            <a href={openUrl} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-blue-600 hover:text-blue-800">
               別タブで開く
             </a>
-            <button
-              onClick={() => setViewerFile(null)}
-              className="text-gray-400 hover:text-gray-600 text-lg leading-none"
-            >
+            <button onClick={() => setViewerFile(null)}
+              className="text-gray-400 hover:text-gray-600 text-lg leading-none">
               &times;
             </button>
           </div>
         </div>
         <div className="flex-1 overflow-hidden">
-          <iframe
-            src={previewUrl}
-            className="h-full w-full border-0"
-            style={{ pointerEvents: dragging ? "none" : undefined }}
-            allow="autoplay"
-          />
+          <iframe src={previewUrl} className="h-full w-full border-0"
+            style={{ pointerEvents: dragging ? "none" : undefined }} allow="autoplay" />
         </div>
       </div>
     </div>

@@ -2,44 +2,49 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 import { readFileById } from "@/lib/files-google";
-import type { CompanyProfile } from "@/types";
+import type { CompanyProfile, StructuredProfile, ChangeHistoryEntry } from "@/types";
 
 const client = new Anthropic();
 
-const EXTRACT_PROMPT = `以下のファイルから会社の基本情報を抽出してください。
+const EXTRACT_PROMPT = `以下のファイルから会社の基本情報を抽出し、JSONで返してください。
 情報がないものは「不明」としてください。
 
-出力ルール:
-- 各項目は「項目名: 値」の形式。値が複数行になる場合、2行目以降は先頭にスペース2つを入れてください。
-- セクション見出し（【】）やマークダウン記法は使わないでください。
-- 必ず以下の項目名を使ってください。項目名を変えないでください。
+出力はJSONのみ。説明文やマークダウンは不要です。以下の構造で返してください:
 
-会社法人等番号: （数字）
-商号: （会社名）
-本店所在地: （住所）
-設立年月日: （日付）
-事業目的:
-  (1) ...
-  (2) ...
-資本金: （金額）
-発行可能株式総数: （株数）
-発行済株式総数: （株数）
-株式の譲渡制限: （1行で。承認機関も記載）
-役員:
-  代表取締役 氏名 / 住所: ○○ / 就任: YYYY年MM月DD日 / 任期満了: YYYY年MM月（定時株主総会終結時）
-  取締役 氏名 / 住所: ○○ / 就任: YYYY年MM月DD日 / 任期満了: YYYY年MM月（定時株主総会終結時）
-  （代表取締役を最初に記載。住所は登記簿に記載があれば記載、なければ省略）
-  （就任日が不明でも「不明」とせず、設立時取締役であれば設立年月日を就任日とすること）
-  （※任期満了は必ず具体的な年月で算出すること。定款の文言をそのまま書かないこと。算出方法: 就任日+任期年数の日が属する事業年度の末日の翌日以降に開催される定時株主総会の時期。例: 就任2023年2月、任期10年、決算期9月末→2032年9月期が任期内最終事業年度→2032年12月頃の定時株主総会終結時）
-新株予約権: （1行で簡潔に。なければ「なし」）
-公告方法: （1行で）
-決算期: （事業年度の開始月〜終了月）
-役員の任期: （定款の規定をそのまま記載）
-株主構成:
-  氏名 / 住所 / 持株数 / 持株比率
-  氏名 / 住所 / 持株数 / 持株比率
-  （株主名簿や登記簿に住所の記載があれば記載）
-備考: （あれば。なければ省略）`;
+{
+  "structured": {
+    "会社法人等番号": "数字",
+    "商号": "会社名",
+    "本店所在地": "住所",
+    "設立年月日": "YYYY年MM月DD日",
+    "事業目的": ["(1) ...", "(2) ..."],
+    "資本金": "金額",
+    "発行可能株式総数": "株数",
+    "発行済株式総数": "株数",
+    "株式の譲渡制限": "承認機関も記載",
+    "役員": [
+      { "役職": "代表取締役", "氏名": "...", "住所": "...", "就任日": "YYYY年MM月DD日", "任期満了": "YYYY年MM月（定時株主総会終結時）" }
+    ],
+    "新株予約権": "なし",
+    "公告方法": "...",
+    "決算期": "MM月〜MM月",
+    "役員の任期": "定款の規定をそのまま記載",
+    "株主": [
+      { "氏名": "...", "住所": "...", "持株数": "...", "持株比率": "..." }
+    ],
+    "備考": "あれば"
+  },
+  "変更履歴": [
+    { "日付": "YYYY-MM-DD", "内容": "変更内容の概要", "根拠ファイル": "ファイル名" }
+  ]
+}
+
+ルール:
+- 役員は代表取締役を最初に記載。住所は登記簿に記載があれば記載、なければ省略
+- 就任日が不明でも設立時取締役であれば設立年月日を就任日とすること
+- 任期満了は必ず具体的な年月で算出すること（就任日+任期年数→該当事業年度末日後の定時株主総会）
+- 変更履歴は複数のファイル（旧登記簿・旧定款等）を比較して時系列で記録
+- 変更履歴がない場合は空配列[]で返す`;
 
 // 基本情報を生成
 export async function POST(request: NextRequest) {
@@ -129,17 +134,31 @@ export async function POST(request: NextRequest) {
       }],
     });
 
-    const summary = response.content
+    const rawText = response.content
       .filter(b => b.type === "text")
       .map(b => b.type === "text" ? b.text : "")
       .join("");
+
+    // JSONを抽出してパース
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return NextResponse.json({ error: "AIからJSON形式の応答を取得できませんでした" }, { status: 500 });
+    }
+
+    let parsed: { structured?: StructuredProfile; 変更履歴?: ChangeHistoryEntry[] };
+    try {
+      parsed = JSON.parse(jsonMatch[0]);
+    } catch {
+      return NextResponse.json({ error: "AIの応答をJSONとしてパースできませんでした" }, { status: 500 });
+    }
 
     const allFiles = [
       ...textFiles.map(f => ({ name: f.name, id: f.id })),
       ...pdfFiles.map(f => ({ name: f.name, id: f.id })),
     ];
     const profile: CompanyProfile = {
-      summary,
+      structured: parsed.structured,
+      変更履歴: parsed.変更履歴 || [],
       updatedAt: new Date().toISOString(),
       sourceFiles: allFiles,
     };
@@ -188,29 +207,44 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
+    const currentJson = company.profile.structured
+      ? JSON.stringify({ structured: company.profile.structured, 変更履歴: company.profile.変更履歴 || [] }, null, 2)
+      : company.profile.summary || "{}";
+
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 2048,
+      max_tokens: 4096,
       messages: [{
         role: "user",
-        content: `以下は会社の現在の基本情報です：
+        content: `以下は会社の現在の基本情報（JSON）です：
 
-${company.profile.summary}
+${currentJson}
 
 新しいファイルが追加されました。内容を確認し、基本情報に変更があれば更新してください。
-変更がなければそのまま返してください。同じフォーマットで返してください。
+変更がなければそのまま返してください。同じJSON形式で返してください。
+変更があれば変更履歴にも追記してください。
 
 --- 新しいファイル ---
 ${newFilesText}`,
       }],
     });
 
-    const summary = response.content
+    const rawText = response.content
       .filter(b => b.type === "text")
       .map(b => b.type === "text" ? b.text : "")
       .join("");
 
-    company.profile.summary = summary;
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.structured) {
+          company.profile.structured = parsed.structured;
+          company.profile.変更履歴 = parsed.変更履歴 || company.profile.変更履歴 || [];
+        }
+      } catch { /* パース失敗時は更新しない */ }
+    }
+
     company.profile.updatedAt = new Date().toISOString();
     company.profile.sourceFiles = [
       ...company.profile.sourceFiles,

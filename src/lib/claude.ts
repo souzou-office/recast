@@ -113,7 +113,9 @@ export async function* streamChat(
       if (tool.name === "get_company_profile") {
         let result = "";
         if (companyProfile) {
-          result = companyProfile.summary;
+          result = companyProfile.structured
+            ? JSON.stringify({ structured: companyProfile.structured, 変更履歴: companyProfile.変更履歴 || [] }, null, 2)
+            : companyProfile.summary || "";
           if (commonFiles && commonFiles.length > 0) {
             result += "\n\n--- 共通フォルダのファイル一覧 ---\n";
             result += "詳細が必要な場合は read_common_file ツールでファイルIDを指定してください。\n";

@@ -24,10 +24,52 @@ export interface SourceFile {
   id: string;
 }
 
+export interface OfficerInfo {
+  役職: string;
+  氏名: string;
+  住所?: string;
+  就任日?: string;
+  任期満了?: string;
+}
+
+export interface ShareholderInfo {
+  氏名: string;
+  住所?: string;
+  持株数?: string;
+  持株比率?: string;
+}
+
+export interface StructuredProfile {
+  会社法人等番号: string;
+  商号: string;
+  本店所在地: string;
+  設立年月日: string;
+  事業目的: string[];
+  資本金: string;
+  発行可能株式総数: string;
+  発行済株式総数: string;
+  株式の譲渡制限: string;
+  役員: OfficerInfo[];
+  新株予約権: string;
+  公告方法: string;
+  決算期: string;
+  役員の任期: string;
+  株主: ShareholderInfo[];
+  備考?: string;
+}
+
+export interface ChangeHistoryEntry {
+  日付: string;
+  内容: string;
+  根拠ファイル: string;
+}
+
 export interface CompanyProfile {
-  summary: string;
+  summary?: string; // 後方互換: 旧フリーテキスト
+  structured?: StructuredProfile;
+  変更履歴?: ChangeHistoryEntry[];
   updatedAt: string;
-  sourceFiles: (string | SourceFile)[]; // 後方互換: stringも許容
+  sourceFiles: (string | SourceFile)[];
 }
 
 export interface Company {
