@@ -82,8 +82,8 @@ export default function MessageBubble({ message, streaming, sourceLinks, onPrevi
                         prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
                         prose-p:leading-relaxed prose-p:my-2
                         prose-table:border-collapse prose-table:w-full prose-table:my-3
-                        prose-th:border prose-th:border-gray-300 prose-th:bg-gray-50 prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:text-xs prose-th:font-medium prose-th:text-gray-600
-                        prose-td:border prose-td:border-gray-300 prose-td:px-3 prose-td:py-2 prose-td:text-sm
+                        prose-th:border prose-th:border-gray-300 prose-th:bg-gray-50 prose-th:px-2 prose-th:py-1 prose-th:text-left prose-th:text-xs prose-th:font-medium prose-th:text-gray-600
+                        prose-td:border prose-td:border-gray-300 prose-td:px-2 prose-td:py-1 prose-td:text-sm
                         prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
                         prose-code:bg-gray-100 prose-code:px-1 prose-code:rounded prose-code:text-sm
                         prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-pre:rounded-lg

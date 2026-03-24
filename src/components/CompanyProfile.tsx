@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { Company } from "@/types";
+import ProfileTemplateModal from "./ProfileTemplateModal";
 
 interface ViewerFile {
   id: string;
@@ -173,6 +174,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [showJson, setShowJson] = useState(false);
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
 
   if (!company) {
     return (
@@ -228,6 +230,12 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
               )}
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowTemplateModal(true)}
+                className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                抽出項目
+              </button>
               {profile?.structured && (
                 <button
                   onClick={() => {
@@ -393,9 +401,12 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   // ビューワーなし → 基本情報を中央に
   if (!viewerFile) {
     return (
-      <div className="h-full flex justify-center">
-        <div className="w-full max-w-4xl">{profileContent}</div>
-      </div>
+      <>
+        <div className="h-full flex justify-center">
+          <div className="w-full max-w-4xl">{profileContent}</div>
+        </div>
+        {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
+      </>
     );
   }
 
@@ -451,6 +462,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             style={{ pointerEvents: dragging ? "none" : undefined }} allow="autoplay" />
         </div>
       </div>
+      {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
     </div>
   );
 }
