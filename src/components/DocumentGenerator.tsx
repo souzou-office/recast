@@ -3,17 +3,31 @@
 import { useState, useEffect, useCallback } from "react";
 import type { Company, DocumentTemplate } from "@/types";
 
+interface SuggestedDoc {
+  name: string;
+  reason: string;
+  required: boolean;
+}
+
 interface Props {
   company: Company | null;
 }
 
 export default function DocumentGenerator({ company }: Props) {
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<Set<string>>(new Set());
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState("");
+
+  // 雛形作成
   const [creatingTemplate, setCreatingTemplate] = useState(false);
   const [templateFiles, setTemplateFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
+
+  // 書類提案
+  const [suggestedDocs, setSuggestedDocs] = useState<SuggestedDoc[]>([]);
+  const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
+  const [suggesting, setSuggesting] = useState(false);
+  const [showSuggestion, setShowSuggestion] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
     const res = await fetch("/api/document-templates");
@@ -36,6 +50,29 @@ export default function DocumentGenerator({ company }: Props) {
   const hasMasterSheet = !!company.masterSheet?.structured;
   const hasProfile = !!company.profile?.structured;
 
+  // 必要書類の提案を取得
+  const handleSuggest = async () => {
+    setSuggesting(true);
+    setSuggestedDocs([]);
+    try {
+      const res = await fetch("/api/document-templates/suggest-documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id }),
+      });
+      if (res.ok) {
+        const { documents } = await res.json();
+        setSuggestedDocs(documents);
+        // 必須のものは自動選択
+        const required = new Set<number>();
+        documents.forEach((d: SuggestedDoc, i: number) => { if (d.required) required.add(i); });
+        setSelectedDocs(required);
+        setShowSuggestion(true);
+      }
+    } catch { /* ignore */ }
+    finally { setSuggesting(false); }
+  };
+
   // 雛形を過去案件から生成
   const handleGenerateTemplate = async () => {
     if (templateFiles.length === 0) return;
@@ -48,7 +85,6 @@ export default function DocumentGenerator({ company }: Props) {
       });
       if (res.ok) {
         const { templates: generated } = await res.json();
-        // 生成された雛形を保存
         for (const t of generated) {
           await fetch("/api/document-templates", {
             method: "POST",
@@ -63,18 +99,23 @@ export default function DocumentGenerator({ company }: Props) {
     finally { setCreatingTemplate(false); }
   };
 
-  // 書類生成
+  // 書類生成（雛形あり or なし）
   const handleProduce = async () => {
-    if (selectedIds.size === 0) return;
     setGenerating(true);
     setResult("");
+
+    // 選択された書類名リスト
+    const docNames = Array.from(selectedDocs).map(i => suggestedDocs[i]?.name).filter(Boolean);
+    const templateIds = Array.from(selectedTemplateIds);
+
     try {
       const res = await fetch("/api/document-templates/produce", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyId: company.id,
-          templateIds: Array.from(selectedIds),
+          templateIds,
+          documentNames: docNames,
         }),
       });
 
@@ -114,7 +155,7 @@ export default function DocumentGenerator({ company }: Props) {
       body: JSON.stringify({ id }),
     });
     await fetchTemplates();
-    setSelectedIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+    setSelectedTemplateIds(prev => { const next = new Set(prev); next.delete(id); return next; });
   };
 
   // 案件フォルダのファイル一覧
@@ -127,7 +168,7 @@ export default function DocumentGenerator({ company }: Props) {
     <div className="flex h-full">
       {/* 左: 設定 */}
       <div className="w-1/2 border-r border-gray-200 overflow-y-auto">
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-5">
           {/* ステータス */}
           <div>
             <h2 className="text-lg font-bold text-gray-900 mb-2">{company.name}</h2>
@@ -141,22 +182,67 @@ export default function DocumentGenerator({ company }: Props) {
             </div>
           </div>
 
-          {/* 雛形一覧 */}
+          {/* 必要書類の提案 */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-semibold text-gray-700">書類雛形</h3>
+              <h3 className="text-sm font-semibold text-gray-700">作成する書類</h3>
+              <button
+                onClick={handleSuggest}
+                disabled={suggesting || (!hasProfile && !hasMasterSheet)}
+                className="text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+              >
+                {suggesting ? "提案中..." : "AIで提案"}
+              </button>
             </div>
+            {showSuggestion && suggestedDocs.length > 0 ? (
+              <div className="space-y-1">
+                {suggestedDocs.map((doc, i) => (
+                  <label key={i} className="flex items-start gap-2 rounded-lg bg-gray-50 px-3 py-2 cursor-pointer hover:bg-gray-100">
+                    <input
+                      type="checkbox"
+                      checked={selectedDocs.has(i)}
+                      onChange={() => {
+                        setSelectedDocs(prev => {
+                          const next = new Set(prev);
+                          if (next.has(i)) next.delete(i);
+                          else next.add(i);
+                          return next;
+                        });
+                      }}
+                      className="mt-0.5"
+                    />
+                    <div className="flex-1">
+                      <span className="text-sm text-gray-700">{doc.name}</span>
+                      {doc.required && <span className="ml-1 text-[10px] text-red-500">必須</span>}
+                      <p className="text-[10px] text-gray-400 mt-0.5">{doc.reason}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-400 py-2">
+                {!hasProfile && !hasMasterSheet
+                  ? "基本情報またはマスターシートを先に生成してください"
+                  : "「AIで提案」をクリックすると必要書類が表示されます"}
+              </p>
+            )}
+          </div>
+
+          {/* 雛形一覧 */}
+          <div>
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">書類雛形（任意）</h3>
+            <p className="text-[10px] text-gray-400 mb-2">雛形がある場合はそれに沿って書類を生成します</p>
             {templates.length === 0 ? (
-              <p className="text-xs text-gray-400 py-2">雛形がありません。過去案件から作成してください。</p>
+              <p className="text-xs text-gray-400 py-1">雛形なし</p>
             ) : (
               <div className="space-y-1">
                 {templates.map(t => (
-                  <div key={t.id} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2">
+                  <div key={t.id} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-1.5">
                     <input
                       type="checkbox"
-                      checked={selectedIds.has(t.id)}
+                      checked={selectedTemplateIds.has(t.id)}
                       onChange={() => {
-                        setSelectedIds(prev => {
+                        setSelectedTemplateIds(prev => {
                           const next = new Set(prev);
                           if (next.has(t.id)) next.delete(t.id);
                           else next.add(t.id);
@@ -164,16 +250,9 @@ export default function DocumentGenerator({ company }: Props) {
                         });
                       }}
                     />
-                    <div className="flex-1">
-                      <span className="text-sm text-gray-700">{t.name}</span>
-                      <span className="ml-2 text-[10px] text-gray-400">{t.category}</span>
-                    </div>
-                    <button
-                      onClick={() => handleDeleteTemplate(t.id)}
-                      className="text-[10px] text-red-400 hover:text-red-600"
-                    >
-                      削除
-                    </button>
+                    <span className="flex-1 text-sm text-gray-700">{t.name}</span>
+                    <span className="text-[10px] text-gray-400">{t.category}</span>
+                    <button onClick={() => handleDeleteTemplate(t.id)} className="text-[10px] text-red-400 hover:text-red-600">削除</button>
                   </div>
                 ))}
               </div>
@@ -183,24 +262,22 @@ export default function DocumentGenerator({ company }: Props) {
           {/* 過去案件から雛形作成 */}
           <div>
             <h3 className="text-sm font-semibold text-gray-700 mb-2">過去案件から雛形作成</h3>
-            <p className="text-xs text-gray-400 mb-2">案件フォルダのファイルを選択して雛形を自動生成します</p>
             {jobFiles.length === 0 ? (
               <p className="text-xs text-gray-400">案件フォルダのファイルがありません</p>
             ) : (
               <>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
+                <div className="space-y-0.5 max-h-32 overflow-y-auto">
                   {jobFiles.map(f => (
                     <label key={f.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={templateFiles.some(tf => tf.id === f.id)}
                         onChange={() => {
-                          setTemplateFiles(prev => {
-                            if (prev.some(tf => tf.id === f.id)) {
-                              return prev.filter(tf => tf.id !== f.id);
-                            }
-                            return [...prev, { id: f.id, name: f.name, mimeType: f.mimeType }];
-                          });
+                          setTemplateFiles(prev =>
+                            prev.some(tf => tf.id === f.id)
+                              ? prev.filter(tf => tf.id !== f.id)
+                              : [...prev, { id: f.id, name: f.name, mimeType: f.mimeType }]
+                          );
                         }}
                       />
                       <span className="text-xs text-gray-600">{f.name}</span>
@@ -210,7 +287,7 @@ export default function DocumentGenerator({ company }: Props) {
                 <button
                   onClick={handleGenerateTemplate}
                   disabled={creatingTemplate || templateFiles.length === 0}
-                  className="mt-2 w-full rounded-lg bg-gray-800 py-2 text-xs text-white hover:bg-gray-700 disabled:bg-gray-300 transition-colors"
+                  className="mt-2 w-full rounded-lg bg-gray-800 py-1.5 text-xs text-white hover:bg-gray-700 disabled:bg-gray-300 transition-colors"
                 >
                   {creatingTemplate ? "雛形生成中..." : `${templateFiles.length}件から雛形を作成`}
                 </button>
@@ -221,10 +298,10 @@ export default function DocumentGenerator({ company }: Props) {
           {/* 書類生成ボタン */}
           <button
             onClick={handleProduce}
-            disabled={generating || selectedIds.size === 0 || (!hasProfile && !hasMasterSheet)}
+            disabled={generating || (selectedDocs.size === 0 && selectedTemplateIds.size === 0)}
             className="w-full rounded-lg bg-blue-600 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
           >
-            {generating ? "書類生成中..." : `選択した雛形で書類を生成（${selectedIds.size}件）`}
+            {generating ? "書類生成中..." : "書類を生成"}
           </button>
         </div>
       </div>
@@ -239,7 +316,7 @@ export default function DocumentGenerator({ company }: Props) {
           <div className="flex h-full items-center justify-center">
             <div className="text-center text-gray-400">
               <p className="text-3xl mb-2">📝</p>
-              <p className="text-sm">雛形を選択して書類を生成</p>
+              <p className="text-sm">「AIで提案」→ 書類を選択 → 生成</p>
             </div>
           </div>
         )}

@@ -10,9 +10,10 @@ const TEMPLATES_PATH = path.join(process.cwd(), "data", "document-templates.json
 
 // マスターシート + 書類雛形 → 書類一式を生成（ストリーミング）
 export async function POST(request: NextRequest) {
-  const { companyId, templateIds } = await request.json() as {
+  const { companyId, templateIds, documentNames } = await request.json() as {
     companyId: string;
     templateIds: string[];
+    documentNames?: string[];
   };
 
   const config = await getWorkspaceConfig();
@@ -31,8 +32,8 @@ export async function POST(request: NextRequest) {
   } catch { /* ignore */ }
 
   const selectedTemplates = allTemplates.filter(t => templateIds.includes(t.id));
-  if (selectedTemplates.length === 0) {
-    return new Response(JSON.stringify({ error: "書類雛形が選択されていません" }), {
+  if (selectedTemplates.length === 0 && (!documentNames || documentNames.length === 0)) {
+    return new Response(JSON.stringify({ error: "書類または雛形を選択してください" }), {
       status: 400, headers: { "Content-Type": "application/json" },
     });
   }
@@ -50,13 +51,16 @@ export async function POST(request: NextRequest) {
     `=== ${t.name}（${t.category}）===\n${t.content}`
   ).join("\n\n");
 
-  const prompt = `以下の会社データと書類雛形を使って、書類一式を生成してください。
+  const docNamesList = documentNames && documentNames.length > 0
+    ? `\n## 作成する書類\n${documentNames.map((n, i) => `${i + 1}. ${n}`).join("\n")}\n`
+    : "";
+
+  const prompt = `以下の会社データを使って、書類一式を生成してください。
 
 ## 会社データ
 ${dataContext}
-
-## 書類雛形
-${templatesText}
+${docNamesList}
+${templatesText ? `## 書類雛形（これに沿って生成）\n${templatesText}` : ""}
 
 ルール:
 - 雛形の{{プレースホルダー}}を会社データで埋めてください
