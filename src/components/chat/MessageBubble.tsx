@@ -12,9 +12,11 @@ interface Props {
   sourceLinks?: Record<string, { id: string; name: string }[]>;
   onPreviewFile?: (fileId: string) => void;
   activePreviewId?: string | null;
+  onNavigateToCompany?: (companyId: string) => void;
+  companies?: { id: string; name: string }[];
 }
 
-export default function MessageBubble({ message, streaming, sourceLinks, onPreviewFile, activePreviewId }: Props) {
+export default function MessageBubble({ message, streaming, sourceLinks, onPreviewFile, activePreviewId, onNavigateToCompany, companies }: Props) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -31,6 +33,39 @@ export default function MessageBubble({ message, streaming, sourceLinks, onPrevi
   if (message.checkResult) {
     return <CheckResultCard data={message.checkResult} />;
   }
+
+  // テキスト内の会社名をクリック可能なリンクに変換
+  const renderWithCompanyLinks = (text: string): React.ReactNode => {
+    if (!companies || companies.length === 0 || !onNavigateToCompany) return text;
+
+    // 会社名を長い順にソート（部分一致の誤検出を防ぐ）
+    const sorted = [...companies].sort((a, b) => b.name.length - a.name.length);
+    const parts: React.ReactNode[] = [text];
+
+    for (const company of sorted) {
+      const newParts: React.ReactNode[] = [];
+      for (const part of parts) {
+        if (typeof part !== "string") { newParts.push(part); continue; }
+        const idx = part.indexOf(company.name);
+        if (idx === -1) { newParts.push(part); continue; }
+        if (idx > 0) newParts.push(part.slice(0, idx));
+        newParts.push(
+          <button
+            key={`${company.id}-${idx}`}
+            onClick={() => onNavigateToCompany(company.id)}
+            className="text-blue-600 hover:text-blue-800 hover:underline"
+          >
+            {company.name}
+          </button>
+        );
+        if (idx + company.name.length < part.length) newParts.push(part.slice(idx + company.name.length));
+      }
+      parts.length = 0;
+      parts.push(...newParts);
+    }
+
+    return parts.length === 1 && typeof parts[0] === "string" ? parts[0] : <>{parts}</>;
+  };
 
   // ## 見出しの後にファイルリンクを挿入するカスタムコンポーネント
   const components: Components = sourceLinks ? {
@@ -65,6 +100,17 @@ export default function MessageBubble({ message, streaming, sourceLinks, onPrevi
       );
     },
   } : {};
+
+  // 横断検索モード: テキスト内の会社名をリンク化
+  if (companies && companies.length > 0 && onNavigateToCompany) {
+    components.td = ({ children, ...props }) => {
+      const text = typeof children === "string" ? children : "";
+      if (text) {
+        return <td {...props}>{renderWithCompanyLinks(text)}</td>;
+      }
+      return <td {...props}>{children}</td>;
+    };
+  }
 
   return (
     <div className="mb-6">

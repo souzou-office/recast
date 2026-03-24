@@ -9,10 +9,12 @@ import TemplateSelectModal from "./TemplateSelectModal";
 
 interface Props {
   companyId?: string | null;
+  companies?: { id: string; name: string }[];
   onLoadingChange?: (loading: boolean) => void;
+  onNavigateToCompany?: (companyId: string) => void;
 }
 
-export default function ChatWindow({ companyId, onLoadingChange }: Props) {
+export default function ChatWindow({ companyId, companies, onLoadingChange, onNavigateToCompany }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -426,6 +428,8 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
                 sourceLinks={msg.sourceFiles ? sourceLinks : undefined}
                 onPreviewFile={(fileId) => setPreviewFileId(previewFileId === fileId ? null : fileId)}
                 activePreviewId={previewFileId}
+                onNavigateToCompany={onNavigateToCompany}
+                companies={companies}
               />
             ))
           )}

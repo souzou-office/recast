@@ -61,6 +61,17 @@ export default function Home() {
     if (res.ok) setConfig(await res.json());
   };
 
+  // 横断検索から会社の基本情報に飛ぶ
+  const handleNavigateToCompany = async (targetCompanyId: string) => {
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "selectCompany", companyId: targetCompanyId }),
+    });
+    await fetchConfig();
+    setTab("profile");
+  };
+
   return (
     <main className="flex h-screen">
       <FolderSidebar onOpenRegistration={() => setShowRegistration(true)} />
@@ -118,7 +129,7 @@ export default function Home() {
                   onUpdate={fetchConfig}
                 />
               )}
-              {tab === "search" && <ChatWindow key="search" companyId="__search__" onLoadingChange={setChatLoading} />}
+              {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
             </div>
           </>
         )}
