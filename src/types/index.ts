@@ -72,6 +72,14 @@ export interface CompanyProfile {
   sourceFiles: (string | SourceFile)[];
 }
 
+export interface DocumentTemplate {
+  id: string;
+  name: string;          // 例: "株主総会議事録（役員選任）"
+  category: string;      // 例: "議事録", "就任承諾書", "届出書"
+  content: string;       // 雛形テキスト（個人情報除去済み）
+  createdAt: string;
+}
+
 export interface MasterSheet {
   templateId: string;
   templateName: string;

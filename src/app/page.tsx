@@ -6,8 +6,9 @@ import FolderSidebar from "@/components/folders/FolderSidebar";
 import ChatWindow from "@/components/chat/ChatWindow";
 import CompanyProfile from "@/components/CompanyProfile";
 import CompanyRegistration from "@/components/folders/CompanyRegistration";
+import DocumentGenerator from "@/components/DocumentGenerator";
 
-type MainTab = "chat" | "profile" | "search";
+type MainTab = "chat" | "profile" | "search" | "documents";
 
 export default function Home() {
   const [tab, setTab] = useState<MainTab>("chat");
@@ -117,6 +118,16 @@ export default function Home() {
               >
                 横断検索
               </button>
+              <button
+                onClick={() => !chatLoading && setTab("documents")}
+                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                  tab === "documents"
+                    ? "border-b-2 border-blue-500 text-blue-600"
+                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                書類生成
+              </button>
             </div>
 
             {/* タブ内容 */}
@@ -130,6 +141,7 @@ export default function Home() {
                 />
               )}
               {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
+              {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
             </div>
           </>
         )}
