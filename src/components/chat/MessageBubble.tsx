@@ -4,13 +4,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "@/types";
 import CheckResultCard from "./CheckResultCard";
+import type { Components } from "react-markdown";
 
 interface Props {
   message: ChatMessage;
   streaming?: boolean;
+  sourceLinks?: Record<string, { id: string; name: string }[]>;
+  onPreviewFile?: (fileId: string) => void;
+  activePreviewId?: string | null;
 }
 
-export default function MessageBubble({ message, streaming }: Props) {
+export default function MessageBubble({ message, streaming, sourceLinks, onPreviewFile, activePreviewId }: Props) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -27,6 +31,40 @@ export default function MessageBubble({ message, streaming }: Props) {
   if (message.checkResult) {
     return <CheckResultCard data={message.checkResult} />;
   }
+
+  // ## 見出しの後にファイルリンクを挿入するカスタムコンポーネント
+  const components: Components = sourceLinks ? {
+    h2: ({ children, ...props }) => {
+      const text = typeof children === "string" ? children :
+        Array.isArray(children) ? children.map(c => typeof c === "string" ? c : "").join("") :
+        "";
+      // テキストからリンクを探す（番号付き見出しも対応）
+      const cleanText = text.replace(/^\d+\.\s*/, "").trim();
+      const files = sourceLinks[text] || sourceLinks[cleanText] ||
+        Object.entries(sourceLinks).find(([k]) =>
+          k.includes(cleanText) || cleanText.includes(k)
+        )?.[1];
+
+      return (
+        <div className="flex flex-wrap items-center gap-2 mt-6 mb-2">
+          <h2 {...props} className="text-base font-semibold text-gray-900 m-0">{children}</h2>
+          {files && files.map((f, i) => (
+            <button
+              key={`${f.id}-${i}`}
+              onClick={() => onPreviewFile?.(f.id)}
+              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors ${
+                activePreviewId === f.id
+                  ? "bg-blue-100 text-blue-700"
+                  : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+              }`}
+            >
+              📄 {f.name}
+            </button>
+          ))}
+        </div>
+      );
+    },
+  } : {};
 
   return (
     <div className="mb-6">
@@ -52,7 +90,7 @@ export default function MessageBubble({ message, streaming }: Props) {
                         prose-strong:text-gray-900 prose-strong:font-semibold
                         prose-a:text-blue-600
                         prose-em:not-italic prose-em:text-amber-700 prose-em:text-sm">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
             {message.content}
           </ReactMarkdown>
         </div>

@@ -16,6 +16,7 @@ export default function ChatWindow({ onLoadingChange }: Props) {
   const [isLoading, setIsLoading] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
+  const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
 
   useEffect(() => { onLoadingChange?.(isLoading); }, [isLoading, onLoadingChange]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -202,6 +203,27 @@ export default function ChatWindow({ onLoadingChange }: Props) {
       }
 
       setIsLoading(false);
+
+      // Haikuで各セクションとファイルの紐付け
+      const lastMsg = messages[messages.length - 1] || { content: "", sourceFiles: [] };
+      // 最新のメッセージを取得するため state から直接取る
+      const currentMessages = await new Promise<ChatMessage[]>(resolve => {
+        setMessages(prev => { resolve(prev); return prev; });
+      });
+      const finalMsg = currentMessages[currentMessages.length - 1];
+      if (finalMsg?.sourceFiles && finalMsg.sourceFiles.length > 0 && finalMsg.content) {
+        try {
+          const linkRes = await fetch("/api/templates/link-sources", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: finalMsg.content, sourceFiles: finalMsg.sourceFiles }),
+          });
+          if (linkRes.ok) {
+            const { links } = await linkRes.json();
+            setSourceLinks(links);
+          }
+        } catch { /* ignore */ }
+      }
     } catch (error) {
       setIsLoading(false);
       setMessages(prev => {
@@ -218,9 +240,8 @@ export default function ChatWindow({ onLoadingChange }: Props) {
     }
   }, []);
 
-  // sourceFilesを持つメッセージから全ファイルを集める
+  // プレビュー用のファイル情報
   const allSourceFiles = messages.flatMap(m => m.sourceFiles || []);
-  const hasSourceFiles = allSourceFiles.length > 0;
 
   return (
     <div className="flex h-full">
@@ -245,6 +266,9 @@ export default function ChatWindow({ onLoadingChange }: Props) {
                 key={msg.id}
                 message={msg}
                 streaming={isLoading && i === messages.length - 1 && msg.role === "assistant"}
+                sourceLinks={msg.sourceFiles ? sourceLinks : undefined}
+                onPreviewFile={(fileId) => setPreviewFileId(previewFileId === fileId ? null : fileId)}
+                activePreviewId={previewFileId}
               />
             ))
           )}
@@ -261,30 +285,6 @@ export default function ChatWindow({ onLoadingChange }: Props) {
               </div>
             )}
 
-          {/* 参照元資料リンク */}
-          {hasSourceFiles && !isLoading && (
-            <div className="mt-4 border-t border-gray-100 pt-3">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400">参照元資料</p>
-              <div className="flex flex-wrap gap-1.5">
-                {allSourceFiles.map((f, i) => (
-                  <button
-                    key={`${f.id}-${i}`}
-                    onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
-                    className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-                      previewFileId === f.id
-                        ? "bg-blue-100 text-blue-700"
-                        : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                    }`}
-                  >
-                    {f.mimeType.includes("pdf") ? "📄 " :
-                     f.mimeType.includes("word") || f.mimeType.includes("document") ? "📝 " :
-                     f.mimeType.includes("sheet") || f.mimeType.includes("excel") ? "📊 " : "📎 "}
-                    {f.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* 入力エリア */}
