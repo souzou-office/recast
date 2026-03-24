@@ -86,4 +86,5 @@ export interface ChatMessage {
     createdAt: string;
   };
   sourceFiles?: { id: string; name: string; mimeType: string }[];
+  sourceLinks?: Record<string, { id: string; name: string }[]>;
 }
