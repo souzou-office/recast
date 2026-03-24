@@ -320,7 +320,7 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
         {/* ツールバー */}
         {messages.length > 0 && !isLoading && (
           <div className="flex justify-end gap-3 px-4 pt-2">
-            {companyId && (
+            {companyId && companyId !== "__search__" && (
               <button
                 onClick={async () => {
                   if (showMasterJson) {
@@ -409,9 +409,11 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
               <div className="text-center text-gray-400">
                 <img src="/logo.png" alt="recast" className="mx-auto mb-2 h-10" />
                 <p className="text-sm">
-                  サイドバーからフォルダを追加して、
-                  <br />
-                  資料について質問してみましょう
+                  {companyId === "__search__" ? (
+                    <>全社の基本情報を横断検索できます<br />例：「決算期が9月の会社は？」</>
+                  ) : (
+                    <>サイドバーからフォルダを追加して、<br />資料について質問してみましょう</>
+                  )}
                 </p>
               </div>
             </div>
@@ -446,7 +448,7 @@ export default function ChatWindow({ companyId, onLoadingChange }: Props) {
         {/* 入力エリア */}
         <ChatInput
           onSend={handleSend}
-          onOpenTemplateModal={() => setShowTemplateModal(true)}
+          onOpenTemplateModal={companyId !== "__search__" ? () => setShowTemplateModal(true) : undefined}
           disabled={isLoading}
         />
       </div>

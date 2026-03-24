@@ -7,7 +7,7 @@ import ChatWindow from "@/components/chat/ChatWindow";
 import CompanyProfile from "@/components/CompanyProfile";
 import CompanyRegistration from "@/components/folders/CompanyRegistration";
 
-type MainTab = "chat" | "profile";
+type MainTab = "chat" | "profile" | "search";
 
 export default function Home() {
   const [tab, setTab] = useState<MainTab>("chat");
@@ -96,6 +96,16 @@ export default function Home() {
               >
                 基本情報
               </button>
+              <button
+                onClick={() => !chatLoading && setTab("search")}
+                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                  tab === "search"
+                    ? "border-b-2 border-blue-500 text-blue-600"
+                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                横断検索
+              </button>
             </div>
 
             {/* タブ内容 */}
@@ -108,6 +118,7 @@ export default function Home() {
                   onUpdate={fetchConfig}
                 />
               )}
+              {tab === "search" && <ChatWindow key="search" companyId="__search__" onLoadingChange={setChatLoading} />}
             </div>
           </>
         )}
