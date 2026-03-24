@@ -8,10 +8,11 @@ import ChatInput from "./ChatInput";
 import TemplateSelectModal from "./TemplateSelectModal";
 
 interface Props {
+  companyId?: string | null;
   onLoadingChange?: (loading: boolean) => void;
 }
 
-export default function ChatWindow({ onLoadingChange }: Props) {
+export default function ChatWindow({ companyId, onLoadingChange }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -20,6 +21,38 @@ export default function ChatWindow({ onLoadingChange }: Props) {
 
   useEffect(() => { onLoadingChange?.(isLoading); }, [isLoading, onLoadingChange]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // 会社が変わったら履歴を読み込み
+  useEffect(() => {
+    if (!companyId) { setMessages([]); return; }
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/chat-history?companyId=${companyId}`);
+        if (res.ok) {
+          const { messages: saved } = await res.json();
+          setMessages(saved);
+        }
+      } catch { /* ignore */ }
+    };
+    load();
+    setPreviewFileId(null);
+    setSourceLinks({});
+  }, [companyId]);
+
+  // メッセージが変わったら保存（ローディング中は除く）
+  useEffect(() => {
+    if (!companyId || messages.length === 0 || isLoading) return;
+    const save = async () => {
+      try {
+        await fetch("/api/chat-history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId, messages }),
+        });
+      } catch { /* ignore */ }
+    };
+    save();
+  }, [messages, companyId, isLoading]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
