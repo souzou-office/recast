@@ -10,9 +10,10 @@ type View = "main" | "setup";
 
 interface Props {
   onOpenRegistration?: () => void;
+  onOpenDocTemplates?: () => void;
 }
 
-export default function FolderSidebar({ onOpenRegistration }: Props) {
+export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }: Props) {
   const [config, setConfig] = useState<WorkspaceConfig>({
     baseFolders: [],
     globalCommon: [],
@@ -482,6 +483,12 @@ export default function FolderSidebar({ onOpenRegistration }: Props) {
                 className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
               >
                 共通フォルダ
+              </button>
+              <button
+                onClick={onOpenDocTemplates}
+                className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                書類雛形
               </button>
             </div>
           </div>

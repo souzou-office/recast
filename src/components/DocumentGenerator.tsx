@@ -19,10 +19,6 @@ export default function DocumentGenerator({ company }: Props) {
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState("");
 
-  // 雛形作成
-  const [creatingTemplate, setCreatingTemplate] = useState(false);
-  const [templateFiles, setTemplateFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
-
   // 書類提案
   const [suggestedDocs, setSuggestedDocs] = useState<SuggestedDoc[]>([]);
   const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
@@ -73,31 +69,6 @@ export default function DocumentGenerator({ company }: Props) {
     finally { setSuggesting(false); }
   };
 
-  // 雛形を過去案件から生成
-  const handleGenerateTemplate = async () => {
-    if (templateFiles.length === 0) return;
-    setCreatingTemplate(true);
-    try {
-      const res = await fetch("/api/document-templates/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files: templateFiles }),
-      });
-      if (res.ok) {
-        const { templates: generated } = await res.json();
-        for (const t of generated) {
-          await fetch("/api/document-templates", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(t),
-          });
-        }
-        await fetchTemplates();
-        setTemplateFiles([]);
-      }
-    } catch { /* ignore */ }
-    finally { setCreatingTemplate(false); }
-  };
 
   // 書類生成（雛形あり or なし）
   const handleProduce = async () => {
@@ -145,24 +116,6 @@ export default function DocumentGenerator({ company }: Props) {
     } catch { /* ignore */ }
     finally { setGenerating(false); }
   };
-
-  // 雛形削除
-  const handleDeleteTemplate = async (id: string) => {
-    if (!confirm("この雛形を削除しますか？")) return;
-    await fetch("/api/document-templates", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
-    await fetchTemplates();
-    setSelectedTemplateIds(prev => { const next = new Set(prev); next.delete(id); return next; });
-  };
-
-  // 案件フォルダのファイル一覧
-  const jobFiles = company.subfolders
-    .filter(s => s.role === "job" && s.active && s.files)
-    .flatMap(s => s.files || [])
-    .filter(f => f.enabled);
 
   return (
     <div className="flex h-full">
@@ -233,11 +186,11 @@ export default function DocumentGenerator({ company }: Props) {
             <h3 className="text-sm font-semibold text-gray-700 mb-2">書類雛形（任意）</h3>
             <p className="text-[10px] text-gray-400 mb-2">雛形がある場合はそれに沿って書類を生成します</p>
             {templates.length === 0 ? (
-              <p className="text-xs text-gray-400 py-1">雛形なし</p>
+              <p className="text-xs text-gray-400 py-1">雛形なし — 「⚙ 雛形管理」から登録してください</p>
             ) : (
               <div className="space-y-1">
                 {templates.map(t => (
-                  <div key={t.id} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-1.5">
+                  <label key={t.id} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-1.5 cursor-pointer hover:bg-gray-100">
                     <input
                       type="checkbox"
                       checked={selectedTemplateIds.has(t.id)}
@@ -252,46 +205,9 @@ export default function DocumentGenerator({ company }: Props) {
                     />
                     <span className="flex-1 text-sm text-gray-700">{t.name}</span>
                     <span className="text-[10px] text-gray-400">{t.category}</span>
-                    <button onClick={() => handleDeleteTemplate(t.id)} className="text-[10px] text-red-400 hover:text-red-600">削除</button>
-                  </div>
+                  </label>
                 ))}
               </div>
-            )}
-          </div>
-
-          {/* 過去案件から雛形作成 */}
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700 mb-2">過去案件から雛形作成</h3>
-            {jobFiles.length === 0 ? (
-              <p className="text-xs text-gray-400">案件フォルダのファイルがありません</p>
-            ) : (
-              <>
-                <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                  {jobFiles.map(f => (
-                    <label key={f.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={templateFiles.some(tf => tf.id === f.id)}
-                        onChange={() => {
-                          setTemplateFiles(prev =>
-                            prev.some(tf => tf.id === f.id)
-                              ? prev.filter(tf => tf.id !== f.id)
-                              : [...prev, { id: f.id, name: f.name, mimeType: f.mimeType }]
-                          );
-                        }}
-                      />
-                      <span className="text-xs text-gray-600">{f.name}</span>
-                    </label>
-                  ))}
-                </div>
-                <button
-                  onClick={handleGenerateTemplate}
-                  disabled={creatingTemplate || templateFiles.length === 0}
-                  className="mt-2 w-full rounded-lg bg-gray-800 py-1.5 text-xs text-white hover:bg-gray-700 disabled:bg-gray-300 transition-colors"
-                >
-                  {creatingTemplate ? "雛形生成中..." : `${templateFiles.length}件から雛形を作成`}
-                </button>
-              </>
             )}
           </div>
 
@@ -321,6 +237,7 @@ export default function DocumentGenerator({ company }: Props) {
           </div>
         )}
       </div>
+
     </div>
   );
 }

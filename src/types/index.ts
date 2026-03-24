@@ -72,11 +72,18 @@ export interface CompanyProfile {
   sourceFiles: (string | SourceFile)[];
 }
 
+export interface DocumentTemplatePart {
+  id: string;
+  name: string;          // 例: "議案: 役員選任"
+  content: string;
+}
+
 export interface DocumentTemplate {
   id: string;
-  name: string;          // 例: "株主総会議事録（役員選任）"
-  category: string;      // 例: "議事録", "就任承諾書", "届出書"
+  name: string;          // 文書名（例: "株主総会議事録"）
+  category?: string;     // 任意のカテゴリ
   content: string;       // 雛形テキスト（個人情報除去済み）
+  parts?: DocumentTemplatePart[]; // 差し込みパーツ（議案等）
   createdAt: string;
 }
 

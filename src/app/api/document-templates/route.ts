@@ -43,6 +43,7 @@ export async function POST(request: NextRequest) {
       name: body.name || "無題",
       category: body.category || "その他",
       content: body.content || "",
+      parts: body.parts || undefined,
       createdAt: new Date().toISOString(),
     });
   }

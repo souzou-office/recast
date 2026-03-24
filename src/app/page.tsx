@@ -7,6 +7,7 @@ import ChatWindow from "@/components/chat/ChatWindow";
 import CompanyProfile from "@/components/CompanyProfile";
 import CompanyRegistration from "@/components/folders/CompanyRegistration";
 import DocumentGenerator from "@/components/DocumentGenerator";
+import DocumentTemplateModal from "@/components/DocumentTemplateModal";
 
 type MainTab = "chat" | "profile" | "search" | "documents";
 
@@ -14,6 +15,7 @@ export default function Home() {
   const [tab, setTab] = useState<MainTab>("chat");
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
   const [showRegistration, setShowRegistration] = useState(false);
+  const [showDocTemplates, setShowDocTemplates] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
 
   const fetchConfig = useCallback(async () => {
@@ -75,7 +77,7 @@ export default function Home() {
 
   return (
     <main className="flex h-screen">
-      <FolderSidebar onOpenRegistration={() => setShowRegistration(true)} />
+      <FolderSidebar onOpenRegistration={() => setShowRegistration(true)} onOpenDocTemplates={() => setShowDocTemplates(true)} />
       <div className="flex flex-1 flex-col min-w-0">
         {showRegistration ? (
           <CompanyRegistration
@@ -146,6 +148,11 @@ export default function Home() {
           </>
         )}
       </div>
+
+      {/* 書類雛形管理モーダル */}
+      {showDocTemplates && (
+        <DocumentTemplateModal onClose={() => setShowDocTemplates(false)} />
+      )}
     </main>
   );
 }
