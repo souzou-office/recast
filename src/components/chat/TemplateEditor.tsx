@@ -13,6 +13,8 @@ export default function TemplateEditor({ template, onSave, onClose }: Props) {
   const [name, setName] = useState(template.name);
   const [items, setItems] = useState<string[]>([...template.items]);
   const [generating, setGenerating] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   const addItem = () => setItems([...items, ""]);
 
@@ -83,11 +85,27 @@ export default function TemplateEditor({ template, onSave, onClose }: Props) {
         <div className="flex-1 overflow-y-auto px-6 py-4">
           <div className="space-y-1.5">
             {items.map((item, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <div className="flex flex-col shrink-0">
-                  <button onClick={() => moveItem(i, -1)} className="text-[10px] text-gray-400 hover:text-gray-600 leading-none">▲</button>
-                  <button onClick={() => moveItem(i, 1)} className="text-[10px] text-gray-400 hover:text-gray-600 leading-none">▼</button>
-                </div>
+              <div
+                key={i}
+                draggable
+                onDragStart={() => setDragIndex(i)}
+                onDragOver={e => { e.preventDefault(); setDragOverIndex(i); }}
+                onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+                onDrop={() => {
+                  if (dragIndex !== null && dragIndex !== i) {
+                    const updated = [...items];
+                    const [moved] = updated.splice(dragIndex, 1);
+                    updated.splice(i, 0, moved);
+                    setItems(updated);
+                  }
+                  setDragIndex(null);
+                  setDragOverIndex(null);
+                }}
+                className={`flex items-center gap-2 rounded-lg px-1 py-0.5 transition-colors ${
+                  dragOverIndex === i ? "bg-blue-50" : ""
+                } ${dragIndex === i ? "opacity-50" : ""}`}
+              >
+                <span className="text-gray-300 text-sm cursor-grab active:cursor-grabbing shrink-0">⠿</span>
                 <input
                   type="text"
                   value={item}
@@ -96,7 +114,7 @@ export default function TemplateEditor({ template, onSave, onClose }: Props) {
                   className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm
                              focus:border-blue-500 focus:outline-none"
                 />
-                <button onClick={() => removeItem(i)} className="text-red-400 hover:text-red-600 text-sm">&times;</button>
+                <button onClick={() => removeItem(i)} className="text-red-400 hover:text-red-600 text-sm shrink-0">&times;</button>
               </div>
             ))}
           </div>

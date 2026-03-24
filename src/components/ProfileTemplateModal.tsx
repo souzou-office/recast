@@ -10,6 +10,8 @@ export default function ProfileTemplateModal({ onClose }: Props) {
   const [items, setItems] = useState<string[]>([]);
   const [newItem, setNewItem] = useState("");
   const [loading, setLoading] = useState(true);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -70,19 +72,27 @@ export default function ProfileTemplateModal({ onClose }: Props) {
           ) : (
             <>
               {items.map((item, i) => (
-                <div key={i} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2">
-                  <div className="flex flex-col gap-0.5">
-                    <button
-                      onClick={() => moveItem(i, -1)}
-                      disabled={i === 0}
-                      className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30"
-                    >▲</button>
-                    <button
-                      onClick={() => moveItem(i, 1)}
-                      disabled={i === items.length - 1}
-                      className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30"
-                    >▼</button>
-                  </div>
+                <div
+                  key={i}
+                  draggable
+                  onDragStart={() => setDragIndex(i)}
+                  onDragOver={e => { e.preventDefault(); setDragOverIndex(i); }}
+                  onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+                  onDrop={() => {
+                    if (dragIndex !== null && dragIndex !== i) {
+                      const updated = [...items];
+                      const [moved] = updated.splice(dragIndex, 1);
+                      updated.splice(i, 0, moved);
+                      setItems(updated);
+                    }
+                    setDragIndex(null);
+                    setDragOverIndex(null);
+                  }}
+                  className={`flex items-center gap-2 rounded-lg px-3 py-2 cursor-grab active:cursor-grabbing transition-colors ${
+                    dragOverIndex === i ? "bg-blue-50 border border-blue-200" : "bg-gray-50"
+                  } ${dragIndex === i ? "opacity-50" : ""}`}
+                >
+                  <span className="text-gray-300 text-sm cursor-grab">⠿</span>
                   <span className="flex-1 text-sm text-gray-700">{item}</span>
                   <button
                     onClick={() => removeItem(i)}
