@@ -190,7 +190,7 @@ export default function Home() {
                   {jobSubs.map(sub => (
                     <li key={sub.id}>
                       <button
-                        onClick={() => handleToggleJob(sub.id, !sub.active)}
+                        onClick={() => { handleToggleJob(sub.id, !sub.active); setJobDropdownOpen(false); }}
                         className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 transition-colors ${
                           sub.active ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
                         }`}
@@ -210,7 +210,7 @@ export default function Home() {
         <div className="flex flex-1 overflow-x-auto">
               <button
                 onClick={() => !chatLoading && setTab("chat")}
-                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                className={`px-3 py-2 text-xs transition-colors ${
                   tab === "chat"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -220,7 +220,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("profile")}
-                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                className={`px-3 py-2 text-xs transition-colors ${
                   tab === "profile"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -230,7 +230,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("organize")}
-                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                className={`px-3 py-2 text-xs transition-colors ${
                   tab === "organize"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -240,7 +240,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("search")}
-                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                className={`px-3 py-2 text-xs transition-colors ${
                   tab === "search"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -250,7 +250,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("verify")}
-                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                className={`px-3 py-2 text-xs transition-colors ${
                   tab === "verify"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -260,7 +260,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("documents")}
-                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                className={`px-3 py-2 text-xs transition-colors ${
                   tab === "documents"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -270,7 +270,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("settings")}
-                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                className={`px-3 py-2 text-xs transition-colors ${
                   tab === "settings"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
