@@ -7,7 +7,7 @@ import CommonPatternsModal from "./folders/CommonPatternsModal";
 import ProfileTemplateModal from "./ProfileTemplateModal";
 import DocumentTemplateModal from "./DocumentTemplateModal";
 
-type SettingsSection = "companies" | "common" | "profile-items" | "doc-templates";
+type SettingsSection = "companies" | "common" | "profile-items" | "doc-templates" | "prompts" | "case-templates";
 
 interface Props {
   config: WorkspaceConfig | null;
