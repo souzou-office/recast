@@ -5,18 +5,18 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Company, ChatMessage } from "@/types";
 import { v4 as uuidv4 } from "uuid";
-import TemplateSelectModal from "./chat/TemplateSelectModal";
 import ChatInput from "./chat/ChatInput";
 import MessageBubble from "./chat/MessageBubble";
 
 interface Props {
   company: Company | null;
+  executeTemplateId?: string | null;
+  onExecuteComplete?: () => void;
 }
 
-export default function CaseOrganizer({ company }: Props) {
+export default function CaseOrganizer({ company, executeTemplateId, onExecuteComplete }: Props) {
   const [result, setResult] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [templateName, setTemplateName] = useState("");
@@ -26,7 +26,15 @@ export default function CaseOrganizer({ company }: Props) {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [result]);
+  }, [result, chatMessages]);
+
+  // サイドバーからのテンプレート実行
+  useEffect(() => {
+    if (executeTemplateId) {
+      handleExecute(executeTemplateId);
+      onExecuteComplete?.();
+    }
+  }, [executeTemplateId]);
 
   const handleChatSend = useCallback(async (content: string) => {
     const userMsg: ChatMessage = { id: uuidv4(), role: "user", content, timestamp: Date.now() };
@@ -174,35 +182,25 @@ export default function CaseOrganizer({ company }: Props) {
             <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
             {templateName && <span className="text-[10px] text-gray-400">{templateName}</span>}
           </div>
-          <div className="flex items-center gap-2">
-            {displayResult && !isLoading && (
-              <button
-                onClick={async () => {
-                  if (!confirm("案件整理の結果を削除しますか？")) return;
-                  setResult("");
-                  setChatMessages([]);
-                  // マスターシートも削除
-                  if (company) {
-                    await fetch("/api/workspace", {
-                      method: "PATCH",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
-                    });
-                  }
-                }}
-                className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
-              >
-                削除
-              </button>
-            )}
+          {displayResult && !isLoading && (
             <button
-              onClick={() => setShowTemplateModal(true)}
-              disabled={isLoading}
-              className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+              onClick={async () => {
+                if (!confirm("案件整理の結果を削除しますか？")) return;
+                setResult("");
+                setChatMessages([]);
+                if (company) {
+                  await fetch("/api/workspace", {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
+                  });
+                }
+              }}
+              className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
             >
-              {isLoading ? "整理中..." : displayResult ? "再整理" : "案件を整理"}
+              削除
             </button>
-          </div>
+          )}
         </div>
 
         {/* 結果 */}
@@ -298,13 +296,6 @@ export default function CaseOrganizer({ company }: Props) {
         </div>
       )}
 
-      {/* テンプレート選択モーダル */}
-      {showTemplateModal && (
-        <TemplateSelectModal
-          onExecute={handleExecute}
-          onClose={() => setShowTemplateModal(false)}
-        />
-      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ export default function Home() {
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [jobDropdownOpen, setJobDropdownOpen] = useState(false);
+  const [executeTemplateId, setExecuteTemplateId] = useState<string | null>(null);
 
   const fetchConfig = useCallback(async () => {
     const res = await fetch("/api/workspace");
