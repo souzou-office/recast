@@ -4,9 +4,10 @@ import { useState, useEffect } from "react";
 
 interface Props {
   onClose: () => void;
+  inline?: boolean;
 }
 
-export default function ProfileTemplateModal({ onClose }: Props) {
+export default function ProfileTemplateModal({ onClose, inline }: Props) {
   const [items, setItems] = useState<string[]>([]);
   const [newItem, setNewItem] = useState("");
   const [loading, setLoading] = useState(true);
@@ -56,9 +57,8 @@ export default function ProfileTemplateModal({ onClose }: Props) {
     onClose();
   };
 
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl max-h-[80vh] flex flex-col">
+  const content = (
+      <div className={inline ? "w-full h-full flex flex-col" : "w-full max-w-lg rounded-2xl bg-white shadow-xl max-h-[80vh] flex flex-col"}>
         <div className="border-b border-gray-200 px-5 py-4">
           <h3 className="text-lg font-semibold text-gray-900">基本情報 抽出項目設定</h3>
           <p className="mt-1 text-xs text-gray-500">
@@ -139,6 +139,12 @@ export default function ProfileTemplateModal({ onClose }: Props) {
           </button>
         </div>
       </div>
+  );
+
+  if (inline) return content;
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
+      {content}
     </div>
   );
 }

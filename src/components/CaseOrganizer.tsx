@@ -1,27 +1,84 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Company } from "@/types";
-import TemplateSelectModal from "./chat/TemplateSelectModal";
+import type { Company, ChatMessage } from "@/types";
+import { v4 as uuidv4 } from "uuid";
+import ChatInput from "./chat/ChatInput";
+import MessageBubble from "./chat/MessageBubble";
 
 interface Props {
   company: Company | null;
+  executeTemplateId?: string | null;
+  onExecuteComplete?: () => void;
 }
 
-export default function CaseOrganizer({ company }: Props) {
+export default function CaseOrganizer({ company, executeTemplateId, onExecuteComplete }: Props) {
   const [result, setResult] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [templateName, setTemplateName] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [result]);
+  }, [result, chatMessages]);
+
+  // サイドバーからのテンプレート実行
+  useEffect(() => {
+    if (executeTemplateId) {
+      handleExecute(executeTemplateId);
+      onExecuteComplete?.();
+    }
+  }, [executeTemplateId]);
+
+  const handleChatSend = useCallback(async (content: string) => {
+    const userMsg: ChatMessage = { id: uuidv4(), role: "user", content, timestamp: Date.now() };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChatLoading(true);
+
+    const assistantMsg: ChatMessage = { id: uuidv4(), role: "assistant", content: "", timestamp: Date.now() };
+    setChatMessages(prev => [...prev, assistantMsg]);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [...chatMessages, userMsg].map(m => ({ role: m.role, content: m.content })) }),
+      });
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line === "data: [DONE]") continue;
+          const match = line.match(/^data: (.+)$/m);
+          if (!match) continue;
+          const data = JSON.parse(match[1]);
+          if (data.text) {
+            setChatMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: last.content + data.text };
+              return updated;
+            });
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    finally { setChatLoading(false); }
+  }, [chatMessages]);
 
   if (!company) {
     return (
@@ -125,13 +182,25 @@ export default function CaseOrganizer({ company }: Props) {
             <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
             {templateName && <span className="text-[10px] text-gray-400">{templateName}</span>}
           </div>
-          <button
-            onClick={() => setShowTemplateModal(true)}
-            disabled={isLoading}
-            className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
-          >
-            {isLoading ? "整理中..." : displayResult ? "再整理" : "案件を整理"}
-          </button>
+          {displayResult && !isLoading && (
+            <button
+              onClick={async () => {
+                if (!confirm("案件整理の結果を削除しますか？")) return;
+                setResult("");
+                setChatMessages([]);
+                if (company) {
+                  await fetch("/api/workspace", {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
+                  });
+                }
+              }}
+              className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
+            >
+              削除
+            </button>
+          )}
         </div>
 
         {/* 結果 */}
@@ -189,7 +258,25 @@ export default function CaseOrganizer({ company }: Props) {
               </div>
             </div>
           )}
+          {/* チャットメッセージ */}
+          {chatMessages.length > 0 && (
+            <div className="mt-4 border-t border-gray-200 pt-4">
+              {chatMessages.map((msg, i) => (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"}
+                />
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* チャット入力欄 */}
+        <ChatInput
+          onSend={handleChatSend}
+          disabled={chatLoading || isLoading}
+        />
       </div>
 
       {/* 右: ファイルプレビュー */}
@@ -209,13 +296,6 @@ export default function CaseOrganizer({ company }: Props) {
         </div>
       )}
 
-      {/* テンプレート選択モーダル */}
-      {showTemplateModal && (
-        <TemplateSelectModal
-          onExecute={handleExecute}
-          onClose={() => setShowTemplateModal(false)}
-        />
-      )}
     </div>
   );
 }

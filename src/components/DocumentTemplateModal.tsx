@@ -5,9 +5,10 @@ import type { DocumentTemplate } from "@/types";
 
 interface Props {
   onClose: () => void;
+  inline?: boolean;
 }
 
-export default function DocumentTemplateModal({ onClose }: Props) {
+export default function DocumentTemplateModal({ onClose, inline }: Props) {
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -108,9 +109,8 @@ export default function DocumentTemplateModal({ onClose }: Props) {
     finally { setGenerating(false); }
   };
 
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-4xl rounded-2xl bg-white shadow-xl flex flex-col" style={{ maxHeight: "85vh" }}>
+  const content = (
+      <div className={inline ? "w-full h-full flex flex-col" : "w-full max-w-4xl rounded-2xl bg-white shadow-xl flex flex-col"} style={inline ? undefined : { maxHeight: "85vh" }}>
         {/* ヘッダー */}
         <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
           <div>
@@ -270,6 +270,12 @@ export default function DocumentTemplateModal({ onClose }: Props) {
           />
         )}
       </div>
+  );
+
+  if (inline) return content;
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
+      {content}
     </div>
   );
 }

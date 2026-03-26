@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { Company, DocumentTemplate } from "@/types";
+import { v4 as uuidv4 } from "uuid";
+import type { Company, DocumentTemplate, ChatMessage } from "@/types";
+import ChatInput from "./chat/ChatInput";
+import MessageBubble from "./chat/MessageBubble";
 
 interface SuggestedDoc {
   name: string;
@@ -18,12 +21,55 @@ export default function DocumentGenerator({ company }: Props) {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<Set<string>>(new Set());
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
 
   // 書類提案
   const [suggestedDocs, setSuggestedDocs] = useState<SuggestedDoc[]>([]);
   const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
   const [suggesting, setSuggesting] = useState(false);
   const [showSuggestion, setShowSuggestion] = useState(false);
+
+  const handleChatSend = useCallback(async (content: string) => {
+    const userMsg: ChatMessage = { id: uuidv4(), role: "user", content, timestamp: Date.now() };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChatLoading(true);
+    const assistantMsg: ChatMessage = { id: uuidv4(), role: "assistant", content: "", timestamp: Date.now() };
+    setChatMessages(prev => [...prev, assistantMsg]);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [...chatMessages, userMsg].map(m => ({ role: m.role, content: m.content })) }),
+      });
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line === "data: [DONE]") continue;
+          const match = line.match(/^data: (.+)$/m);
+          if (!match) continue;
+          const data = JSON.parse(match[1]);
+          if (data.text) {
+            setChatMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: last.content + data.text };
+              return updated;
+            });
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    finally { setChatLoading(false); }
+  }, [chatMessages]);
 
   const fetchTemplates = useCallback(async () => {
     const res = await fetch("/api/document-templates");
@@ -222,20 +268,38 @@ export default function DocumentGenerator({ company }: Props) {
         </div>
       </div>
 
-      {/* 右: 生成結果 */}
-      <div className="w-1/2 overflow-y-auto bg-white">
-        {result ? (
-          <pre className="p-6 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed font-mono">
-            {result}
-          </pre>
-        ) : (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center text-gray-400">
-              <p className="text-3xl mb-2">📝</p>
-              <p className="text-sm">「AIで提案」→ 書類を選択 → 生成</p>
+      {/* 右: 生成結果 + チャット */}
+      <div className="w-1/2 flex flex-col bg-white">
+        <div className="flex-1 overflow-y-auto">
+          {result ? (
+            <pre className="p-6 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed font-mono">
+              {result}
+            </pre>
+          ) : (
+            <div className="flex h-full items-center justify-center">
+              <div className="text-center text-gray-400">
+                <p className="text-3xl mb-2">📝</p>
+                <p className="text-sm">「AIで提案」→ 書類を選択 → 生成</p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {/* チャットメッセージ */}
+          {chatMessages.length > 0 && (
+            <div className="border-t border-gray-200 pt-4 px-6">
+              {chatMessages.map((msg, i) => (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* チャット入力欄 */}
+        <ChatInput onSend={handleChatSend} disabled={chatLoading || generating} />
       </div>
 
     </div>

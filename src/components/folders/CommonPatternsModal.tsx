@@ -10,9 +10,10 @@ interface Props {
   scanning: boolean;
   scanProgress: string;
   onClose: () => void;
+  inline?: boolean;
 }
 
-export default function CommonPatternsModal({ patterns, onSave, onScanAll, onCancelScan, scanning, scanProgress, onClose }: Props) {
+export default function CommonPatternsModal({ patterns, onSave, onScanAll, onCancelScan, scanning, scanProgress, onClose, inline }: Props) {
   const [items, setItems] = useState<string[]>([...patterns]);
   const [newItem, setNewItem] = useState("");
 
@@ -28,9 +29,8 @@ export default function CommonPatternsModal({ patterns, onSave, onScanAll, onCan
     setItems(items.filter((_, i) => i !== index));
   };
 
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl">
+  const content = (
+      <div className={inline ? "w-full h-full flex flex-col" : "w-full max-w-lg rounded-2xl bg-white shadow-xl"}>
         <div className="border-b border-gray-200 px-5 py-4">
           <h3 className="text-lg font-semibold text-gray-900">共通フォルダ設定</h3>
           <p className="mt-1 text-xs text-gray-500">
@@ -120,6 +120,13 @@ export default function CommonPatternsModal({ patterns, onSave, onScanAll, onCan
           </div>
         </div>
       </div>
+  );
+
+  if (inline) return content;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
+      {content}
     </div>
   );
 }
