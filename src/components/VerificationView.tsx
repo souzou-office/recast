@@ -170,33 +170,6 @@ export default function VerificationView({ company }: Props) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {/* ファイル選択 */}
-          {!result && !verifying && allFiles.length > 0 && (
-            <div className="mb-4">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-semibold text-gray-700">突合せ対象の書類を選択</h3>
-                <div className="flex gap-2">
-                  <button onClick={selectAll} className="text-[10px] text-blue-500 hover:text-blue-700">全選択</button>
-                  <button onClick={deselectAll} className="text-[10px] text-gray-400 hover:text-gray-600">解除</button>
-                </div>
-              </div>
-              <div className="space-y-0.5 max-h-48 overflow-y-auto">
-                {allFiles.map(f => (
-                  <label key={f.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={selectedFileIds.has(f.id)}
-                      onChange={() => toggleFileSelection(f.id)}
-                      className="rounded w-3 h-3"
-                    />
-                    <span className="text-xs text-gray-600 truncate">{f.name}</span>
-                    <span className="text-[10px] text-gray-400 ml-auto shrink-0">{f.folderName}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
           {result ? (
             <div className="prose prose-sm max-w-none text-gray-800
                             prose-headings:text-gray-900 prose-headings:font-semibold
@@ -211,10 +184,93 @@ export default function VerificationView({ company }: Props) {
               </ReactMarkdown>
             </div>
           ) : (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center text-gray-400">
-                <p className="text-3xl mb-2">🔍</p>
-                <p className="text-sm">案件整理の結果と書類の内容を<br />AIが突合せしてチェックします</p>
+            /* ファイル選択UI（左右分割） */
+            <div className="flex h-full">
+              {/* 左: 全ファイル一覧 */}
+              <div className="w-1/2 border-r border-gray-200 overflow-y-auto p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-gray-700">ファイル一覧</h3>
+                  <button onClick={selectAll} className="text-[10px] text-blue-500 hover:text-blue-700">全選択</button>
+                </div>
+                {allFiles.length === 0 ? (
+                  <p className="text-xs text-gray-400 py-4 text-center">ファイルがありません</p>
+                ) : (
+                  (() => {
+                    // フォルダごとにグループ化
+                    const grouped: Record<string, typeof allFiles> = {};
+                    for (const f of allFiles) {
+                      if (!grouped[f.folderName]) grouped[f.folderName] = [];
+                      grouped[f.folderName].push(f);
+                    }
+                    return Object.entries(grouped).map(([folder, files]) => (
+                      <div key={folder} className="mb-3">
+                        <p className="text-[10px] text-gray-400 mb-1">📁 {folder}</p>
+                        {files.map(f => {
+                          const isSelected = selectedFileIds.has(f.id);
+                          return (
+                            <div
+                              key={f.id}
+                              draggable
+                              onDragStart={e => {
+                                e.dataTransfer.setData("text/plain", f.id);
+                                e.dataTransfer.effectAllowed = "copy";
+                              }}
+                              onClick={() => { if (!isSelected) toggleFileSelection(f.id); }}
+                              className={`flex items-center gap-2 rounded px-2 py-1 text-xs cursor-pointer mb-0.5 ${
+                                isSelected ? "opacity-40 bg-gray-100" : "hover:bg-blue-50 text-gray-700"
+                              }`}
+                            >
+                              <span className="text-gray-400">📄</span>
+                              <span className="truncate">{f.name}</span>
+                              {isSelected && <span className="text-[9px] text-green-500 ml-auto">選択済</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ));
+                  })()
+                )}
+              </div>
+
+              {/* 右: 選択済みファイル */}
+              <div
+                className={`w-1/2 overflow-y-auto p-3 transition-colors ${
+                  false ? "bg-blue-50" : "bg-gray-50"
+                }`}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => {
+                  e.preventDefault();
+                  const fileId = e.dataTransfer.getData("text/plain");
+                  if (fileId && !selectedFileIds.has(fileId)) toggleFileSelection(fileId);
+                }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-gray-700">
+                    突合せ対象（{selectedFileIds.size}件）
+                  </h3>
+                  {selectedFileIds.size > 0 && (
+                    <button onClick={deselectAll} className="text-[10px] text-red-400 hover:text-red-600">クリア</button>
+                  )}
+                </div>
+                {selectedFileIds.size === 0 ? (
+                  <div className="flex h-32 items-center justify-center">
+                    <p className="text-xs text-gray-400 text-center">
+                      左からファイルをクリック<br />またはドラッグして追加
+                    </p>
+                  </div>
+                ) : (
+                  <ul className="space-y-0.5">
+                    {allFiles.filter(f => selectedFileIds.has(f.id)).map(f => (
+                      <li key={f.id} className="flex items-center justify-between rounded px-2 py-1 bg-white">
+                        <span className="text-xs text-gray-700 truncate">📄 {f.name}</span>
+                        <button
+                          onClick={() => toggleFileSelection(f.id)}
+                          className="text-[10px] text-red-400 hover:text-red-600 shrink-0 ml-1"
+                        >×</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           )}
