@@ -7,13 +7,16 @@ interface Props {
   company: Company;
   config: WorkspaceConfig;
   onToggleJob: (subfolderId: string, active: boolean) => void;
-  onOpenSetup: () => void;
+  onRescan: (companyId: string) => void;
   onUpdate: (config: WorkspaceConfig) => void;
 }
 
-export default function CompanyMainView({ company, config, onToggleJob, onOpenSetup, onUpdate }: Props) {
+export default function CompanyMainView({ company, config, onToggleJob, onRescan, onUpdate }: Props) {
   const [expandedFolder, setExpandedFolder] = useState<string | null>(null);
   const [scanningFolder, setScanningFolder] = useState<string | null>(null);
+  const [bootstrapFolders, setBootstrapFolders] = useState<{ id: string; name: string; role: "common" | "job" }[]>([]);
+  const [bootstrapLoading, setBootstrapLoading] = useState(false);
+  const [bootstrapSaving, setBootstrapSaving] = useState(false);
   const [subfolderData, setSubfolderData] = useState<Record<string, { files: any[]; subfolders: { id: string; name: string }[] }>>(() => {
     // 保存済みのchildFoldersから初期化
     const initial: Record<string, { files: any[]; subfolders: { id: string; name: string }[] }> = {};
@@ -309,6 +312,120 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
     );
   };
 
+  // 初回分類UI: パターン未設定 & サブフォルダ未設定
+  const needsBootstrap = latestCompany.subfolders.length === 0 && (config.defaultCommonPatterns || []).length === 0;
+
+  const loadBootstrapFolders = async () => {
+    setBootstrapLoading(true);
+    try {
+      const res = await fetch("/api/workspace/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderId: company.id, provider: "google" }),
+      });
+      if (res.ok) {
+        const { folders } = await res.json();
+        setBootstrapFolders(folders.map((f: { id: string; name: string }) => ({ ...f, role: "job" as const })));
+      }
+    } catch { /* ignore */ }
+    finally { setBootstrapLoading(false); }
+  };
+
+  const handleBootstrapComplete = async () => {
+    setBootstrapSaving(true);
+    try {
+      // パターン保存（共通に設定したフォルダ名）
+      const commonNames = bootstrapFolders.filter(f => f.role === "common").map(f => f.name);
+      if (commonNames.length > 0) {
+        await fetch("/api/workspace", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "setDefaultCommonPatterns", patterns: commonNames }),
+        });
+      }
+
+      // サブフォルダ保存
+      await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "setSubfolders",
+          companyId: company.id,
+          subfolders: bootstrapFolders.map(f => ({
+            id: f.id, name: f.name, role: f.role, active: f.role === "common",
+          })),
+        }),
+      });
+
+      // 全社に一括適用
+      await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "batchAutoSetup" }),
+      });
+
+      const cfgRes = await fetch("/api/workspace");
+      if (cfgRes.ok) onUpdate(await cfgRes.json());
+    } catch { /* ignore */ }
+    finally { setBootstrapSaving(false); }
+  };
+
+  // 初回分類UI
+  if (needsBootstrap) {
+    return (
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">フォルダ分類</h3>
+            <p className="text-[10px] text-gray-400">共通フォルダ（定款・登記等）と案件フォルダを分類してください。この設定は全社に適用されます。</p>
+          </div>
+
+          {bootstrapFolders.length === 0 ? (
+            <button
+              onClick={loadBootstrapFolders}
+              disabled={bootstrapLoading}
+              className="w-full rounded-lg border border-dashed border-gray-300 py-4 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
+            >
+              {bootstrapLoading ? "読み込み中..." : "フォルダを読み込む"}
+            </button>
+          ) : (
+            <>
+              <div className="space-y-1 mb-3">
+                {bootstrapFolders.map((f, i) => (
+                  <div key={f.id} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2">
+                    <span className="text-yellow-500 text-xs">📁</span>
+                    <span className="flex-1 text-sm text-gray-700 truncate">{f.name}</span>
+                    <button
+                      onClick={() => {
+                        const updated = [...bootstrapFolders];
+                        updated[i] = { ...f, role: f.role === "common" ? "job" : "common" };
+                        setBootstrapFolders(updated);
+                      }}
+                      className={`rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                        f.role === "common"
+                          ? "bg-green-100 text-green-700"
+                          : "bg-blue-100 text-blue-700"
+                      }`}
+                    >
+                      {f.role === "common" ? "共通" : "案件"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={handleBootstrapComplete}
+                disabled={bootstrapSaving}
+                className="w-full rounded-lg bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+              >
+                {bootstrapSaving ? "適用中..." : "完了（全社に適用）"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto p-4">
@@ -383,12 +500,12 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
               </div>
             )}
 
-            {/* フォルダ設定 */}
+            {/* フォルダ再スキャン */}
             <button
-              onClick={onOpenSetup}
-              className="w-full rounded-lg border border-dashed border-gray-300 py-2 text-xs text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
+              onClick={() => onRescan(company.id)}
+              className="w-full text-center py-1 text-[10px] text-gray-400 hover:text-blue-600 transition-colors"
             >
-              {latestCompany.subfolders.length === 0 ? "フォルダを設定" : "フォルダ設定を変更"}
+              フォルダ再スキャン
             </button>
           </div>
       </div>

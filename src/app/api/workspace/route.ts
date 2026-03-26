@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
-import type { FolderProvider } from "@/types";
+import { listFoldersGoogle } from "@/lib/files-google";
+import type { FolderProvider, Subfolder } from "@/types";
 
 // 設定取得
 export async function GET() {
@@ -126,6 +127,49 @@ export async function PATCH(request: NextRequest) {
           } else {
             existing.enabled = body.file.enabled;
           }
+        }
+      }
+      break;
+    }
+
+    case "autoSetupCompany": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company && (company.subfolders.length === 0 || body.force)) {
+        try {
+          const result = await listFoldersGoogle(company.id);
+          const patterns = config.defaultCommonPatterns || [];
+          const newSubs: Subfolder[] = result.dirs.map(d => {
+            const isCommon = patterns.some(p => d.name.toLowerCase() === p.toLowerCase());
+            return {
+              id: d.path,
+              name: d.name,
+              role: isCommon ? "common" as const : "job" as const,
+              active: isCommon,
+            };
+          });
+          company.subfolders = newSubs;
+        } catch { /* Google Drive未接続等 */ }
+      }
+      break;
+    }
+
+    case "batchAutoSetup": {
+      const patterns = config.defaultCommonPatterns || [];
+      if (patterns.length > 0) {
+        for (const company of config.companies) {
+          if (company.subfolders.length > 0) continue;
+          try {
+            const result = await listFoldersGoogle(company.id);
+            company.subfolders = result.dirs.map(d => {
+              const isCommon = patterns.some(p => d.name.toLowerCase() === p.toLowerCase());
+              return {
+                id: d.path,
+                name: d.name,
+                role: isCommon ? "common" as const : "job" as const,
+                active: isCommon,
+              };
+            });
+          } catch { /* skip */ }
         }
       }
       break;
