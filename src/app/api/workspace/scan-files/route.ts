@@ -11,11 +11,14 @@ const SUPPORTED_MIME_TYPES = new Set([
   "text/plain", "text/csv", "text/html", "text/xml",
   "text/tab-separated-values", "application/json", "text/markdown",
   "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-excel",
+  "application/msword",                                                      // .doc
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  // .docx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",       // .xlsx
+  "application/vnd.ms-excel",                                                // .xls
   "application/vnd.google-apps.document",
   "application/vnd.google-apps.spreadsheet",
+  "application/vnd.google-apps.presentation",                                // Google Slides
+  "image/jpeg", "image/png", "image/gif", "image/webp",                     // 画像
 ]);
 
 // Haikuにファイル名一覧を投げて意味レベルでグループ化し、最新だけenabledにする
