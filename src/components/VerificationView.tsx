@@ -1,10 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
-import type { Company } from "@/types";
+import type { Company, ChatMessage } from "@/types";
+import { v4 as uuidv4 } from "uuid";
+import ChatInput from "./chat/ChatInput";
+import MessageBubble from "./chat/MessageBubble";
 
 interface Props {
   company: Company | null;
@@ -22,11 +25,54 @@ export default function VerificationView({ company }: Props) {
   const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
 
   // Google Driveブラウザ
   const [browseData, setBrowseData] = useState<BrowseData | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
+
+  const handleChatSend = useCallback(async (content: string) => {
+    const userMsg: ChatMessage = { id: uuidv4(), role: "user", content, timestamp: Date.now() };
+    setChatMessages(prev => [...prev, userMsg]);
+    setChatLoading(true);
+    const assistantMsg: ChatMessage = { id: uuidv4(), role: "assistant", content: "", timestamp: Date.now() };
+    setChatMessages(prev => [...prev, assistantMsg]);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [...chatMessages, userMsg].map(m => ({ role: m.role, content: m.content })) }),
+      });
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line === "data: [DONE]") continue;
+          const match = line.match(/^data: (.+)$/m);
+          if (!match) continue;
+          const data = JSON.parse(match[1]);
+          if (data.text) {
+            setChatMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: last.content + data.text };
+              return updated;
+            });
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    finally { setChatLoading(false); }
+  }, [chatMessages]);
 
   if (!company) {
     return (
@@ -315,7 +361,23 @@ export default function VerificationView({ company }: Props) {
               </div>
             </div>
           )}
+
+          {/* チャットメッセージ */}
+          {chatMessages.length > 0 && (
+            <div className="mt-4 border-t border-gray-200 pt-4 px-6">
+              {chatMessages.map((msg, i) => (
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"}
+                />
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* チャット入力欄 */}
+        <ChatInput onSend={handleChatSend} disabled={chatLoading || verifying} />
       </div>
 
       {/* 右: ファイルプレビュー */}
