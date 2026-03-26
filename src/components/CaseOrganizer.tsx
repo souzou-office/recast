@@ -174,13 +174,23 @@ export default function CaseOrganizer({ company }: Props) {
             <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
             {templateName && <span className="text-[10px] text-gray-400">{templateName}</span>}
           </div>
-          <button
-            onClick={() => setShowTemplateModal(true)}
-            disabled={isLoading}
-            className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
-          >
-            {isLoading ? "整理中..." : displayResult ? "再整理" : "案件を整理"}
-          </button>
+          <div className="flex items-center gap-2">
+            {displayResult && !isLoading && (
+              <button
+                onClick={() => { setResult(""); setChatMessages([]); }}
+                className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
+              >
+                削除
+              </button>
+            )}
+            <button
+              onClick={() => setShowTemplateModal(true)}
+              disabled={isLoading}
+              className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+            >
+              {isLoading ? "整理中..." : displayResult ? "再整理" : "案件を整理"}
+            </button>
+          </div>
         </div>
 
         {/* 結果 */}
