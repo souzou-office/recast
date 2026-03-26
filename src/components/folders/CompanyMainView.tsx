@@ -140,20 +140,20 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
     }
   };
 
-  // 親subfolderのIDを探す（展開中のフォルダから辿る）
-  const findParentSubId = (folderId: string): string | null => {
-    for (const sub of latestCompany.subfolders) {
-      if (sub.id === folderId) return sub.id;
-      if (subfolderData[sub.id]?.subfolders?.some(sf => sf.id === folderId)) return sub.id;
-      // 再帰的に探す
-      for (const [key, data] of Object.entries(subfolderData)) {
-        if (data.subfolders?.some(sf => sf.id === folderId)) {
-          const parent = findParentSubId(key);
-          if (parent) return parent;
-        }
+  // サブフォルダ内の全ファイルを一括ON/OFF
+  const toggleAllNestedFiles = async (rootSubId: string, folderId: string, enabled: boolean) => {
+    const data = subfolderData[folderId];
+    if (!data) return;
+
+    for (const f of data.files) {
+      await toggleNestedFile(rootSubId, f.id, f.name, f.mimeType, enabled);
+    }
+    // 子フォルダのファイルも再帰的に
+    for (const sf of data.subfolders) {
+      if (subfolderData[sf.id]) {
+        await toggleAllNestedFiles(rootSubId, sf.id, enabled);
       }
     }
-    return null;
   };
 
   // ネストされたフォルダの表示（再帰）
@@ -161,22 +161,35 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
     const data = subfolderData[folderId];
     if (!data) return <p className="text-[10px] text-gray-400 py-0.5">読み込み中...</p>;
 
-    // 親subfolderのファイルリストからenabledを確認
     const parentSub = latestCompany.subfolders.find(s => s.id === rootSubId);
     const parentFiles = parentSub?.files || [];
+
+    // このフォルダ内の全ファイルがenabledかチェック
+    const allChecked = data.files.length > 0 && data.files.every((f: any) => parentFiles.find(pf => pf.id === f.id)?.enabled);
+    const someChecked = data.files.some((f: any) => parentFiles.find(pf => pf.id === f.id)?.enabled);
 
     return (
       <>
         {data.subfolders.map(sf => (
           <div key={sf.id}>
-            <button
-              onClick={() => toggleSubfolder(sf.id)}
-              className="flex items-center gap-1 text-[11px] text-gray-600 hover:text-blue-600 py-0.5 w-full text-left"
-            >
-              <span className="text-yellow-500 text-xs">📁</span>
-              <span className="truncate">{sf.name}</span>
-              <span className="text-[9px] text-gray-400 ml-auto">{expandedSubfolders.has(sf.id) ? "▼" : "▶"}</span>
-            </button>
+            <div className="flex items-center gap-1 py-0.5">
+              {subfolderData[sf.id]?.files?.length > 0 && (
+                <input
+                  type="checkbox"
+                  checked={subfolderData[sf.id]?.files?.every((f: any) => parentFiles.find(pf => pf.id === f.id)?.enabled) || false}
+                  onChange={e => toggleAllNestedFiles(rootSubId, sf.id, e.target.checked)}
+                  className="rounded w-3 h-3"
+                />
+              )}
+              <button
+                onClick={() => toggleSubfolder(sf.id)}
+                className="flex items-center gap-1 text-[11px] text-gray-600 hover:text-blue-600 flex-1 text-left"
+              >
+                <span className="text-yellow-500 text-xs">📁</span>
+                <span className="truncate">{sf.name}</span>
+                <span className="text-[9px] text-gray-400 ml-auto">{expandedSubfolders.has(sf.id) ? "▼" : "▶"}</span>
+              </button>
+            </div>
             {expandedSubfolders.has(sf.id) && (
               <div className="ml-3 border-l border-gray-200 pl-2">
                 {renderNestedFolder(sf.id, rootSubId)}
@@ -185,25 +198,40 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
           </div>
         ))}
         {data.files.length > 0 && (
-          <ul className="space-y-0.5">
-            {data.files.map((f: any) => {
-              const parentFile = parentFiles.find(pf => pf.id === f.id);
-              const isEnabled = parentFile ? parentFile.enabled : false;
-              return (
-                <li key={f.id} className="flex items-center gap-1.5">
-                  <input
-                    type="checkbox"
-                    checked={isEnabled}
-                    onChange={e => toggleNestedFile(rootSubId, f.id, f.name, f.mimeType, e.target.checked)}
-                    className="rounded text-blue-600 w-3 h-3"
-                  />
-                  <span className={`text-[11px] truncate ${isEnabled ? "text-gray-700" : "text-gray-400"}`} title={f.name}>
-                    {f.name}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          <>
+            {/* フォルダ全選択 */}
+            {data.files.length > 1 && (
+              <div className="flex items-center gap-1 py-0.5 mb-0.5">
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  ref={el => { if (el) el.indeterminate = someChecked && !allChecked; }}
+                  onChange={e => toggleAllNestedFiles(rootSubId, folderId, e.target.checked)}
+                  className="rounded w-3 h-3"
+                />
+                <span className="text-[10px] text-gray-400">全選択</span>
+              </div>
+            )}
+            <ul className="space-y-0.5">
+              {data.files.map((f: any) => {
+                const parentFile = parentFiles.find(pf => pf.id === f.id);
+                const isEnabled = parentFile ? parentFile.enabled : false;
+                return (
+                  <li key={f.id} className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={isEnabled}
+                      onChange={e => toggleNestedFile(rootSubId, f.id, f.name, f.mimeType, e.target.checked)}
+                      className="rounded text-blue-600 w-3 h-3"
+                    />
+                    <span className={`text-[11px] truncate ${isEnabled ? "text-gray-700" : "text-gray-400"}`} title={f.name}>
+                      {f.name}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )}
         {data.subfolders.length === 0 && data.files.length === 0 && (
           <p className="text-[10px] text-gray-400 py-0.5">空</p>
