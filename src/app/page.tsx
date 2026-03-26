@@ -17,6 +17,7 @@ export default function Home() {
   const [chatLoading, setChatLoading] = useState(false);
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [jobDropdownOpen, setJobDropdownOpen] = useState(false);
 
   const fetchConfig = useCallback(async () => {
     const res = await fetch("/api/workspace");
@@ -88,6 +89,18 @@ export default function Home() {
     }
   };
 
+  const handleToggleJob = async (subfolderId: string, active: boolean) => {
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "toggleSubfolder", companyId: config?.selectedCompanyId, subfolderId, active }),
+    });
+    await fetchConfig();
+  };
+
+  const jobSubs = selectedCompany?.subfolders.filter(s => s.role === "job") || [];
+  const activeJobs = jobSubs.filter(s => s.active);
+
   const filteredCompanies = (config?.companies || [])
     .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -158,6 +171,40 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {/* 案件セレクター */}
+        {selectedCompany && jobSubs.length > 0 && (
+          <div className="relative shrink-0 mr-2">
+            <button
+              onClick={() => setJobDropdownOpen(!jobDropdownOpen)}
+              className="flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm hover:border-blue-400 transition-colors"
+            >
+              <span className="truncate max-w-[180px]">
+                {activeJobs.length > 0 ? activeJobs.map(j => j.name).join(", ") : "案件を選択"}
+              </span>
+              <span className="text-gray-400 text-xs">{jobDropdownOpen ? "▲" : "▼"}</span>
+            </button>
+            {jobDropdownOpen && (
+              <div className="absolute z-50 mt-1 w-72 rounded-lg border border-gray-200 bg-white shadow-lg">
+                <ul className="max-h-[300px] overflow-y-auto py-1">
+                  {jobSubs.map(sub => (
+                    <li key={sub.id}>
+                      <button
+                        onClick={() => handleToggleJob(sub.id, !sub.active)}
+                        className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 transition-colors ${
+                          sub.active ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
+                        }`}
+                      >
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${sub.active ? "bg-blue-500" : "bg-gray-300"}`} />
+                        {sub.name}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* タブ */}
         <div className="flex flex-1 overflow-x-auto">
