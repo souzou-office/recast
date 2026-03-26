@@ -143,6 +143,32 @@ data/
 - 設定タブにプロンプトテンプレート管理セクションを追加（API作成済み、UI未完了）
 - 案件整理テンプレートの設定UIも設定タブに統合
 
+### 0. Local-Firstアーキテクチャ移行（最優先）
+
+**目的:** Google Drive APIベースの遅い設計から、ローカルファイルシステム優先に切り替え。速度・UXを根本的に改善。
+
+**背景:**
+- Google Drive API経由だとフォルダスキャン・ファイル読み取りが遅く、CachedFile[]の事前キャッシュ、セットアップ画面での手動設定が必要だった
+- ローカルなら`fs.readdir`/`fs.readFile`で即時。設定レイヤーが丸ごと不要になる
+- Google Drive for Desktop / Dropboxがローカル同期してくれるので、ユーザーはPCのフォルダを指定するだけ
+
+**設計:**
+- ローカルfsがプライマリ。クラウドAPIはポータビリティ用バックグラウンド処理
+- CachedFile[]廃止 → ライブ読み取り。disabledFiles（OFFリスト）のみ保存
+- サイドバーのセットアップ画面廃止 → ファイラー化（フォルダ開く＝ファイルが見える＝AIの参照対象）
+- 共通フォルダはdefaultCommonPatternsで自動分類。1社設定＝全社完了
+- 既存ファイルへの書き込み禁止。readFile/readdirのみ。新規ファイル作成のみ許可
+
+**実装フェーズ:**
+1. バイナリパーサー共通化（PDF/docx/xlsx解析をfiles-google.tsから抽出）
+2. 型定義変更（CachedFile廃止、ID→ローカルパス、disabledFiles追加、LiveFile新設）
+3. ライブファイル一覧API（scan-files廃止、list-files新設）
+4. ワークスペースAPI Local-First化（ベースフォルダ設定で全社自動セットアップ）
+5. チャットAPIローカル読み取り対応（readFileById→readLocalFile）
+6. フロントエンド（セットアップ画面削除、サイドバー＝ファイラー）
+7. バックグラウンドクラウドID紐付け（後回し可）
+8. クリーンアップ（scan-files, CompanyDetail.tsx削除）
+
 ### 書類雛形の登録フロー改善
 - ファイルからAI雛形生成は実装済み
 - マスター+パーツの階層構造は実装済み
@@ -172,6 +198,10 @@ data/
 - **サイドバー**: 登録系UI全部入り → **テンプレート表示のみ**（登録系は設定タブに統合）
 - **全タブ**: 基本情報以外にチャット入力欄を追加
 - **AIモデル**: claude-sonnet-4-20250514 → **claude-sonnet-4-6**
+- **ファイルアクセス**: Google Drive API直接連携 → **Local-First（ローカルfs優先）**に変更。Google Drive for Desktop / Dropboxのローカル同期フォルダを直接読む。クラウドAPIはポータビリティ用バックグラウンド処理に格下げ。理由: API経由は遅く、事前スキャン・キャッシュ・設定UIが複雑化する原因だった
+- **ファイルキャッシュ**: CachedFile[]を事前スキャンしてfolders.jsonに保存 → **ライブ読み取り（fs.readdir/fs.readFile）**に変更。キャッシュ不要、disabledFiles（OFFにしたファイル一覧）のみ保存
+- **フォルダ設定**: 会社ごとにセットアップ画面でサブフォルダのロールを手動設定 → **defaultCommonPatternsで自動分類、セットアップ画面廃止**。1社分類したら全社に自動適用
+- **ファイル安全性**: 既存ファイルへの書き込み一切禁止。読み取り専用（fs.readFile/fs.readdir）。新規ファイルの作成のみ許可（Phase 3用）
 
 ## 運用ルール
 
