@@ -8,6 +8,7 @@ import DocumentGenerator from "@/components/DocumentGenerator";
 import VerificationView from "@/components/VerificationView";
 import CaseOrganizer from "@/components/CaseOrganizer";
 import SettingsView from "@/components/SettingsView";
+import TemplateSidebar from "@/components/TemplateSidebar";
 
 type MainTab = "chat" | "profile" | "organize" | "search" | "verify" | "documents" | "settings";
 
@@ -116,6 +117,8 @@ export default function Home() {
     setTab("profile");
   };
 
+  const showSidebar = tab === "chat" || tab === "organize";
+
   return (
     <main className="flex h-screen flex-col">
       {/* ヘッダー: ロゴ + 会社セレクター + タブ */}
@@ -210,7 +213,7 @@ export default function Home() {
         <div className="flex flex-1 overflow-x-auto">
               <button
                 onClick={() => !chatLoading && setTab("chat")}
-                className={`px-3 py-2 text-xs transition-colors ${
+                className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "chat"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -220,7 +223,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("profile")}
-                className={`px-3 py-2 text-xs transition-colors ${
+                className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "profile"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -230,7 +233,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("organize")}
-                className={`px-3 py-2 text-xs transition-colors ${
+                className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "organize"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -240,7 +243,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("search")}
-                className={`px-3 py-2 text-xs transition-colors ${
+                className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "search"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -250,7 +253,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("verify")}
-                className={`px-3 py-2 text-xs transition-colors ${
+                className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "verify"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -260,7 +263,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("documents")}
-                className={`px-3 py-2 text-xs transition-colors ${
+                className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "documents"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -270,7 +273,7 @@ export default function Home() {
               </button>
               <button
                 onClick={() => !chatLoading && setTab("settings")}
-                className={`px-3 py-2 text-xs transition-colors ${
+                className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "settings"
                     ? "border-b-2 border-blue-500 text-blue-600"
                     : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
@@ -282,7 +285,22 @@ export default function Home() {
       </div>
 
       {/* メインコンテンツ */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden">
+        {/* サイドバー: テンプレート */}
+        {showSidebar && (
+          <TemplateSidebar
+            tab={tab}
+            onSelectPrompt={(prompt) => {
+              // チャットタブの場合はプロンプトを入力欄に設定
+              // TODO: ChatWindowにプロンプト注入の仕組みが必要
+            }}
+            onSelectTemplate={(templateId) => {
+              // 案件整理タブの場合はテンプレートを実行
+              // TODO: CaseOrganizerにテンプレート実行の仕組みが必要
+            }}
+          />
+        )}
+        <div className="flex-1 overflow-hidden">
         {tab === "chat" && <ChatWindow key={config?.selectedCompanyId || "none"} companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} />}
         {tab === "profile" && (
           <CompanyProfile
@@ -296,6 +314,7 @@ export default function Home() {
         {tab === "verify" && <VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
         {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
         {tab === "settings" && <SettingsView config={config} onAddCompanies={handleAddCompanies} onRemoveCompany={handleRemoveCompany} onUpdateConfig={fetchConfig} />}
+        </div>
       </div>
     </main>
   );
