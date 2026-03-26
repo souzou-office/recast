@@ -114,6 +114,23 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "addFileToSubfolder": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const sub = company.subfolders.find(s => s.id === body.subfolderId);
+        if (sub) {
+          if (!sub.files) sub.files = [];
+          const existing = sub.files.find(f => f.id === body.file.id);
+          if (!existing) {
+            sub.files.push(body.file);
+          } else {
+            existing.enabled = body.file.enabled;
+          }
+        }
+      }
+      break;
+    }
+
     case "removeBaseFolder": {
       const baseFolderId = body.baseFolderId;
       config.baseFolders = config.baseFolders.filter(b => b.id !== baseFolderId);

@@ -105,10 +105,55 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
     }
   };
 
+  // サブフォルダ内のファイルのON/OFFを切り替え（親subfolderのfilesに追加/更新）
+  const toggleNestedFile = async (parentSubId: string, fileId: string, fileName: string, mimeType: string, enabled: boolean) => {
+    // まず親subfolderのfilesに存在するか確認
+    const parentSub = latestCompany.subfolders.find(s => s.id === parentSubId);
+    const existingFile = parentSub?.files?.find(f => f.id === fileId);
+
+    if (existingFile) {
+      // 既にあればtoggle
+      await toggleFile(parentSubId, fileId, enabled);
+    } else {
+      // なければ追加してenabled設定
+      const res = await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "addFileToSubfolder",
+          companyId: company.id,
+          subfolderId: parentSubId,
+          file: { id: fileId, name: fileName, mimeType, size: 0, modifiedTime: new Date().toISOString(), enabled },
+        }),
+      });
+      if (res.ok) onUpdate(await res.json());
+    }
+  };
+
+  // 親subfolderのIDを探す（展開中のフォルダから辿る）
+  const findParentSubId = (folderId: string): string | null => {
+    for (const sub of latestCompany.subfolders) {
+      if (sub.id === folderId) return sub.id;
+      if (subfolderData[sub.id]?.subfolders?.some(sf => sf.id === folderId)) return sub.id;
+      // 再帰的に探す
+      for (const [key, data] of Object.entries(subfolderData)) {
+        if (data.subfolders?.some(sf => sf.id === folderId)) {
+          const parent = findParentSubId(key);
+          if (parent) return parent;
+        }
+      }
+    }
+    return null;
+  };
+
   // ネストされたフォルダの表示（再帰）
-  const renderNestedFolder = (folderId: string) => {
+  const renderNestedFolder = (folderId: string, rootSubId: string) => {
     const data = subfolderData[folderId];
     if (!data) return <p className="text-[10px] text-gray-400 py-0.5">読み込み中...</p>;
+
+    // 親subfolderのファイルリストからenabledを確認
+    const parentSub = latestCompany.subfolders.find(s => s.id === rootSubId);
+    const parentFiles = parentSub?.files || [];
 
     return (
       <>
@@ -124,20 +169,30 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
             </button>
             {expandedSubfolders.has(sf.id) && (
               <div className="ml-3 border-l border-gray-200 pl-2">
-                {renderNestedFolder(sf.id)}
+                {renderNestedFolder(sf.id, rootSubId)}
               </div>
             )}
           </div>
         ))}
         {data.files.length > 0 && (
           <ul className="space-y-0.5">
-            {data.files.map((f: any) => (
-              <li key={f.id} className="flex items-center gap-1.5">
-                <span className="text-[11px] text-gray-500 truncate" title={f.name}>
-                  {f.name}
-                </span>
-              </li>
-            ))}
+            {data.files.map((f: any) => {
+              const parentFile = parentFiles.find(pf => pf.id === f.id);
+              const isEnabled = parentFile ? parentFile.enabled : false;
+              return (
+                <li key={f.id} className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={isEnabled}
+                    onChange={e => toggleNestedFile(rootSubId, f.id, f.name, f.mimeType, e.target.checked)}
+                    className="rounded text-blue-600 w-3 h-3"
+                  />
+                  <span className={`text-[11px] truncate ${isEnabled ? "text-gray-700" : "text-gray-400"}`} title={f.name}>
+                    {f.name}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
         {data.subfolders.length === 0 && data.files.length === 0 && (
@@ -185,7 +240,7 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
                 </button>
                 {expandedSubfolders.has(sf.id) && (
                   <div className="ml-3 border-l border-gray-200 pl-2">
-                    {renderNestedFolder(sf.id)}
+                    {renderNestedFolder(sf.id, sub.id)}
                   </div>
                 )}
               </div>
