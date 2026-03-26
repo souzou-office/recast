@@ -228,7 +228,7 @@ export default function VerificationView({ company }: Props) {
               <div className="w-1/2 border-r border-gray-200 overflow-y-auto p-3">
                 <div className="flex items-center gap-1 text-[10px] text-gray-400 mb-2 flex-wrap">
                   {breadcrumbs.map((bc, i) => (
-                    <span key={bc.id} className="flex items-center gap-1">
+                    <span key={`${bc.id}-${i}`} className="flex items-center gap-1">
                       {i > 0 && <span>/</span>}
                       <button
                         onClick={() => {

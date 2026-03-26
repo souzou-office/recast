@@ -242,16 +242,6 @@ export default function Home() {
                 案件整理
               </button>
               <button
-                onClick={() => !chatLoading && setTab("search")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${
-                  tab === "search"
-                    ? "border-b-2 border-blue-500 text-blue-600"
-                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                横断検索
-              </button>
-              <button
                 onClick={() => !chatLoading && setTab("verify")}
                 className={`px-4 py-3 text-sm font-medium transition-colors ${
                   tab === "verify"
@@ -271,16 +261,28 @@ export default function Home() {
               >
                 書類生成
               </button>
-              <button
-                onClick={() => !chatLoading && setTab("settings")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${
-                  tab === "settings"
-                    ? "border-b-2 border-blue-500 text-blue-600"
-                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                設定
-              </button>
+        </div>
+
+        {/* 右端: 横断検索・設定アイコン */}
+        <div className="flex items-center gap-1 px-3 shrink-0">
+          <button
+            onClick={() => !chatLoading && setTab("search")}
+            className={`rounded-lg p-2 transition-colors ${
+              tab === "search" ? "bg-blue-100 text-blue-600" : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            }`}
+            title="横断検索"
+          >
+            🔍
+          </button>
+          <button
+            onClick={() => !chatLoading && setTab("settings")}
+            className={`rounded-lg p-2 transition-colors ${
+              tab === "settings" ? "bg-blue-100 text-blue-600" : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            }`}
+            title="設定"
+          >
+            ⚙
+          </button>
         </div>
       </div>
 
