@@ -7,7 +7,8 @@ const client = new Anthropic();
 
 // 案件整理の結果と書類を突合せ
 export async function POST(request: NextRequest) {
-  const { companyId } = await request.json();
+  const { companyId, fileIds } = await request.json() as { companyId: string; fileIds?: string[] };
+  const fileIdSet = fileIds ? new Set(fileIds) : null;
 
   const config = await getWorkspaceConfig();
   const company = config.companies.find(c => c.id === companyId);
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
 
     for (const f of sub.files) {
       if (!f.enabled) continue;
+      if (fileIdSet && !fileIdSet.has(f.id)) continue;
       const content = await readFileById(f.id, f.name, f.mimeType);
       if (!content) continue;
       sourceFiles.push({ id: f.id, name: f.name, mimeType: f.mimeType });

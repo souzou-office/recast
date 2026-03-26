@@ -16,6 +16,7 @@ export default function VerificationView({ company }: Props) {
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
   const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
 
   if (!company) {
     return (
@@ -28,6 +29,23 @@ export default function VerificationView({ company }: Props) {
   const hasMasterSheet = !!company.masterSheet;
   const hasProfile = !!company.profile;
 
+  // 会社の全ファイル一覧
+  const allFiles = company.subfolders
+    .filter(s => (s.role === "common" || (s.role === "job" && s.active)) && s.files)
+    .flatMap(s => (s.files || []).filter(f => f.enabled).map(f => ({ ...f, folderName: s.name })));
+
+  const toggleFileSelection = (fileId: string) => {
+    setSelectedFileIds(prev => {
+      const next = new Set(prev);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelectedFileIds(new Set(allFiles.map(f => f.id)));
+  const deselectAll = () => setSelectedFileIds(new Set());
+
   const handleVerify = async () => {
     setVerifying(true);
     setResult("");
@@ -38,7 +56,7 @@ export default function VerificationView({ company }: Props) {
       const res = await fetch("/api/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id }),
+        body: JSON.stringify({ companyId: company.id, fileIds: Array.from(selectedFileIds) }),
       });
 
       const reader = res.body?.getReader();
@@ -144,14 +162,41 @@ export default function VerificationView({ company }: Props) {
           </div>
           <button
             onClick={handleVerify}
-            disabled={verifying || (!hasProfile && !hasMasterSheet)}
+            disabled={verifying || (!hasProfile && !hasMasterSheet) || selectedFileIds.size === 0}
             className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
           >
-            {verifying ? "突合せ中..." : "突合せ実行"}
+            {verifying ? "突合せ中..." : `突合せ実行${selectedFileIds.size > 0 ? `（${selectedFileIds.size}件）` : ""}`}
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
+          {/* ファイル選択 */}
+          {!result && !verifying && allFiles.length > 0 && (
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-gray-700">突合せ対象の書類を選択</h3>
+                <div className="flex gap-2">
+                  <button onClick={selectAll} className="text-[10px] text-blue-500 hover:text-blue-700">全選択</button>
+                  <button onClick={deselectAll} className="text-[10px] text-gray-400 hover:text-gray-600">解除</button>
+                </div>
+              </div>
+              <div className="space-y-0.5 max-h-48 overflow-y-auto">
+                {allFiles.map(f => (
+                  <label key={f.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedFileIds.has(f.id)}
+                      onChange={() => toggleFileSelection(f.id)}
+                      className="rounded w-3 h-3"
+                    />
+                    <span className="text-xs text-gray-600 truncate">{f.name}</span>
+                    <span className="text-[10px] text-gray-400 ml-auto shrink-0">{f.folderName}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
           {result ? (
             <div className="prose prose-sm max-w-none text-gray-800
                             prose-headings:text-gray-900 prose-headings:font-semibold
