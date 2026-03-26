@@ -5,19 +5,16 @@ import type { WorkspaceConfig, Company } from "@/types";
 import FolderSidebar from "@/components/folders/FolderSidebar";
 import ChatWindow from "@/components/chat/ChatWindow";
 import CompanyProfile from "@/components/CompanyProfile";
-import CompanyRegistration from "@/components/folders/CompanyRegistration";
 import DocumentGenerator from "@/components/DocumentGenerator";
-import DocumentTemplateModal from "@/components/DocumentTemplateModal";
 import VerificationView from "@/components/VerificationView";
 import CaseOrganizer from "@/components/CaseOrganizer";
+import SettingsView from "@/components/SettingsView";
 
-type MainTab = "chat" | "profile" | "organize" | "search" | "verify" | "documents";
+type MainTab = "chat" | "profile" | "organize" | "search" | "verify" | "documents" | "settings";
 
 export default function Home() {
   const [tab, setTab] = useState<MainTab>("chat");
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
-  const [showRegistration, setShowRegistration] = useState(false);
-  const [showDocTemplates, setShowDocTemplates] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
 
   const fetchConfig = useCallback(async () => {
@@ -79,16 +76,8 @@ export default function Home() {
 
   return (
     <main className="flex h-screen">
-      <FolderSidebar onOpenRegistration={() => setShowRegistration(true)} onOpenDocTemplates={() => setShowDocTemplates(true)} />
+      <FolderSidebar />
       <div className="flex flex-1 flex-col min-w-0">
-        {showRegistration ? (
-          <CompanyRegistration
-            companies={config?.companies || []}
-            onAdd={handleAddCompanies}
-            onRemove={handleRemoveCompany}
-            onClose={() => setShowRegistration(false)}
-          />
-        ) : (
           <>
             {/* タブ */}
             <div className="flex border-b border-gray-200 bg-white">
@@ -152,6 +141,16 @@ export default function Home() {
               >
                 書類生成
               </button>
+              <button
+                onClick={() => !chatLoading && setTab("settings")}
+                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                  tab === "settings"
+                    ? "border-b-2 border-blue-500 text-blue-600"
+                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                設定
+              </button>
             </div>
 
             {/* タブ内容 */}
@@ -168,15 +167,10 @@ export default function Home() {
               {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
               {tab === "verify" && <VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
               {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
+              {tab === "settings" && <SettingsView config={config} onAddCompanies={handleAddCompanies} onRemoveCompany={handleRemoveCompany} onUpdateConfig={fetchConfig} />}
             </div>
           </>
-        )}
       </div>
-
-      {/* 書類雛形管理モーダル */}
-      {showDocTemplates && (
-        <DocumentTemplateModal onClose={() => setShowDocTemplates(false)} />
-      )}
     </main>
   );
 }

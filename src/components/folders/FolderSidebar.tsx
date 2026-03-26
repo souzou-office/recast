@@ -4,14 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { WorkspaceConfig, Company } from "@/types";
 import CloudStatus from "./CloudStatus";
 import CompanyMainView from "./CompanyMainView";
-import CommonPatternsModal from "./CommonPatternsModal";
 
-interface Props {
-  onOpenRegistration?: () => void;
-  onOpenDocTemplates?: () => void;
-}
-
-export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }: Props) {
+export default function FolderSidebar() {
   const [config, setConfig] = useState<WorkspaceConfig>({
     baseFolders: [],
     globalCommon: [],
@@ -21,10 +15,6 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
   });
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [scanningAll, setScanningAll] = useState(false);
-  const [scanProgress, setScanProgress] = useState("");
-  const scanAbortRef = useRef<AbortController | null>(null);
-  const [showPatternsModal, setShowPatternsModal] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const fetchConfig = useCallback(async () => {
@@ -60,65 +50,6 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
   };
 
   // スキャンキャンセル
-  const handleCancelScan = () => {
-    scanAbortRef.current?.abort();
-  };
-
-  // 共通フォルダパターン保存
-  const handleSavePatterns = async (patterns: string[]) => {
-    await patchConfig({ action: "setDefaultCommonPatterns", patterns });
-    setShowPatternsModal(false);
-  };
-
-  // パターン保存 + 全社一括スキャン（SSE）
-  const handleSavePatternsAndScanAll = async (patterns: string[], reset: boolean) => {
-    await patchConfig({ action: "setDefaultCommonPatterns", patterns });
-    const abortController = new AbortController();
-    scanAbortRef.current = abortController;
-    setScanningAll(true);
-    setScanProgress("開始中...");
-    try {
-      const res = await fetch("/api/workspace/scan-all", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reset }),
-        signal: abortController.signal,
-      });
-      const reader = res.body?.getReader();
-      if (!reader) return;
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          const match = line.match(/^data: (.+)$/m);
-          if (!match) continue;
-          const data = JSON.parse(match[1]);
-
-          if (data.type === "progress") {
-            setScanProgress(`${data.current}/${data.total} ${data.message}`);
-          } else if (data.type === "done") {
-            setConfig(data.config);
-          }
-        }
-      }
-    } catch { /* abort or error */ }
-    finally {
-      scanAbortRef.current = null;
-      setScanningAll(false);
-      setScanProgress("");
-      setShowPatternsModal(false);
-    }
-  };
-
   // 会社選択
   const handleSelectCompany = async (companyId: string) => {
     const data = await patchConfig({ action: "selectCompany", companyId });
@@ -163,12 +94,9 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
       {config.companies.length === 0 ? (
         <>
           <div className="flex-1 p-4">
-            <button
-              onClick={onOpenRegistration}
-              className="w-full rounded-lg border border-dashed border-gray-300 py-4 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
-            >
-              会社フォルダを登録
-            </button>
+            <p className="text-center text-xs text-gray-400 py-4">
+              設定タブから会社を登録してください
+            </p>
           </div>
           <div className="border-t border-gray-200 px-3 py-2">
             <CloudStatus />
@@ -250,44 +178,9 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
             <CloudStatus />
           </div>
 
-          {/* フッター: 設定 */}
-          <div className="border-t border-gray-200 p-3">
-            <div className="flex gap-3">
-              <button
-                onClick={onOpenRegistration}
-                className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                会社登録
-              </button>
-              <button
-                onClick={() => setShowPatternsModal(true)}
-                className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                共通フォルダ
-              </button>
-              <button
-                onClick={onOpenDocTemplates}
-                className="flex-1 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                書類雛形
-              </button>
-            </div>
-          </div>
         </>
       )}
 
-      {/* 共通フォルダ設定 */}
-      {showPatternsModal && (
-        <CommonPatternsModal
-          patterns={config.defaultCommonPatterns || []}
-          onSave={handleSavePatterns}
-          onScanAll={handleSavePatternsAndScanAll}
-          onCancelScan={handleCancelScan}
-          scanning={scanningAll}
-          scanProgress={scanProgress}
-          onClose={() => setShowPatternsModal(false)}
-        />
-      )}
     </aside>
   );
 }
