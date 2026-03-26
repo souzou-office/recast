@@ -3,6 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
 import type { Company } from "@/types";
 
 interface Props {
@@ -13,6 +14,7 @@ export default function VerificationView({ company }: Props) {
   const [verifying, setVerifying] = useState(false);
   const [result, setResult] = useState("");
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
+  const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
 
   if (!company) {
@@ -30,6 +32,7 @@ export default function VerificationView({ company }: Props) {
     setVerifying(true);
     setResult("");
     setSourceFiles([]);
+    setSourceLinks({});
 
     try {
       const res = await fetch("/api/verify", {
@@ -43,6 +46,7 @@ export default function VerificationView({ company }: Props) {
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let collectedFiles: { id: string; name: string; mimeType: string }[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -58,14 +62,68 @@ export default function VerificationView({ company }: Props) {
           const data = JSON.parse(match[1]);
 
           if (data.type === "meta" && data.sourceFiles) {
+            collectedFiles = data.sourceFiles;
             setSourceFiles(data.sourceFiles);
           } else if (data.type === "text") {
             setResult(prev => prev + data.text);
           }
         }
       }
+
+      setVerifying(false);
+
+      // Haikuで各セクションとファイルの紐付け
+      const finalResult = await new Promise<string>(resolve => {
+        setResult(prev => { resolve(prev); return prev; });
+      });
+
+      if (collectedFiles.length > 0 && finalResult) {
+        try {
+          const linkRes = await fetch("/api/templates/link-sources", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: finalResult, sourceFiles: collectedFiles }),
+          });
+          if (linkRes.ok) {
+            const { links } = await linkRes.json();
+            setSourceLinks(links);
+          }
+        } catch { /* ignore */ }
+      }
     } catch { /* ignore */ }
     finally { setVerifying(false); }
+  };
+
+  // h2見出しの横にファイルリンクを表示するカスタムコンポーネント
+  const components: Components = {
+    h2: ({ children, ...props }) => {
+      const text = typeof children === "string" ? children :
+        Array.isArray(children) ? children.map(c => typeof c === "string" ? c : "").join("") : "";
+      const cleanText = text.replace(/^\d+\.\s*/, "").trim();
+      const files = sourceLinks[text] || sourceLinks[cleanText] ||
+        Object.entries(sourceLinks).find(([k]) =>
+          k.includes(cleanText) || cleanText.includes(k)
+        )?.[1];
+
+      return (
+        <div className="flex flex-wrap items-center gap-2 mt-3 mb-1">
+          <h2 {...props} className="text-base font-semibold text-gray-900 m-0">{children}</h2>
+          {files && files.map((f, i) => (
+            <button
+              key={`${f.id}-${i}`}
+              onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
+              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors ${
+                previewFileId === f.id
+                  ? "bg-blue-100 text-blue-700"
+                  : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+              }`}
+            >
+              📄 {f.name}
+            </button>
+          ))}
+        </div>
+      );
+    },
   };
 
   return (
@@ -95,42 +153,18 @@ export default function VerificationView({ company }: Props) {
 
         <div className="flex-1 overflow-y-auto p-6">
           {result ? (
-            <>
-              <div className="prose prose-sm max-w-none text-gray-800
-                              prose-headings:text-gray-900 prose-headings:font-semibold
-                              prose-h2:text-base prose-h2:mt-3 prose-h2:mb-1
-                              prose-p:leading-snug prose-p:my-0.5
-                              prose-table:border-collapse prose-table:w-full prose-table:my-0.5
-                              prose-th:border prose-th:border-gray-300 prose-th:bg-gray-50 prose-th:px-2 prose-th:py-1 prose-th:text-left prose-th:text-xs
-                              prose-td:border prose-td:border-gray-300 prose-td:px-2 prose-td:py-1 prose-td:text-sm
-                              prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {result}
-                </ReactMarkdown>
-              </div>
-
-              {/* 参照元資料 */}
-              {sourceFiles.length > 0 && !verifying && (
-                <div className="mt-4 border-t border-gray-100 pt-3">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400">参照元資料</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {sourceFiles.map((f, i) => (
-                      <button
-                        key={`${f.id}-${i}`}
-                        onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
-                        className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
-                          previewFileId === f.id
-                            ? "bg-blue-100 text-blue-700"
-                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                        }`}
-                      >
-                        📄 {f.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
+            <div className="prose prose-sm max-w-none text-gray-800
+                            prose-headings:text-gray-900 prose-headings:font-semibold
+                            prose-h2:text-base prose-h2:mt-3 prose-h2:mb-1
+                            prose-p:leading-snug prose-p:my-0.5
+                            prose-table:border-collapse prose-table:w-full prose-table:my-0.5
+                            prose-th:border prose-th:border-gray-300 prose-th:bg-gray-50 prose-th:px-2 prose-th:py-1 prose-th:text-left prose-th:text-xs
+                            prose-td:border prose-td:border-gray-300 prose-td:px-2 prose-td:py-1 prose-td:text-sm
+                            prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+                {result}
+              </ReactMarkdown>
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center">
               <div className="text-center text-gray-400">
@@ -150,27 +184,12 @@ export default function VerificationView({ company }: Props) {
               {sourceFiles.find(f => f.id === previewFileId)?.name}
             </span>
             <div className="flex items-center gap-2">
-              <a
-                href={`https://drive.google.com/file/d/${previewFileId}/view`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[10px] text-blue-500 hover:text-blue-700"
-              >
-                別タブで開く
-              </a>
-              <button
-                onClick={() => setPreviewFileId(null)}
-                className="text-gray-400 hover:text-gray-600 text-lg leading-none"
-              >
-                ×
-              </button>
+              <a href={`https://drive.google.com/file/d/${previewFileId}/view`} target="_blank" rel="noopener noreferrer"
+                className="text-[10px] text-blue-500 hover:text-blue-700">別タブで開く</a>
+              <button onClick={() => setPreviewFileId(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
             </div>
           </div>
-          <iframe
-            src={`https://drive.google.com/file/d/${previewFileId}/preview`}
-            className="flex-1 w-full"
-            allow="autoplay"
-          />
+          <iframe src={`https://drive.google.com/file/d/${previewFileId}/preview`} className="flex-1 w-full" allow="autoplay" />
         </div>
       )}
     </div>
