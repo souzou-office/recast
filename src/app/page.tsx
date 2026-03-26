@@ -8,8 +8,10 @@ import CompanyProfile from "@/components/CompanyProfile";
 import CompanyRegistration from "@/components/folders/CompanyRegistration";
 import DocumentGenerator from "@/components/DocumentGenerator";
 import DocumentTemplateModal from "@/components/DocumentTemplateModal";
+import VerificationView from "@/components/VerificationView";
+import CaseOrganizer from "@/components/CaseOrganizer";
 
-type MainTab = "chat" | "profile" | "search" | "documents";
+type MainTab = "chat" | "profile" | "organize" | "search" | "verify" | "documents";
 
 export default function Home() {
   const [tab, setTab] = useState<MainTab>("chat");
@@ -111,6 +113,16 @@ export default function Home() {
                 基本情報
               </button>
               <button
+                onClick={() => !chatLoading && setTab("organize")}
+                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                  tab === "organize"
+                    ? "border-b-2 border-blue-500 text-blue-600"
+                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                案件整理
+              </button>
+              <button
                 onClick={() => !chatLoading && setTab("search")}
                 className={`px-6 py-3 text-sm font-medium transition-colors ${
                   tab === "search"
@@ -119,6 +131,16 @@ export default function Home() {
                 }`}
               >
                 横断検索
+              </button>
+              <button
+                onClick={() => !chatLoading && setTab("verify")}
+                className={`px-6 py-3 text-sm font-medium transition-colors ${
+                  tab === "verify"
+                    ? "border-b-2 border-blue-500 text-blue-600"
+                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                突合せ
               </button>
               <button
                 onClick={() => !chatLoading && setTab("documents")}
@@ -142,7 +164,9 @@ export default function Home() {
                   onUpdate={fetchConfig}
                 />
               )}
+              {tab === "organize" && <CaseOrganizer key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
               {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
+              {tab === "verify" && <VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
               {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
             </div>
           </>

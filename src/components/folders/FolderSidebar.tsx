@@ -1,12 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { WorkspaceConfig, Company, Subfolder, SubfolderRole } from "@/types";
+import type { WorkspaceConfig, Company } from "@/types";
 import CloudStatus from "./CloudStatus";
 import CompanyMainView from "./CompanyMainView";
 import CommonPatternsModal from "./CommonPatternsModal";
-
-type View = "main" | "setup";
 
 interface Props {
   onOpenRegistration?: () => void;
@@ -21,18 +19,12 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
     companies: [],
     selectedCompanyId: null,
   });
-  const [view, setView] = useState<View>("main");
   const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [scanningAll, setScanningAll] = useState(false);
   const [scanProgress, setScanProgress] = useState("");
   const scanAbortRef = useRef<AbortController | null>(null);
   const [showPatternsModal, setShowPatternsModal] = useState(false);
-  const [setupCompany, setSetupCompany] = useState<Company | null>(null);
-  const [setupFolders, setSetupFolders] = useState<{ id: string; name: string }[]>([]);
-  const [setupFiles, setSetupFiles] = useState<{ name: string; mimeType: string }[]>([]);
-  const [setupBreadcrumbs, setSetupBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
-  const [setupScanning, setSetupScanning] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const fetchConfig = useCallback(async () => {
@@ -129,9 +121,15 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
 
   // 会社選択
   const handleSelectCompany = async (companyId: string) => {
-    await patchConfig({ action: "selectCompany", companyId });
+    const data = await patchConfig({ action: "selectCompany", companyId });
     setCompanyDropdownOpen(false);
     setSearchQuery("");
+
+    // 未設定の会社を自動セットアップ
+    const company = (data || config).companies.find((c: Company) => c.id === companyId);
+    if (company && company.subfolders.length === 0 && config.defaultCommonPatterns.length > 0) {
+      await patchConfig({ action: "autoSetupCompany", companyId });
+    }
   };
 
   // 案件フォルダのactive切替
@@ -144,232 +142,15 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
     });
   };
 
-  // --- 設定モード ---
-  const openSetup = (company: Company) => {
-    setSetupCompany(company);
-    setSetupBreadcrumbs([{ id: company.id, name: company.name }]);
-    setView("setup");
-    const isFirstTime = company.subfolders.length === 0;
-    loadSetupFolders(company.id, isFirstTime);
+  // フォルダ再スキャン（force）
+  const handleRescanCompany = async (companyId: string) => {
+    await patchConfig({ action: "autoSetupCompany", companyId, force: true });
   };
-
-  const loadSetupFolders = async (folderId: string, autoApplyPatterns?: boolean) => {
-    setSetupScanning(true);
-    try {
-      // setupCompanyのproviderを特定
-      const company = setupCompany || config.companies.find(c => c.id === folderId);
-      const base = config.baseFolders.find(b => b.id === company?.baseFolderId);
-      const provider = base?.provider || "google";
-
-      const res = await fetch("/api/workspace/scan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderId, provider }),
-      });
-      if (res.ok) {
-        const { folders, files: scannedFiles } = await res.json();
-        setSetupFolders(folders);
-        setSetupFiles(scannedFiles || []);
-
-        // デフォルトパターンを自動適用
-        if (autoApplyPatterns && setupCompany && config.defaultCommonPatterns?.length > 0) {
-          const latest = config.companies.find(c => c.id === setupCompany.id);
-          if (latest && latest.subfolders.length === 0) {
-            const newSubs: Subfolder[] = [];
-            for (const f of folders) {
-              const isCommon = config.defaultCommonPatterns.some(
-                (p: string) => f.name.toLowerCase().includes(p.toLowerCase())
-              );
-              newSubs.push({
-                id: f.id,
-                name: f.name,
-                role: isCommon ? "common" : "job",
-                active: isCommon,
-              });
-            }
-            await patchConfig({ action: "setSubfolders", companyId: setupCompany.id, subfolders: newSubs });
-          }
-        }
-      }
-    } catch { /* ignore */ }
-    finally { setSetupScanning(false); }
-  };
-
-  const handleSetupDrill = (folder: { id: string; name: string }) => {
-    setSetupBreadcrumbs(prev => [...prev, folder]);
-    loadSetupFolders(folder.id);
-  };
-
-  const handleSetupBreadcrumb = (index: number) => {
-    const bc = setupBreadcrumbs.slice(0, index + 1);
-    setSetupBreadcrumbs(bc);
-    loadSetupFolders(bc[bc.length - 1].id);
-  };
-
-  const handleSetRole = async (folderId: string, folderName: string, role: SubfolderRole) => {
-    if (!setupCompany) return;
-    const latest = config.companies.find(c => c.id === setupCompany.id);
-    const subs = latest?.subfolders || [];
-    const existing = subs.find(s => s.id === folderId);
-    if (existing) {
-      await patchConfig({ action: "setSubfolderRole", companyId: setupCompany.id, subfolderId: folderId, role });
-    } else {
-      const newSub: Subfolder = { id: folderId, name: folderName, role, active: role === "common" };
-      const subfolders = [...subs, newSub];
-      await patchConfig({ action: "setSubfolders", companyId: setupCompany.id, subfolders });
-    }
-
-    // 共通に設定したとき、デフォルトパターンに追加するか確認
-    if (role === "common") {
-      const patterns = config.defaultCommonPatterns || [];
-      const alreadyInPatterns = patterns.some(p => folderName.toLowerCase().includes(p.toLowerCase()));
-      if (!alreadyInPatterns) {
-        const apply = confirm(`「${folderName}」を全会社の共通フォルダに設定しますか？`);
-        if (apply) {
-          await patchConfig({ action: "setDefaultCommonPatterns", patterns: [...patterns, folderName] });
-          await patchConfig({ action: "applyDefaultCommon" });
-        }
-      }
-    }
-  };
-
-  const handleRemoveSub = async (subfolderId: string) => {
-    if (!setupCompany) return;
-    const latest = config.companies.find(c => c.id === setupCompany.id);
-    const subfolders = (latest?.subfolders || []).filter(s => s.id !== subfolderId);
-    await patchConfig({ action: "setSubfolders", companyId: setupCompany.id, subfolders });
-  };
-
-  // configが変わったらsetupCompanyも更新
-  const currentSetupCompany = setupCompany
-    ? config.companies.find(c => c.id === setupCompany.id) || setupCompany
-    : null;
 
   // フィルタリング（全ルートの会社をまとめて表示）
   const filteredCompanies = config.companies
     .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => a.name.localeCompare(b.name));
-
-  // --- 設定モード画面 ---
-  if (view === "setup" && currentSetupCompany) {
-    const commonSubs = currentSetupCompany.subfolders.filter(s => s.role === "common");
-    const jobSubs = currentSetupCompany.subfolders.filter(s => s.role === "job");
-
-    return (
-      <aside className="flex h-full w-72 flex-col border-r border-gray-200 bg-gray-50">
-        <div className="border-b border-gray-200 p-4">
-          <button onClick={() => setView("main")} className="mb-1 text-xs text-blue-600 hover:text-blue-800">
-            ← 戻る
-          </button>
-          <h2 className="text-sm font-bold text-gray-800 truncate">{currentSetupCompany.name}</h2>
-          <p className="text-[10px] text-gray-400">フォルダの役割を設定</p>
-        </div>
-
-        {/* 登録済み */}
-        {(commonSubs.length > 0 || jobSubs.length > 0) && (
-          <div className="border-b border-gray-200 px-4 py-3">
-            {commonSubs.length > 0 && (
-              <div className="mb-2">
-                <h3 className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-green-600">常時参照</h3>
-                <ul className="space-y-0.5">
-                  {commonSubs.map(s => (
-                    <li key={s.id} className="group flex items-center justify-between rounded px-1.5 py-0.5 hover:bg-gray-200">
-                      <span className="text-xs text-gray-700">{s.name}</span>
-                      <button onClick={() => handleRemoveSub(s.id)} className="hidden text-[10px] text-red-400 group-hover:block">解除</button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {jobSubs.length > 0 && (
-              <div>
-                <h3 className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-blue-600">案件</h3>
-                <ul className="space-y-0.5">
-                  {jobSubs.map(s => (
-                    <li key={s.id} className="group flex items-center justify-between rounded px-1.5 py-0.5 hover:bg-gray-200">
-                      <span className="text-xs text-gray-700">{s.name}</span>
-                      <button onClick={() => handleRemoveSub(s.id)} className="hidden text-[10px] text-red-400 group-hover:block">解除</button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* パンくず */}
-        <div className="flex flex-wrap items-center gap-1 border-b border-gray-100 px-4 py-2">
-          {setupBreadcrumbs.map((bc, i) => (
-            <span key={bc.id} className="flex items-center gap-1">
-              {i > 0 && <span className="text-gray-300 text-[10px]">/</span>}
-              <button
-                onClick={() => handleSetupBreadcrumb(i)}
-                className={`text-[10px] truncate max-w-[80px] ${i === setupBreadcrumbs.length - 1 ? "text-gray-700 font-medium" : "text-blue-600"}`}
-              >{i === 0 ? "root" : bc.name}</button>
-            </span>
-          ))}
-        </div>
-
-        {/* フォルダ一覧 */}
-        <div className="flex-1 overflow-y-auto p-2">
-          {setupScanning ? (
-            <p className="py-4 text-center text-xs text-gray-400">読み込み中...</p>
-          ) : setupFolders.length === 0 ? (
-            <p className="py-4 text-center text-xs text-gray-400">サブフォルダなし</p>
-          ) : (
-            <ul className="space-y-0.5">
-              {setupFolders.map(folder => {
-                const sub = currentSetupCompany.subfolders.find(s => s.id === folder.id);
-                return (
-                  <li key={folder.id} className="group flex items-center rounded-lg hover:bg-gray-100">
-                    <button
-                      onClick={() => handleSetupDrill(folder)}
-                      className="flex-1 flex items-center gap-2 px-2 py-1.5 text-left text-sm text-gray-700"
-                    >
-                      <span className="shrink-0 text-yellow-500 text-xs">&#128193;</span>
-                      <span className="truncate">{folder.name}</span>
-                      {sub && (
-                        <span className={`shrink-0 rounded px-1 text-[10px] ${sub.role === "common" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>
-                          {sub.role === "common" ? "共通" : "案件"}
-                        </span>
-                      )}
-                    </button>
-                    <div className="hidden shrink-0 gap-1 pr-2 group-hover:flex">
-                      {(!sub || sub.role !== "common") && (
-                        <button onClick={() => handleSetRole(folder.id, folder.name, "common")} className="rounded bg-green-50 px-1.5 py-0.5 text-[10px] text-green-700 hover:bg-green-100">共通</button>
-                      )}
-                      {(!sub || sub.role !== "job") && (
-                        <button onClick={() => handleSetRole(folder.id, folder.name, "job")} className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-700 hover:bg-blue-100">案件</button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-              {setupFiles.length > 0 && (
-                <>
-                  <li className="border-t border-gray-100 mt-1 pt-1">
-                    <span className="px-2 py-1 text-[10px] text-gray-400">ファイル</span>
-                  </li>
-                  {setupFiles.map((file, i) => (
-                    <li key={`file-${i}`}
-                        className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs text-gray-400">
-                      <span className="shrink-0">
-                        {file.mimeType.includes("pdf") ? "📄" :
-                         file.mimeType.includes("word") || file.mimeType.includes("document") ? "📝" :
-                         file.mimeType.includes("sheet") || file.mimeType.includes("excel") ? "📊" :
-                         file.mimeType.includes("image") ? "🖼️" : "📎"}
-                      </span>
-                      <span className="truncate">{file.name}</span>
-                    </li>
-                  ))}
-                </>
-              )}
-            </ul>
-          )}
-        </div>
-      </aside>
-    );
-  }
 
   // --- メイン画面 ---
   return (
@@ -455,7 +236,7 @@ export default function FolderSidebar({ onOpenRegistration, onOpenDocTemplates }
               company={selectedCompany}
               config={config}
               onToggleJob={handleToggleJob}
-              onOpenSetup={() => openSetup(selectedCompany)}
+              onRescan={handleRescanCompany}
               onUpdate={setConfig}
             />
           ) : (

@@ -11,11 +11,14 @@ const SUPPORTED_MIME_TYPES = new Set([
   "text/plain", "text/csv", "text/html", "text/xml",
   "text/tab-separated-values", "application/json", "text/markdown",
   "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-excel",
+  "application/msword",                                                      // .doc
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  // .docx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",       // .xlsx
+  "application/vnd.ms-excel",                                                // .xls
   "application/vnd.google-apps.document",
   "application/vnd.google-apps.spreadsheet",
+  "application/vnd.google-apps.presentation",                                // Google Slides
+  "image/jpeg", "image/png", "image/gif", "image/webp",                     // 画像
 ]);
 
 // Haikuにファイル名一覧を投げて意味レベルでグループ化し、最新だけenabledにする
@@ -110,9 +113,13 @@ export async function POST(request: NextRequest) {
 
     const data = await res.json();
     const rawFiles: CachedFile[] = [];
+    const subfolders: { id: string; name: string }[] = [];
 
     for (const f of data.files || []) {
-      if (f.mimeType === "application/vnd.google-apps.folder") continue;
+      if (f.mimeType === "application/vnd.google-apps.folder") {
+        subfolders.push({ id: f.id, name: f.name });
+        continue;
+      }
       if (!SUPPORTED_MIME_TYPES.has(f.mimeType)) continue;
 
       rawFiles.push({
@@ -145,11 +152,12 @@ export async function POST(request: NextRequest) {
           }
         }
         sub.files = files;
+        sub.childFolders = subfolders.length > 0 ? subfolders : undefined;
         await saveWorkspaceConfig(config);
       }
     }
 
-    return NextResponse.json({ files, newFiles: newFileIds });
+    return NextResponse.json({ files, newFiles: newFileIds, subfolders });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "スキャンに失敗" },
