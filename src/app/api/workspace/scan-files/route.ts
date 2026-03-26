@@ -149,6 +149,7 @@ export async function POST(request: NextRequest) {
           }
         }
         sub.files = files;
+        sub.childFolders = subfolders.length > 0 ? subfolders : undefined;
         await saveWorkspaceConfig(config);
       }
     }

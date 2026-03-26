@@ -14,7 +14,17 @@ interface Props {
 export default function CompanyMainView({ company, config, onToggleJob, onOpenSetup, onUpdate }: Props) {
   const [expandedFolder, setExpandedFolder] = useState<string | null>(null);
   const [scanningFolder, setScanningFolder] = useState<string | null>(null);
-  const [subfolderData, setSubfolderData] = useState<Record<string, { files: any[]; subfolders: { id: string; name: string }[] }>>({});
+  const [subfolderData, setSubfolderData] = useState<Record<string, { files: any[]; subfolders: { id: string; name: string }[] }>>(() => {
+    // 保存済みのchildFoldersから初期化
+    const initial: Record<string, { files: any[]; subfolders: { id: string; name: string }[] }> = {};
+    const comp = config.companies.find(c => c.id === company.id) || company;
+    for (const sub of comp.subfolders) {
+      if (sub.childFolders && sub.childFolders.length > 0) {
+        initial[sub.id] = { files: [], subfolders: sub.childFolders };
+      }
+    }
+    return initial;
+  });
   const [expandedSubfolders, setExpandedSubfolders] = useState<Set<string>>(new Set());
 
   const latestCompany = config.companies.find(c => c.id === company.id) || company;

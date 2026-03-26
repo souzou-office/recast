@@ -17,6 +17,7 @@ export interface Subfolder {
   role: SubfolderRole;
   active: boolean;
   files?: CachedFile[];
+  childFolders?: { id: string; name: string }[];
 }
 
 export interface SourceFile {
