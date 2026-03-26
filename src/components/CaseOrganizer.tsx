@@ -177,7 +177,19 @@ export default function CaseOrganizer({ company }: Props) {
           <div className="flex items-center gap-2">
             {displayResult && !isLoading && (
               <button
-                onClick={() => { setResult(""); setChatMessages([]); }}
+                onClick={async () => {
+                  if (!confirm("案件整理の結果を削除しますか？")) return;
+                  setResult("");
+                  setChatMessages([]);
+                  // マスターシートも削除
+                  if (company) {
+                    await fetch("/api/workspace", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
+                    });
+                  }
+                }}
                 className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
               >
                 削除

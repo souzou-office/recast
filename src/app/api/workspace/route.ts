@@ -175,6 +175,14 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "deleteMasterSheet": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        delete company.masterSheet;
+      }
+      break;
+    }
+
     case "removeBaseFolder": {
       const baseFolderId = body.baseFolderId;
       config.baseFolders = config.baseFolders.filter(b => b.id !== baseFolderId);
