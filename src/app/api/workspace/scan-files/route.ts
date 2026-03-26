@@ -110,9 +110,13 @@ export async function POST(request: NextRequest) {
 
     const data = await res.json();
     const rawFiles: CachedFile[] = [];
+    const subfolders: { id: string; name: string }[] = [];
 
     for (const f of data.files || []) {
-      if (f.mimeType === "application/vnd.google-apps.folder") continue;
+      if (f.mimeType === "application/vnd.google-apps.folder") {
+        subfolders.push({ id: f.id, name: f.name });
+        continue;
+      }
       if (!SUPPORTED_MIME_TYPES.has(f.mimeType)) continue;
 
       rawFiles.push({
@@ -149,7 +153,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ files, newFiles: newFileIds });
+    return NextResponse.json({ files, newFiles: newFileIds, subfolders });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "スキャンに失敗" },

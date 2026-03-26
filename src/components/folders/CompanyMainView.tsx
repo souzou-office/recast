@@ -14,6 +14,8 @@ interface Props {
 export default function CompanyMainView({ company, config, onToggleJob, onOpenSetup, onUpdate }: Props) {
   const [expandedFolder, setExpandedFolder] = useState<string | null>(null);
   const [scanningFolder, setScanningFolder] = useState<string | null>(null);
+  const [subfolderData, setSubfolderData] = useState<Record<string, { files: any[]; subfolders: { id: string; name: string }[] }>>({});
+  const [expandedSubfolders, setExpandedSubfolders] = useState<Set<string>>(new Set());
 
   const latestCompany = config.companies.find(c => c.id === company.id) || company;
   const commonSubs = latestCompany.subfolders.filter(s => s.role === "common");
@@ -29,7 +31,10 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
         body: JSON.stringify({ companyId: company.id, subfolderId: sub.id }),
       });
       if (res.ok) {
-        const { newFiles } = await res.json();
+        const { newFiles, subfolders: subs } = await res.json();
+        if (subs && subs.length > 0) {
+          setSubfolderData(prev => ({ ...prev, [sub.id]: { files: [], subfolders: subs } }));
+        }
         const cfgRes = await fetch("/api/workspace");
         if (cfgRes.ok) {
           const newConfig = await cfgRes.json();
@@ -63,6 +68,34 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
     if (res.ok) onUpdate(await res.json());
   };
 
+  // サブフォルダ内のファイル・フォルダを取得
+  const scanSubfolder = async (folderId: string) => {
+    try {
+      const res = await fetch("/api/workspace/scan-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, subfolderId: folderId }),
+      });
+      if (res.ok) {
+        const { files, subfolders: subs } = await res.json();
+        setSubfolderData(prev => ({ ...prev, [folderId]: { files: files || [], subfolders: subs || [] } }));
+      }
+    } catch { /* ignore */ }
+  };
+
+  const toggleSubfolder = (folderId: string) => {
+    setExpandedSubfolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        next.add(folderId);
+        if (!subfolderData[folderId]) scanSubfolder(folderId);
+      }
+      return next;
+    });
+  };
+
   const toggleExpand = (subId: string, sub: Subfolder) => {
     if (expandedFolder === subId) {
       setExpandedFolder(null);
@@ -70,6 +103,48 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
       setExpandedFolder(subId);
       if (!sub.files || sub.files.length === 0) scanFiles(sub);
     }
+  };
+
+  // ネストされたフォルダの表示（再帰）
+  const renderNestedFolder = (folderId: string) => {
+    const data = subfolderData[folderId];
+    if (!data) return <p className="text-[10px] text-gray-400 py-0.5">読み込み中...</p>;
+
+    return (
+      <>
+        {data.subfolders.map(sf => (
+          <div key={sf.id}>
+            <button
+              onClick={() => toggleSubfolder(sf.id)}
+              className="flex items-center gap-1 text-[11px] text-gray-600 hover:text-blue-600 py-0.5 w-full text-left"
+            >
+              <span className="text-yellow-500 text-xs">📁</span>
+              <span className="truncate">{sf.name}</span>
+              <span className="text-[9px] text-gray-400 ml-auto">{expandedSubfolders.has(sf.id) ? "▼" : "▶"}</span>
+            </button>
+            {expandedSubfolders.has(sf.id) && (
+              <div className="ml-3 border-l border-gray-200 pl-2">
+                {renderNestedFolder(sf.id)}
+              </div>
+            )}
+          </div>
+        ))}
+        {data.files.length > 0 && (
+          <ul className="space-y-0.5">
+            {data.files.map((f: any) => (
+              <li key={f.id} className="flex items-center gap-1.5">
+                <span className="text-[11px] text-gray-500 truncate" title={f.name}>
+                  {f.name}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {data.subfolders.length === 0 && data.files.length === 0 && (
+          <p className="text-[10px] text-gray-400 py-0.5">空</p>
+        )}
+      </>
+    );
   };
 
   const renderSubfolderFiles = (sub: Subfolder) => {
@@ -95,24 +170,47 @@ export default function CompanyMainView({ company, config, onToggleJob, onOpenSe
         </div>
         {isScanning && !latestSub.files?.length ? (
           <p className="text-[10px] text-gray-400 py-1">スキャン中...</p>
-        ) : latestSub.files && latestSub.files.length > 0 ? (
-          <ul className="space-y-0.5">
-            {latestSub.files.map(f => (
-              <li key={f.id} className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={f.enabled}
-                  onChange={e => toggleFile(sub.id, f.id, e.target.checked)}
-                  className="rounded text-blue-600 w-3 h-3"
-                />
-                <span className={`text-[11px] truncate ${f.enabled ? "text-gray-700" : "text-gray-400 line-through"}`} title={f.name}>
-                  {f.name}
-                </span>
-              </li>
-            ))}
-          </ul>
         ) : (
-          <p className="text-[10px] text-gray-400 py-1">ファイルなし</p>
+          <>
+            {/* サブフォルダ */}
+            {subfolderData[sub.id]?.subfolders?.map(sf => (
+              <div key={sf.id}>
+                <button
+                  onClick={() => toggleSubfolder(sf.id)}
+                  className="flex items-center gap-1 text-[11px] text-gray-600 hover:text-blue-600 py-0.5 w-full text-left"
+                >
+                  <span className="text-yellow-500 text-xs">📁</span>
+                  <span className="truncate">{sf.name}</span>
+                  <span className="text-[9px] text-gray-400 ml-auto">{expandedSubfolders.has(sf.id) ? "▼" : "▶"}</span>
+                </button>
+                {expandedSubfolders.has(sf.id) && (
+                  <div className="ml-3 border-l border-gray-200 pl-2">
+                    {renderNestedFolder(sf.id)}
+                  </div>
+                )}
+              </div>
+            ))}
+            {/* ファイル */}
+            {latestSub.files && latestSub.files.length > 0 ? (
+              <ul className="space-y-0.5">
+                {latestSub.files.map(f => (
+                  <li key={f.id} className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={f.enabled}
+                      onChange={e => toggleFile(sub.id, f.id, e.target.checked)}
+                      className="rounded text-blue-600 w-3 h-3"
+                    />
+                    <span className={`text-[11px] truncate ${f.enabled ? "text-gray-700" : "text-gray-400 line-through"}`} title={f.name}>
+                      {f.name}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : !subfolderData[sub.id]?.subfolders?.length ? (
+              <p className="text-[10px] text-gray-400 py-1">ファイルなし</p>
+            ) : null}
+          </>
         )}
       </div>
     );
