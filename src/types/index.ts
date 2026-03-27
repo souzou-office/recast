@@ -18,6 +18,8 @@ export interface Subfolder {
   active: boolean;
   files?: CachedFile[];
   childFolders?: { id: string; name: string }[];
+  disabledFiles?: string[]; // Local-First: ユーザーがOFFにしたファイルの相対パス
+  cloudId?: string;         // Local-First: クラウドAPI用フォルダID（バックグラウンド紐付け）
 }
 
 export interface SourceFile {
@@ -126,6 +128,17 @@ export interface FileInfo {
   path: string;
   size: number;
   isDirectory: boolean;
+}
+
+/** Local-First: ライブファイル一覧用 */
+export interface LiveFile {
+  name: string;
+  path: string;           // 絶対パス
+  relativePath: string;   // サブフォルダからの相対パス
+  size: number;
+  mimeType: string;
+  modifiedTime: string;
+  enabled: boolean;       // disabledFilesに含まれていなければtrue
 }
 
 export interface FileContent {

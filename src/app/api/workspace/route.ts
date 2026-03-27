@@ -1,7 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import fs from "fs/promises";
+import path from "path";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 import { listFoldersGoogle } from "@/lib/files-google";
 import type { FolderProvider, Subfolder } from "@/types";
+
+/** ローカルフォルダのサブディレクトリ一覧を返す */
+async function listLocalSubdirs(dirPath: string): Promise<{ name: string; path: string }[]> {
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    return entries
+      .filter(e => e.isDirectory() && !e.name.startsWith("."))
+      .map(e => ({ name: e.name, path: path.join(dirPath, e.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch {
+    return [];
+  }
+}
 
 // 設定取得
 export async function GET() {
@@ -136,9 +151,19 @@ export async function PATCH(request: NextRequest) {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company && (company.subfolders.length === 0 || body.force)) {
         try {
-          const result = await listFoldersGoogle(company.id);
+          const baseFolder = config.baseFolders.find(b => b.id === company.baseFolderId);
+          const provider = baseFolder?.provider || "local";
+          let dirs: { name: string; path: string }[] = [];
+
+          if (provider === "local") {
+            dirs = await listLocalSubdirs(company.id);
+          } else {
+            const result = await listFoldersGoogle(company.id);
+            dirs = result.dirs;
+          }
+
           const patterns = config.defaultCommonPatterns || [];
-          const newSubs: Subfolder[] = result.dirs.map(d => {
+          const newSubs: Subfolder[] = dirs.map(d => {
             const isCommon = patterns.some(p => d.name.toLowerCase() === p.toLowerCase());
             return {
               id: d.path,
@@ -148,7 +173,7 @@ export async function PATCH(request: NextRequest) {
             };
           });
           company.subfolders = newSubs;
-        } catch { /* Google Drive未接続等 */ }
+        } catch { /* フォルダ読み取り失敗 */ }
       }
       break;
     }
