@@ -1,21 +1,16 @@
 import { getValidDropboxToken } from "./tokens";
 import type { FileInfo, FileContent } from "@/types";
 import path from "path";
+import { mimeFromExtension, parseBuffer } from "./file-parsers";
 
 const API_BASE = "https://api.dropboxapi.com/2";
 const CONTENT_BASE = "https://content.dropboxapi.com/2";
 
-const TEXT_EXTENSIONS = new Set([
+const SUPPORTED_EXTENSIONS = new Set([
   ".txt", ".csv", ".json", ".md", ".xml",
   ".html", ".htm", ".log", ".tsv",
-]);
-
-const SUPPORTED_EXTENSIONS = new Set([
-  ...TEXT_EXTENSIONS,
   ".doc", ".docx", ".xls", ".xlsx", ".pdf",
 ]);
-
-const MAX_FILE_SIZE = 100 * 1024; // 100KB
 
 async function dropboxApi(endpoint: string, token: string, body?: object) {
   const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -77,15 +72,6 @@ export async function readFileContentDropbox(
   const token = await getValidDropboxToken();
   if (!token) return null;
 
-  const ext = path.extname(fileName).toLowerCase();
-  if (!TEXT_EXTENSIONS.has(ext)) {
-    return {
-      name: fileName,
-      path: filePath,
-      content: `[バイナリファイル: ${fileName}]`,
-    };
-  }
-
   try {
     const res = await fetch(`${CONTENT_BASE}/files/download`, {
       method: "POST",
@@ -97,25 +83,10 @@ export async function readFileContentDropbox(
 
     if (!res.ok) return null;
 
-    const contentLength = res.headers.get("content-length");
-    if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE) {
-      return {
-        name: fileName,
-        path: filePath,
-        content: `[ファイルサイズが大きすぎます: ${(parseInt(contentLength, 10) / 1024).toFixed(1)}KB]`,
-      };
-    }
-
-    const content = await res.text();
-    if (content.length > MAX_FILE_SIZE) {
-      return {
-        name: fileName,
-        path: filePath,
-        content: `[ファイルサイズが大きすぎます]`,
-      };
-    }
-
-    return { name: fileName, path: filePath, content };
+    const ext = path.extname(fileName).toLowerCase();
+    const mime = mimeFromExtension(ext);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return parseBuffer(buffer, fileName, filePath, mime);
   } catch {
     return null;
   }

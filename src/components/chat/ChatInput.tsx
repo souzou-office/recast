@@ -4,11 +4,10 @@ import { useState, useRef, useCallback } from "react";
 
 interface Props {
   onSend: (message: string) => void;
-  onOpenTemplateModal?: () => void;
   disabled: boolean;
 }
 
-export default function ChatInput({ onSend, onOpenTemplateModal, disabled }: Props) {
+export default function ChatInput({ onSend, disabled }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -38,18 +37,6 @@ export default function ChatInput({ onSend, onOpenTemplateModal, disabled }: Pro
 
   return (
     <div className="border-t border-gray-200 bg-white p-4">
-      {/* ショートカットボタン */}
-      <div className="flex gap-2 mb-3">
-        <button
-          onClick={onOpenTemplateModal}
-          disabled={disabled}
-          className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700
-                     hover:bg-blue-100 disabled:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200 transition-colors"
-        >
-          案件を整理
-        </button>
-      </div>
-
       {/* 入力欄 */}
       <div className="flex items-end gap-3">
         <textarea

@@ -3,7 +3,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import { getWorkspaceConfig } from "@/lib/folders";
-import { readFileById } from "@/lib/files-google";
+import { readAllFilesInFolder } from "@/lib/files";
+import { mimeFromExtension } from "@/lib/file-parsers";
+import { isPathDisabled } from "@/lib/disabled-filter";
 import type { CheckTemplate } from "@/types";
 
 const client = new Anthropic();
@@ -25,7 +27,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
   }
 
-  // 全資料を収集
+  // 全資料を収集（ライブ読み取り）
   const allTexts: string[] = [];
   const pdfFiles: { name: string; base64: string; mimeType: string }[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
@@ -36,13 +38,16 @@ export async function POST(request: NextRequest) {
 
   for (const sub of company.subfolders) {
     const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
-    if (!isActive || !sub.files) continue;
+    if (!isActive) continue;
 
-    for (const f of sub.files) {
-      if (!f.enabled) continue;
-      const content = await readFileById(f.id, f.name, f.mimeType);
-      if (!content) continue;
-      sourceFiles.push({ id: f.id, name: f.name, mimeType: f.mimeType });
+    const files = await readAllFilesInFolder(sub.id);
+    const disabled = sub.disabledFiles || [];
+
+    for (const content of files) {
+      if (isPathDisabled(content.path, disabled)) continue;
+      const ext = path.extname(content.name).toLowerCase();
+      const mime = mimeFromExtension(ext);
+      sourceFiles.push({ id: content.path, name: content.name, mimeType: mime });
       if (content.base64) {
         pdfFiles.push({ name: content.name, base64: content.base64, mimeType: content.mimeType || "application/pdf" });
       } else {
@@ -90,7 +95,6 @@ ${allTexts.join("\n\n")}`;
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
-        // 最初にメタ情報を送る
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({
           type: "meta",
           templateId: template.id,

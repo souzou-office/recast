@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { FileContent, CompanyProfile, CachedFile, Company } from "@/types";
-import { readFileById } from "@/lib/files-google";
+import type { FileContent, CompanyProfile, Company } from "@/types";
+import { readFileContent } from "@/lib/files";
 
 const client = new Anthropic();
 
@@ -56,7 +56,7 @@ export async function* streamChat(
   messages: { role: "user" | "assistant"; content: string }[],
   contextFiles: FileContent[],
   companyProfile?: CompanyProfile | null,
-  commonFiles?: CachedFile[],
+  commonFiles?: { id: string; name: string; mimeType: string }[],
   allCompanies?: Company[]
 ) {
   const textFiles = contextFiles.filter(f => !f.base64);
@@ -144,7 +144,7 @@ export async function* streamChat(
       } else if (tool.name === "read_common_file") {
         const input = tool.input as { file_id: string; file_name: string; mime_type?: string };
         try {
-          const content = await readFileById(input.file_id, input.file_name, input.mime_type);
+          const content = await readFileContent(input.file_id);
           if (content && !content.base64) {
             toolResults.push({
               type: "tool_result",

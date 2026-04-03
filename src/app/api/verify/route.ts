@@ -1,7 +1,9 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
-import { readFileById } from "@/lib/files-google";
+import { readAllFilesInFolder } from "@/lib/files";
+import { isPathDisabled } from "@/lib/disabled-filter";
+import path from "path";
 
 const client = new Anthropic();
 
@@ -38,22 +40,27 @@ export async function POST(request: NextRequest) {
 
   for (const sub of company.subfolders) {
     const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
-    if (!isActive || !sub.files) continue;
+    if (!isActive) continue;
 
-    for (const f of sub.files) {
-      if (!f.enabled) continue;
-      if (fileIdSet && !fileIdSet.has(f.id)) continue;
-      const content = await readFileById(f.id, f.name, f.mimeType);
-      if (!content) continue;
-      sourceFiles.push({ id: f.id, name: f.name, mimeType: f.mimeType });
-      if (content.base64) {
+    const disabled = sub.disabledFiles ?? [];
+    const files = await readAllFilesInFolder(sub.id);
+
+    for (const fc of files) {
+      if (isPathDisabled(fc.path, disabled)) continue;
+
+      // fileIds filter (using file path as id)
+      if (fileIdSet && !fileIdSet.has(fc.path)) continue;
+
+      sourceFiles.push({ id: fc.path, name: fc.name, mimeType: fc.mimeType || "application/octet-stream" });
+
+      if (fc.base64) {
         contentBlocks.push({
           type: "document",
-          source: { type: "base64", media_type: content.mimeType || "application/pdf", data: content.base64 },
-          title: f.name,
+          source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
+          title: fc.name,
         });
       } else {
-        textParts.push(`【${f.name}】\n${content.content}`);
+        textParts.push(`【${fc.name}】\n${fc.content}`);
       }
     }
   }

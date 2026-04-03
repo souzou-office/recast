@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { streamChat } from "@/lib/claude";
 import { getWorkspaceConfig } from "@/lib/folders";
-import { readFileById } from "@/lib/files-google";
+import { readAllFilesInFolder, listFiles } from "@/lib/files";
+import { isPathDisabled } from "@/lib/disabled-filter";
 import type { FileContent } from "@/types";
 
 export async function POST(request: NextRequest) {
@@ -18,31 +19,40 @@ export async function POST(request: NextRequest) {
   const contextFiles: FileContent[] = [];
   const company = config.companies.find(c => c.id === config.selectedCompanyId);
 
-  // 案件フォルダ（active）のenabledファイルだけ読む
+  // 案件フォルダ（active）のファイルをライブ読み取り
   if (company) {
     for (const sub of company.subfolders) {
       if (sub.role === "job" && sub.active) {
-        if (sub.files && sub.files.length > 0) {
-          for (const f of sub.files) {
-            if (!f.enabled) continue;
-            const content = await readFileById(f.id, f.name, f.mimeType);
-            if (content) contextFiles.push(content);
+        const files = await readAllFilesInFolder(sub.id);
+        const disabled = sub.disabledFiles || [];
+        for (const f of files) {
+          if (!isPathDisabled(f.path, disabled)) {
+            contextFiles.push(f);
           }
         }
       }
     }
   }
 
-  // 基本情報はtool use経由で必要な時だけ渡す
   const companyProfile = company?.profile || null;
 
   // 共通フォルダのファイル一覧（tool useでファイル読み取りに使う）
-  const commonFiles = company?.subfolders
-    .filter(s => s.role === "common")
-    .flatMap(s => s.files || [])
-    .filter(f => f.enabled) || [];
+  const commonFiles: { id: string; name: string; mimeType: string }[] = [];
+  if (company) {
+    for (const sub of company.subfolders) {
+      if (sub.role === "common") {
+        const entries = await listFiles(sub.id);
+        const disabled = new Set(sub.disabledFiles || []);
+        for (const e of entries) {
+          if (!e.isDirectory && !disabled.has(e.path)) {
+            const ext = e.name.split(".").pop() || "";
+            commonFiles.push({ id: e.path, name: e.name, mimeType: ext });
+          }
+        }
+      }
+    }
+  }
 
-  // ストリーミングレスポンス
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {

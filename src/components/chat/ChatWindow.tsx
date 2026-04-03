@@ -452,7 +452,7 @@ export default function ChatWindow({ companyId, companies, onLoadingChange, onNa
         {/* 入力エリア */}
         <ChatInput
           onSend={handleSend}
-          onOpenTemplateModal={companyId !== "__search__" ? () => setShowTemplateModal(true) : undefined}
+
           disabled={isLoading}
         />
       </div>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { readFileById } from "@/lib/files-google";
+import { readFileContent } from "@/lib/files";
 
 const client = new Anthropic();
 
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
   const textParts: string[] = [];
 
   for (const f of files) {
-    const content = await readFileById(f.id, f.name, f.mimeType);
+    const content = await readFileContent(f.id);
     if (!content) continue;
     if (content.base64) {
       contentBlocks.push({
