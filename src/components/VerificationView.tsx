@@ -383,13 +383,28 @@ export default function VerificationView({ company }: Props) {
               </span>
             </div>
           </div>
-          <button
-            onClick={handleVerify}
-            disabled={chatLoading || (!hasProfile && !hasMasterSheet) || selectedFiles.length === 0}
-            className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
-          >
-            {chatLoading ? "突合せ中..." : `突合せ実行${selectedFiles.length > 0 ? `（${selectedFiles.length}件）` : ""}`}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {chatMessages.length > 0 && (
+              <button
+                onClick={() => {
+                  if (!confirm("突合せ結果を削除しますか？")) return;
+                  setChatMessages([]);
+                  setSourceLinks({});
+                  setSelectedFiles([]);
+                }}
+                className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
+              >
+                削除
+              </button>
+            )}
+            <button
+              onClick={handleVerify}
+              disabled={chatLoading || (!hasProfile && !hasMasterSheet) || selectedFiles.length === 0}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+            >
+              {chatLoading ? "突合せ中..." : `突合せ実行${selectedFiles.length > 0 ? `（${selectedFiles.length}件）` : ""}`}
+            </button>
+          </div>
         </div>
 
         {/* メインエリア */}

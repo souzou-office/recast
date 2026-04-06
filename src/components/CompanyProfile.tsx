@@ -345,7 +345,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                   {profile.sourceFiles.map((f, i) => {
                     const name = typeof f === "string" ? f : f.name;
                     const fileId = typeof f === "string" ? null : f.id;
-                    const url = fileId ? `https://drive.google.com/file/d/${fileId}/view` : null;
                     return (
                       <li key={i} className="text-sm flex items-center gap-2">
                         <span className="text-gray-400 text-xs">&#128196;</span>
@@ -357,10 +356,27 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                             >
                               {name}
                             </button>
-                            <a href={url!} target="_blank" rel="noopener noreferrer"
-                              className="text-[10px] text-gray-400 hover:text-gray-600 shrink-0">
-                              別タブ
-                            </a>
+                            <button
+                              onClick={async () => {
+                                const res = await fetch("/api/workspace/raw-file", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ path: fileId }),
+                                });
+                                if (res.ok) {
+                                  const blob = await res.blob();
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = name;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                }
+                              }}
+                              className="text-[10px] text-gray-400 hover:text-gray-600 shrink-0"
+                            >
+                              DL
+                            </button>
                           </div>
                         ) : (
                           <span className="text-gray-600">{name}</span>

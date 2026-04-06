@@ -424,7 +424,8 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
         </div>
 
         {/* 結果 */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 flex justify-center">
+          <div className="w-full max-w-4xl">
           {displayResult ? (
             <>
               {isLoading && (
@@ -496,7 +497,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
             </>
           ) : (
             <div className="flex h-full items-center justify-center">
-              <div className="w-full max-w-md px-6">
+              <div className="w-full max-w-4xl px-6">
                 <h2 className="text-lg font-bold text-gray-800 mb-6">案件を整理する</h2>
                 {templates.length === 0 ? (
                   <p className="text-sm text-gray-400">設定からテンプレートを追加してください</p>
@@ -568,6 +569,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
               ))}
             </div>
           )}
+        </div>
         </div>
 
         {/* チャット入力欄 */}

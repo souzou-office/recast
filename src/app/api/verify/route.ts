@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
-import { readAllFilesInFolder } from "@/lib/files";
+import { readAllFilesInFolder, readFileContent } from "@/lib/files";
 import { isPathDisabled } from "@/lib/disabled-filter";
 import path from "path";
 
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // 案件フォルダの書類を読み込み
+  // 指定されたファイルを直接読み込み
   type ContentBlock =
     | { type: "text"; text: string }
     | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
@@ -38,20 +38,16 @@ export async function POST(request: NextRequest) {
   const textParts: string[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
-  for (const sub of company.subfolders) {
-    const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
-    if (!isActive) continue;
+  if (fileIds && fileIds.length > 0) {
+    // ファイルパスが指定されている場合、直接読む
+    for (const filePath of fileIds) {
+      const fc = await readFileContent(filePath);
+      if (!fc) continue;
 
-    const disabled = sub.disabledFiles ?? [];
-    const files = await readAllFilesInFolder(sub.id);
-
-    for (const fc of files) {
-      if (isPathDisabled(fc.path, disabled)) continue;
-
-      // fileIds filter (using file path as id)
-      if (fileIdSet && !fileIdSet.has(fc.path)) continue;
-
-      sourceFiles.push({ id: fc.path, name: fc.name, mimeType: fc.mimeType || "application/octet-stream" });
+      const ext = path.extname(fc.name).toLowerCase();
+      const { mimeFromExtension } = require("@/lib/file-parsers");
+      const mime = mimeFromExtension(ext);
+      sourceFiles.push({ id: fc.path, name: fc.name, mimeType: mime });
 
       if (fc.base64) {
         contentBlocks.push({
@@ -61,6 +57,30 @@ export async function POST(request: NextRequest) {
         });
       } else {
         textParts.push(`【${fc.name}】\n${fc.content}`);
+      }
+    }
+  } else {
+    // 指定なし → activeフォルダの全ファイル
+    for (const sub of company.subfolders) {
+      const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
+      if (!isActive) continue;
+
+      const disabled = sub.disabledFiles ?? [];
+      const files = await readAllFilesInFolder(sub.id);
+
+      for (const fc of files) {
+        if (isPathDisabled(fc.path, disabled)) continue;
+        sourceFiles.push({ id: fc.path, name: fc.name, mimeType: fc.mimeType || "application/octet-stream" });
+
+        if (fc.base64) {
+          contentBlocks.push({
+            type: "document",
+            source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
+            title: fc.name,
+          });
+        } else {
+          textParts.push(`【${fc.name}】\n${fc.content}`);
+        }
       }
     }
   }

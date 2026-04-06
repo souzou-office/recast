@@ -74,7 +74,30 @@ export default function FilePreview({ filePath, fileName, onClose }: Props) {
     <div className="flex w-1/2 flex-col border-l border-gray-200">
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2 bg-gray-50">
         <span className="text-xs text-gray-600 truncate font-medium">{fileName}</span>
-        <button onClick={onClose} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={async () => {
+              const res = await fetch("/api/workspace/raw-file", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: filePath }),
+              });
+              if (res.ok) {
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = fileName;
+                a.click();
+                URL.revokeObjectURL(url);
+              }
+            }}
+            className="text-[10px] text-blue-500 hover:text-blue-700"
+          >
+            ダウンロード
+          </button>
+          <button onClick={onClose} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+        </div>
       </div>
       <div className="flex-1 overflow-hidden">
         {loading ? (
