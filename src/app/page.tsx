@@ -61,10 +61,17 @@ export default function Home() {
   };
 
   const handleToggleJob = async (subfolderId: string, active: boolean) => {
+    if (!config?.selectedCompanyId) return;
+    // 単一選択: 選んだフォルダだけON、他は全部OFF
     await fetch("/api/workspace", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "toggleSubfolder", companyId: config?.selectedCompanyId, subfolderId, active }),
+      body: JSON.stringify({
+        action: "selectSingleJob",
+        companyId: config.selectedCompanyId,
+        subfolderId,
+        active,
+      }),
     });
     await fetchConfig();
   };
@@ -74,6 +81,15 @@ export default function Home() {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "toggleFile", companyId, subfolderId, filePath, enabled }),
+    });
+    await fetchConfig();
+  };
+
+  const handleSelectSingleFolder = async (companyId: string, subfolderId: string, selectedPath: string, siblingPaths: string[]) => {
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "selectSingleFolder", companyId, subfolderId, selectedPath, siblingPaths }),
     });
     await fetchConfig();
   };
@@ -184,6 +200,7 @@ export default function Home() {
               onSelectCompany={handleSelectCompany}
               onToggleJob={handleToggleJob}
               onToggleFile={handleToggleFile}
+              onSelectSingleFolder={handleSelectSingleFolder}
               onChangeRole={handleChangeRole}
             />
             {/* リサイズハンドル */}
@@ -194,7 +211,9 @@ export default function Home() {
           </div>
         )}
         <div className="flex-1 overflow-hidden">
-        {tab === "main" && <CaseOrganizer key={config?.selectedCompanyId || "none"} company={selectedCompany || null} executeTemplateId={executeTemplateId} onExecuteComplete={() => setExecuteTemplateId(null)} onSuggestFolders={handleSuggestFolders} />}
+        {/* メインタブは非表示で保持（状態維持） */}
+        <div className={tab === "main" ? "h-full" : "hidden"}><CaseOrganizer key={config?.selectedCompanyId || "none"} company={selectedCompany || null} executeTemplateId={executeTemplateId} onExecuteComplete={() => setExecuteTemplateId(null)} onSuggestFolders={handleSuggestFolders} visible={tab === "main"} onUpdate={fetchConfig} /></div>
+        <div className={tab === "verify" ? "h-full" : "hidden"}><VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} /></div>
         {tab === "profile" && (
           <CompanyProfile
             key={config?.selectedCompanyId || "none"}
@@ -203,7 +222,6 @@ export default function Home() {
           />
         )}
         {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
-        {tab === "verify" && <VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
         {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
         {tab === "settings" && <SettingsView config={config} onUpdateConfig={fetchConfig} />}
         </div>

@@ -24,6 +24,7 @@ interface Props {
   onSelectCompany: (companyId: string) => void;
   onToggleJob: (subfolderId: string, active: boolean) => void;
   onToggleFile: (companyId: string, subfolderId: string, filePath: string, enabled: boolean) => void;
+  onSelectSingleFolder: (companyId: string, subfolderId: string, selectedPath: string, siblingPaths: string[]) => void;
   onChangeRole: (companyId: string, subfolderId: string, newRole: SubfolderRole) => void;
 }
 
@@ -51,7 +52,7 @@ function roleBadge(role: SubfolderRole) {
 
 export default function FileSidebar({
   companies, selectedCompanyId, onSelectCompany,
-  onToggleJob, onToggleFile, onChangeRole,
+  onToggleJob, onToggleFile, onSelectSingleFolder, onChangeRole,
 }: Props) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [folderData, setFolderData] = useState<Record<string, FolderData>>({});
@@ -101,6 +102,15 @@ export default function FileSidebar({
     } catch { /* ignore */ }
   }, []);
 
+  // ウィンドウにフォーカスが戻ったら展開中フォルダを再取得
+  useEffect(() => {
+    const handleFocus = () => {
+      expandedFolders.forEach(path => loadFolder(path));
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [expandedFolders, loadFolder]);
+
   const toggleFolder = (folderId: string) => {
     setExpandedFolders(prev => {
       const next = new Set(prev);
@@ -108,7 +118,7 @@ export default function FileSidebar({
         next.delete(folderId);
       } else {
         next.add(folderId);
-        if (!folderData[folderId]) loadFolder(folderId);
+        loadFolder(folderId); // 毎回再取得
       }
       return next;
     });
@@ -139,6 +149,7 @@ export default function FileSidebar({
         {data.subfolders.map(sf => {
           const isExpanded = expandedFolders.has(sf.path);
           const isFolderDisabled = disabledSet.has(sf.path);
+          const siblingPaths = data.subfolders.map(s => s.path);
           return (
             <li key={sf.path}>
               <div className="flex items-center gap-1">
@@ -147,7 +158,13 @@ export default function FileSidebar({
                   checked={!isFolderDisabled}
                   onChange={() => {
                     if (!company || !ownerSub) return;
-                    onToggleFile(company.id, ownerSub.id, sf.path, isFolderDisabled);
+                    if (!isFolderDisabled) {
+                      // すでにON → OFFにする（普通のトグル）
+                      onToggleFile(company.id, ownerSub.id, sf.path, false);
+                    } else {
+                      // OFF → ON（単一選択：兄弟をOFF）
+                      onSelectSingleFolder(company.id, ownerSub.id, sf.path, siblingPaths);
+                    }
                   }}
                   className="shrink-0 w-3 h-3"
                 />

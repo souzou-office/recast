@@ -7,6 +7,7 @@ import type { Company, ChatMessage } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 import ChatInput from "./chat/ChatInput";
 import MessageBubble from "./chat/MessageBubble";
+import FilePreview from "./FilePreview";
 
 interface CheckTemplate {
   id: string;
@@ -28,9 +29,11 @@ interface Props {
   executeTemplateId?: string | null;
   onExecuteComplete?: () => void;
   onSuggestFolders?: (folderIds: string[]) => void;
+  visible?: boolean;
+  onUpdate?: () => void;
 }
 
-export default function CaseOrganizer({ company, executeTemplateId, onExecuteComplete, onSuggestFolders }: Props) {
+export default function CaseOrganizer({ company, executeTemplateId, onExecuteComplete, onSuggestFolders, visible, onUpdate }: Props) {
   const [result, setResult] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
@@ -49,12 +52,14 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
   const [expandedPreviews, setExpandedPreviews] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // テンプレート一覧を読み込み
+  // テンプレート一覧を読み込み（表示時に毎回再取得）
   useEffect(() => {
-    fetch("/api/templates").then(r => r.json()).then(d => {
-      setTemplates(Array.isArray(d) ? d : []);
-    }).catch(() => {});
-  }, []);
+    if (visible !== false) {
+      fetch("/api/templates").then(r => r.json()).then(d => {
+        setTemplates(Array.isArray(d) ? d : []);
+      }).catch(() => {});
+    }
+  }, [visible]);
 
   // テンプレート選択→フォルダ推論
   const handleSelectTemplate = async (template: CheckTemplate) => {
@@ -385,9 +390,9 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
   };
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       {/* 左: 結果表示 */}
-      <div className={`flex flex-col ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+      <div className={`flex flex-col overflow-hidden ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
         {/* ヘッダー */}
         <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
           <div>
@@ -400,12 +405,15 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
                 if (!confirm("案件整理の結果を削除しますか？")) return;
                 setResult("");
                 setChatMessages([]);
+                setSourceLinks({});
+                setSelectedTemplateId(null);
                 if (company) {
                   await fetch("/api/workspace", {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
                   });
+                  onUpdate?.();
                 }
               }}
               className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
@@ -488,12 +496,12 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
             </>
           ) : (
             <div className="flex h-full items-center justify-center">
-              <div className="w-full max-w-2xl px-8">
+              <div className="w-full max-w-md px-6">
                 <h2 className="text-lg font-bold text-gray-800 mb-6">案件を整理する</h2>
                 {templates.length === 0 ? (
                   <p className="text-sm text-gray-400">設定からテンプレートを追加してください</p>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 gap-3">
                     {templates.map(t => {
                       const isSelected = selectedTemplateId === t.id;
                       return (
@@ -571,19 +579,11 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
 
       {/* 右: ファイルプレビュー */}
       {previewFileId && (
-        <div className="flex w-1/2 flex-col border-l border-gray-200">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-            <span className="text-xs text-gray-600 truncate">
-              {(sourceFiles.length > 0 ? sourceFiles : company.masterSheet?.sourceFiles || []).find(f => f.id === previewFileId)?.name}
-            </span>
-            <div className="flex items-center gap-2">
-              <a href={`https://drive.google.com/file/d/${previewFileId}/view`} target="_blank" rel="noopener noreferrer"
-                className="text-[10px] text-blue-500 hover:text-blue-700">別タブで開く</a>
-              <button onClick={() => setPreviewFileId(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
-            </div>
-          </div>
-          <iframe src={`https://drive.google.com/file/d/${previewFileId}/preview`} className="flex-1 w-full" allow="autoplay" />
-        </div>
+        <FilePreview
+          filePath={previewFileId}
+          fileName={(sourceFiles.length > 0 ? sourceFiles : company.masterSheet?.sourceFiles || []).find(f => f.id === previewFileId)?.name || ""}
+          onClose={() => setPreviewFileId(null)}
+        />
       )}
 
     </div>

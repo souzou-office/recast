@@ -110,6 +110,39 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "selectSingleJob": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        for (const sub of company.subfolders) {
+          if (sub.role === "job") {
+            sub.active = sub.id === body.subfolderId ? body.active : false;
+          }
+        }
+      }
+      break;
+    }
+
+    case "selectSingleFolder": {
+      // 同階層の兄弟フォルダを全部disable、選んだものだけenable
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const sub = company.subfolders.find(s => s.id === body.subfolderId);
+        if (sub) {
+          if (!sub.disabledFiles) sub.disabledFiles = [];
+          const siblings: string[] = body.siblingPaths || [];
+          // 兄弟を全部disableに
+          for (const sib of siblings) {
+            if (sib !== body.selectedPath && !sub.disabledFiles.includes(sib)) {
+              sub.disabledFiles.push(sib);
+            }
+          }
+          // 選んだものをenabledに
+          sub.disabledFiles = sub.disabledFiles.filter(f => f !== body.selectedPath);
+        }
+      }
+      break;
+    }
+
     case "setSubfolderRole": {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company) {

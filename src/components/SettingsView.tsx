@@ -4,8 +4,9 @@ import { useState, useEffect, useCallback } from "react";
 import type { WorkspaceConfig } from "@/types";
 import ProfileTemplateModal from "./ProfileTemplateModal";
 import DocumentTemplateModal from "./DocumentTemplateModal";
+import CaseTemplateEditor from "./CaseTemplateEditor";
 
-type SettingsSection = "basepath" | "common" | "profile-items" | "doc-templates";
+type SettingsSection = "basepath" | "common" | "case-templates" | "profile-items" | "doc-templates";
 
 interface BrowseDir {
   name: string;
@@ -32,6 +33,7 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
   const sections: { id: SettingsSection; label: string }[] = [
     { id: "basepath", label: "ベースフォルダ" },
     { id: "common", label: "共通パターン" },
+    { id: "case-templates", label: "案件整理テンプレート" },
     { id: "profile-items", label: "基本情報 抽出項目" },
     { id: "doc-templates", label: "書類雛形" },
   ];
@@ -294,6 +296,11 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
           </div>
         )}
 
+        {section === "case-templates" && (
+          <div className="p-6 h-full">
+            <CaseTemplateEditor />
+          </div>
+        )}
         {section === "profile-items" && (
           <div className="p-6 h-full">
             <ProfileTemplateModal onClose={() => {}} inline />
