@@ -1,7 +1,9 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
-import { readFileById } from "@/lib/files-google";
+import { readAllFilesInFolder, readFileContent } from "@/lib/files";
+import { isPathDisabled } from "@/lib/disabled-filter";
+import path from "path";
 
 const client = new Anthropic();
 
@@ -27,7 +29,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // 案件フォルダの書類を読み込み
+  // 指定されたファイルを直接読み込み
   type ContentBlock =
     | { type: "text"; text: string }
     | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
@@ -36,24 +38,49 @@ export async function POST(request: NextRequest) {
   const textParts: string[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
-  for (const sub of company.subfolders) {
-    const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
-    if (!isActive || !sub.files) continue;
+  if (fileIds && fileIds.length > 0) {
+    // ファイルパスが指定されている場合、直接読む
+    for (const filePath of fileIds) {
+      const fc = await readFileContent(filePath);
+      if (!fc) continue;
 
-    for (const f of sub.files) {
-      if (!f.enabled) continue;
-      if (fileIdSet && !fileIdSet.has(f.id)) continue;
-      const content = await readFileById(f.id, f.name, f.mimeType);
-      if (!content) continue;
-      sourceFiles.push({ id: f.id, name: f.name, mimeType: f.mimeType });
-      if (content.base64) {
+      const ext = path.extname(fc.name).toLowerCase();
+      const { mimeFromExtension } = require("@/lib/file-parsers");
+      const mime = mimeFromExtension(ext);
+      sourceFiles.push({ id: fc.path, name: fc.name, mimeType: mime });
+
+      if (fc.base64) {
         contentBlocks.push({
           type: "document",
-          source: { type: "base64", media_type: content.mimeType || "application/pdf", data: content.base64 },
-          title: f.name,
+          source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
+          title: fc.name,
         });
       } else {
-        textParts.push(`【${f.name}】\n${content.content}`);
+        textParts.push(`【${fc.name}】\n${fc.content}`);
+      }
+    }
+  } else {
+    // 指定なし → activeフォルダの全ファイル
+    for (const sub of company.subfolders) {
+      const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
+      if (!isActive) continue;
+
+      const disabled = sub.disabledFiles ?? [];
+      const files = await readAllFilesInFolder(sub.id);
+
+      for (const fc of files) {
+        if (isPathDisabled(fc.path, disabled)) continue;
+        sourceFiles.push({ id: fc.path, name: fc.name, mimeType: fc.mimeType || "application/octet-stream" });
+
+        if (fc.base64) {
+          contentBlocks.push({
+            type: "document",
+            source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
+            title: fc.name,
+          });
+        } else {
+          textParts.push(`【${fc.name}】\n${fc.content}`);
+        }
       }
     }
   }
@@ -64,7 +91,7 @@ export async function POST(request: NextRequest) {
   if (masterSheet?.structured) referenceData["案件整理結果"] = masterSheet.structured;
   if (masterSheet?.content) referenceData["案件整理テキスト"] = masterSheet.content;
 
-  const prompt = `以下の「参照データ（案件整理で抽出した情報）」と「書類（原本）」を突合せして、相違点・記載漏れ・矛盾を指摘してください。
+  const prompt = `以下の「参照データ（案件整理で抽出した情報）」と「書類（原本）」を突合せして、相違点・記載漏れ・矛盾をレポートしてください。
 
 ## 参照データ
 ${JSON.stringify(referenceData, null, 2)}
@@ -72,13 +99,25 @@ ${JSON.stringify(referenceData, null, 2)}
 ## 書類内容
 ${textParts.join("\n\n")}
 
+出力フォーマット:
+1. まず総合判定を1行で記載（✅ 問題なし or ❌ 要確認あり）
+2. 次に以下の列を持つマークダウン表を出力:
+
+| 項目 | 参照データ | 書類 | 結果 | 備考 |
+|------|-----------|------|------|------|
+
+結果の列は以下のいずれか:
+- ✅ 一致
+- ❌ 相違
+- ⚠ 記載なし
+- ℹ️ 書類のみ
+
+3. 相違がある項目は表の後に詳細説明を箇条書きで
+
 ルール:
-- 各チェック項目を ## 見出しで区切る
-- 一致している場合は「✅ 一致」と簡潔に記載
-- 相違がある場合は「❌ 相違あり」として具体的に差異を記載（参照データの値 vs 書類の値）
-- 書類に記載がない情報は「⚠ 書類に記載なし」
-- 参照データにない情報が書類にある場合は「ℹ️ 書類のみに記載」
-- 最後に総合判定（問題なし / 要確認あり）を記載`;
+- 表は可能な限り網羅的に（役員・株主なども1行ずつ）
+- 一致項目も省略せず全て記載
+- 簡潔に。冗長な説明は不要`;
 
   contentBlocks.push({ type: "text", text: prompt });
 

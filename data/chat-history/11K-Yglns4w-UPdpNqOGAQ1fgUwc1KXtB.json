@@ -1,0 +1,230 @@
+[
+  {
+    "id": "f064ae6f-28f1-404f-b1f5-b55496702511",
+    "role": "user",
+    "content": "案件を整理",
+    "timestamp": 1774483693157
+  },
+  {
+    "id": "ea9c00f4-b628-4d8c-819d-faed1e9c5444",
+    "role": "assistant",
+    "content": "# 株式会社AZNICS 増資関連確認項目整理\n\n## 1. 全体スケジュール\n\n2026年3月〜4月にかけての第三者割当増資（2ndクローズ）。払込期日：2026年4月24日。\n\n| ステップ | 内容 | 確定日 |\n|---|---|---|\n| ① | 取締役決定書作成 | 2026/03/27 |\n| ② | 株主への目的事項通知 | 2026/03/30 |\n| ③ | 株主全員同意取得 | 2026/04/06 |\n| ④ | 株主総会議事録（書面決議） | 2026/04/07 |\n| ⑤ | 株式引受契約書締結 | 2026/04/08 |\n| ⑥ | 総数引受契約書締結 | 2026/04/24 |\n| ⑦ | 払込期日（クロージング） | 2026/04/24 |\n| ⑧⑨ | 登記用書類・株主名簿記載事項証明書 | 2026/04/27 |\n\n（出典：スケジュールシート、株式引受契約書）\n\n---\n\n## 2. 増資の種類\n\n**第三者割当増資**（A種優先株式）\n（出典：株式引受契約書）\n\n---\n\n## 3. 募集株式の数および種類\n\n**A種優先株式 117,646株**\n\n| 割当先 | 割当株数 |\n|---|---|\n| 株式会社脱炭素化支援機構 | 58,823株 |\n| NCBベンチャー2号投資事業有限責任組合 | 58,823株 |\n| 合計 | 117,646株 |\n\n（出典：株式引受契約書）\n\n---\n\n## 4. 払込金額（1株あたりの発行価額）\n\n**1株につき金510円**（引受総額：59,999,460円）\n（出典：株式引受契約書）\n\n---\n\n## 5. 払込期日または払込期間\n\n**2026年4月24日**（単一払込期日）\n（出典：株式引受契約書、スケジュールシート）\n\n---\n\n## 6. 資本金・資本準備金への計上額の振分け\n\n| 項目 | 金額 |\n|---|---|\n| 増加資本金 | 29,999,730円（引受総額の1/2） |\n| 増加資本準備金 | 29,999,730円（引受総額の1/2） |\n\n払込後の資本金：62,999,595円 + 29,999,730円 ＝ **92,999,325円**\n（出典：株式引受契約書）\n\n---\n\n## 7. 授権株式数と発行済株式数の確認（発行可能株式総数の余裕）\n\n| 項目 | 普通株式 | A種優先株式 |\n|---|---|---|\n| 発行可能種類株式総数 | 5,000万株 | 5,000万株 |\n| 発行済株式数（変更前） | 1,350,000株 | 176,469株 |\n| 今回新規発行 | 0株 | 117,646株 |\n| 発行済株式数（変更後） | 1,350,000株 | 294,115株 |\n| 残余枠（変更後） | 48,650,000株 | 49,705,885株 |\n\n授権株式数に余裕あり、定款変更不要。\n（出典：履歴事項全部証明書20260129、株式引受契約書）\n\n---\n\n## 8. 定款の発行可能株式総数・株式の種類に関する規定\n\n- 発行可能株式総数：**100,000,000株**\n- 発行可能種類株式総数：普通株式 **50,000,000株**、A種優先株式 **50,000,000株**\n- A種優先株式の内容は別紙（定款附属書）のとおり（優先配当・残余財産分配・議決権・転換権等を規定）\n- 転換価額：当初**510円**／株\n\n（出典：電子定款（発行済株式変更後）、履歴事項全部証明書20260129）\n\n---\n\n## 9. 株主総会または取締役会の決議要件と議事録\n\n- 募集株式の発行：**会社法第309条第2項に定める株主総会の特別決議**（定款第14条）\n- 本件は書面決議（会社法第319条）により実施予定\n- 株主総会議事録（書面決議）作成予定日：**2026年4月7日**\n- 取締役決定書作成予定日：**2026年3月27日**\n\n議事録の最終確定版は*要確認*（スケジュール上は作成予定）\n（出典：電子定款、スケジュールシート、株式引受契約書）\n\n---\n\n## 10. 割当先（引受人）の情報\n\n| 名称 | 住所 | 割当株数 | 引受金額 |\n|---|---|---|---|\n| 株式会社脱炭素化支援機構 | 東京都港区虎ノ門1-21-19 東急虎ノ門ビル7F | 58,823株 | 29,999,730円 |\n| NCBベンチャー2号投資事業有限責任組合（無限責任組合員：株式会社NCBベンチャーキャピタル） | 福岡県福岡市中央区天神二丁目5番28号 天神西通りセンタービル8階 | 58,823株 | 29,999,730円 |\n\n（出典：株式引受契約書）\n\n---\n\n## 11. 払込取扱機関と払込口座の確認\n\n| 項目 | 内容 |\n|---|---|\n| 金融機関 | 三井住友銀行 上野支店 |\n| 口座種別 | 普通口座 |\n| 口座番号 | 8646679 |\n| 口座名義 | 株式会社AZNICS（ｶ）ｱｽﾞﾆｸｽ） |\n\n（出典：株式引受契約書）\n\n---\n\n## 12. 払込完了の確認（払込証明書・通帳写し）\n\n払込期日は2026年4月24日であり、払込完了後に払込証明書・資本金計上証明書を作成予定（2026年4月27日対応予定）。\n**現時点では払込未了（要払込後確認）**\n（出典：スケジュールシート）\n\n---\n\n## 13. 登記申請に必要な書類の準備（変更登記：資本金額・発行済株式総数）\n\n| 書類 | 状況 |\n|---|---|\n| 払込証明書 | 払込後に作成予定（2026/04/27） |\n| 資本金計上に関する証明書 | 同上 |\n| 株主総会議事録（書面決議） | 2026/04/07作成予定 |\n| 議決権を証する書面 | 同上 |\n| 登記委任状 | 2026/04/27作成予定 |\n| 株主名簿記載事項証明書 | 2026/04/27作成予定 |\n| 定款 | 既存（変更不要） |\n\n司法書士（担当者名*要確認*）が作成・申請対応予定。\n（出典：スケジュールシート、株式引受契約書）\n\n---\n\n## 14. 登記申請期限（払込期日から2週間以内）\n\n払込期日：2026年4月24日 → **登記申請期限：2026年5月8日**\n書類準備予定日（2026年4月27日）は期限内。\n（出典：スケジュールシート、会社法第915条）\n\n---\n\n## 15. 株主名簿の更新（新株主の氏名・住所・株数の記載）\n\n払込完了後、株主名簿への新株主（2社）の記載が必要。A種優先株式株主名簿への登録対応が必要。\n現株主名簿（2025年9月現在）にはA種優先株式株主の記載なし。**払込後速やかに更新要（*要確認*）**\n（出典：株主名簿xlsx、スケジュールシート）\n\n---\n\n## 16. 反社会的勢力該当性チェック（割当先のスクリーニング）\n\n株式引受契約書第4条において投資者が「反社会的勢力等ではないこと」を表明保証済み。また発行会社側も第3条で同様の表明保証を行っている。\nただし、第三者機関による実際のスクリーニング実施状況は***要確認***。\n（出典：株式引受契約書）",
+    "timestamp": 1774483693157,
+    "sourceFiles": [
+      {
+        "id": "1vTn-lfId6mIWUvNOnlp25GAzWy33kGJf",
+        "name": "電子定款（発行済株式変更後）.pdf のコピー",
+        "mimeType": "application/pdf"
+      },
+      {
+        "id": "1AHjHe0l69MBX3NgOi7G9vsLk1b5L8CnG",
+        "name": "定款（署名済）.pdf",
+        "mimeType": "application/pdf"
+      },
+      {
+        "id": "1dvmuqdoXWPKMauumA4qrvBxPtL7aM94z",
+        "name": "【最新版】株主名簿_AZNICS.xlsx",
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      },
+      {
+        "id": "1tyriAoatsg01S_Vtm2gWV-23btJEzPjL",
+        "name": "20260129_履歴事項全部証明書_株式会社AZNICS.pdf",
+        "mimeType": "application/pdf"
+      },
+      {
+        "id": "16E_i_-7gYYnzWvkabGyOswguyWIRkIHQ",
+        "name": "20250522_履歴事項全部証明書（株式会社AZNICS）.pdf",
+        "mimeType": "application/pdf"
+      },
+      {
+        "id": "1pm-bWbvoOiaFWTgmb5M1vX6nC-kNqwne",
+        "name": "20240827履歴全部事項証明書（株式会社AZNICS）.pdf",
+        "mimeType": "application/pdf"
+      },
+      {
+        "id": "150SByYg401NvBLONGZejooo6BVCv3YA8",
+        "name": "20240617履歴全部事項証明書.pdf",
+        "mimeType": "application/pdf"
+      },
+      {
+        "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+        "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      },
+      {
+        "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+        "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      }
+    ],
+    "sourceLinks": {
+      "1. 全体スケジュール": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+      ],
+      "2. 増資の種類": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        {
+          "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+          "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ],
+      "3. 募集株式の数および種類": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        {
+          "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+          "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ],
+      "4. 払込金額（1株あたりの発行価額）": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        {
+          "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+          "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ],
+      "5. 払込期日または払込期間": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        {
+          "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+          "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ],
+      "6. 資本金・資本準備金への計上額の振分け": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        {
+          "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+          "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ],
+      "7. 授権株式数と発行済株式数の確認（発行可能株式総数の余裕）": [
+        {
+          "id": "1vTn-lfId6mIWUvNOnlp25GAzWy33kGJf",
+          "name": "電子定款（発行済株式変更後）.pdf のコピー",
+          "mimeType": "application/pdf"
+        },
+        {
+          "id": "1tyriAoatsg01S_Vtm2gWV-23btJEzPjL",
+          "name": "20260129_履歴事項全部証明書_株式会社AZNICS.pdf",
+          "mimeType": "application/pdf"
+        },
+        {
+          "id": "16E_i_-7gYYnzWvkabGyOswguyWIRkIHQ",
+          "name": "20250522_履歴事項全部証明書（株式会社AZNICS）.pdf",
+          "mimeType": "application/pdf"
+        },
+        {
+          "id": "1pm-bWbvoOiaFWTgmb5M1vX6nC-kNqwne",
+          "name": "20240827履歴全部事項証明書（株式会社AZNICS）.pdf",
+          "mimeType": "application/pdf"
+        },
+        {
+          "id": "150SByYg401NvBLONGZejooo6BVCv3YA8",
+          "name": "20240617履歴全部事項証明書.pdf",
+          "mimeType": "application/pdf"
+        }
+      ],
+      "8. 定款の発行可能株式総数・株式の種類に関する規定": [
+        {
+          "id": "1vTn-lfId6mIWUvNOnlp25GAzWy33kGJf",
+          "name": "電子定款（発行済株式変更後）.pdf のコピー",
+          "mimeType": "application/pdf"
+        },
+        {
+          "id": "1AHjHe0l69MBX3NgOi7G9vsLk1b5L8CnG",
+          "name": "定款（署名済）.pdf",
+          "mimeType": "application/pdf"
+        }
+      ],
+      "9. 株主総会または取締役会の決議要件と議事録": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+      ],
+      "10. 割当先（引受人）の情報": [
+        {
+          "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+          "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ],
+      "11. 払込取扱機関と払込口座の確認": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        },
+        {
+          "id": "1M6czoHvNLn_q3AZqLaam8JwJEKAQgFSL",
+          "name": "【AZNICS】株式引受契約書_20260315_draft.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ],
+      "12. 払込完了の確認（払込証明書・通帳写し）": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+      ],
+      "13. 登記申請に必要な書類の準備（変更登記：資本金額・発行済株式総数）": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+      ],
+      "14. 登記申請期限（払込期日から2週間以内）": [
+        {
+          "id": "1tyriAoatsg01S_Vtm2gWV-23btJEzPjL",
+          "name": "20260129_履歴事項全部証明書_株式会社AZNICS.pdf",
+          "mimeType": "application/pdf"
+        }
+      ],
+      "15. 株主名簿の更新（新株主の氏名・住所・株数の記載）": [
+        {
+          "id": "1VX32_yGbC36URxnrelTFxm8hPqUzeVjQ",
+          "name": "【AZNICS】00.増資関連書類、スケジュール_2026年3月（2ndクローズ）_20260317.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+      ],
+      "16. 反社会的勢力該当性チェック（割当先のスクリーニング）": [
+        {
+          "id": "1dvmuqdoXWPKMauumA4qrvBxPtL7aM94z",
+          "name": "【最新版】株主名簿_AZNICS.xlsx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+      ]
+    }
+  }
+]

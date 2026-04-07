@@ -3,7 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
-import { readFileById } from "@/lib/files-google";
+import { readAllFilesInFolder, readFileContent } from "@/lib/files";
+import { isPathDisabled } from "@/lib/disabled-filter";
 import type { CompanyProfile, StructuredProfile, ChangeHistoryEntry } from "@/types";
 
 const client = new Anthropic();
@@ -75,43 +76,32 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
   }
 
-  // 共通フォルダのenabledファイルを読む（未スキャンなら自動スキャン）
+  // 共通フォルダのファイルをローカルファイルシステムから読む
   const commonSubs = company.subfolders.filter(s => s.role === "common");
-  let configUpdated = false;
+
+  const textFiles: { path: string; name: string; content: string }[] = [];
+  const pdfFiles: { path: string; name: string; base64: string; mimeType: string }[] = [];
 
   for (const sub of commonSubs) {
-    if (!sub.files || sub.files.length === 0) {
-      // ファイル未スキャン → scan-files相当の処理
-      const scanRes = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/workspace/scan-files`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, subfolderId: sub.id }),
-      });
-      if (scanRes.ok) {
-        const { files } = await scanRes.json();
-        sub.files = files;
-        configUpdated = true;
-      }
-    }
-  }
+    const allContents = await readAllFilesInFolder(sub.id);
+    const disabled = sub.disabledFiles || [];
 
-  if (configUpdated) {
-    await saveWorkspaceConfig(config);
-  }
+    for (const content of allContents) {
+      if (isPathDisabled(content.path, disabled)) continue;
 
-  const textFiles: { id: string; name: string; content: string }[] = [];
-  const pdfFiles: { id: string; name: string; base64: string; mimeType: string }[] = [];
-
-  for (const sub of commonSubs) {
-    if (!sub.files) continue;
-    for (const f of sub.files) {
-      if (!f.enabled) continue;
-      const content = await readFileById(f.id, f.name, f.mimeType);
-      if (!content) continue;
       if (content.base64) {
-        pdfFiles.push({ id: f.id, name: f.name, base64: content.base64, mimeType: content.mimeType || "application/pdf" });
+        pdfFiles.push({
+          path: content.path,
+          name: content.name,
+          base64: content.base64,
+          mimeType: content.mimeType || "application/pdf",
+        });
       } else {
-        textFiles.push({ id: f.id, name: f.name, content: content.content });
+        textFiles.push({
+          path: content.path,
+          name: content.name,
+          content: content.content,
+        });
       }
     }
   }
@@ -180,8 +170,8 @@ export async function POST(request: NextRequest) {
       .trim();
 
     const allFiles = [
-      ...textFiles.map(f => ({ name: f.name, id: f.id })),
-      ...pdfFiles.map(f => ({ name: f.name, id: f.id })),
+      ...textFiles.map(f => ({ name: f.name, id: f.path })),
+      ...pdfFiles.map(f => ({ name: f.name, id: f.path })),
     ];
     const profile: CompanyProfile = {
       summary,
@@ -203,12 +193,9 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// 差分更新（新しいファイルがあれば更新）
+// 差分更新（共通フォルダを再読み取りして既存sourceFilesとの差分を検出）
 export async function PATCH(request: NextRequest) {
-  const { companyId, newFiles } = await request.json() as {
-    companyId: string;
-    newFiles: { id: string; name: string; mimeType: string }[];
-  };
+  const { companyId } = await request.json();
 
   const config = await getWorkspaceConfig();
   const company = config.companies.find(c => c.id === companyId);
@@ -216,12 +203,26 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "基本情報がありません。先に生成してください" }, { status: 400 });
   }
 
-  // 新しいファイルの内容を読む
-  const newContents: { name: string; content: string }[] = [];
-  for (const f of newFiles) {
-    const content = await readFileById(f.id, f.name, f.mimeType);
-    if (content && !content.base64) {
-      newContents.push({ name: f.name, content: content.content });
+  // 共通フォルダからファイルを再読み取り
+  const commonSubs = company.subfolders.filter(s => s.role === "common");
+  const existingPaths = new Set(
+    (company.profile.sourceFiles || []).map(f => typeof f === "string" ? f : f.id)
+  );
+
+  const newContents: { name: string; path: string; content: string }[] = [];
+
+  for (const sub of commonSubs) {
+    const allContents = await readAllFilesInFolder(sub.id);
+    const disabled = sub.disabledFiles || [];
+
+    for (const content of allContents) {
+      if (isPathDisabled(content.path, disabled)) continue;
+      // 既にsourceFilesに含まれているファイルはスキップ
+      if (existingPaths.has(content.path)) continue;
+      // base64（PDF等）はテキスト差分更新には使えないのでスキップ
+      if (content.base64) continue;
+
+      newContents.push({ name: content.name, path: content.path, content: content.content });
     }
   }
 
@@ -276,7 +277,7 @@ ${newFilesText}`,
     company.profile.updatedAt = new Date().toISOString();
     company.profile.sourceFiles = [
       ...company.profile.sourceFiles,
-      ...newContents.map(f => f.name),
+      ...newContents.map(f => ({ name: f.name, id: f.path })),
     ];
 
     await saveWorkspaceConfig(config);

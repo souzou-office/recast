@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
-import { readFileById } from "@/lib/files-google";
+import { readAllFilesInFolder } from "@/lib/files";
+import { isPathDisabled } from "@/lib/disabled-filter";
 
 const client = new Anthropic();
 
@@ -58,12 +59,13 @@ export async function POST(request: NextRequest) {
   // 案件フォルダ（active）のファイルを読む
   const jobFiles: { name: string; content: string }[] = [];
   for (const sub of company.subfolders) {
-    if (sub.role === "job" && sub.active && sub.files) {
-      for (const f of sub.files) {
-        if (!f.enabled) continue;
-        const content = await readFileById(f.id, f.name, f.mimeType);
-        if (content && !content.base64) {
-          jobFiles.push({ name: f.name, content: content.content });
+    if (sub.role === "job" && sub.active) {
+      const files = await readAllFilesInFolder(sub.id);
+      const disabled = sub.disabledFiles || [];
+      for (const f of files) {
+        if (isPathDisabled(f.path, disabled)) continue;
+        if (!f.base64) {
+          jobFiles.push({ name: f.name, content: f.content });
         }
       }
     }
@@ -79,12 +81,13 @@ export async function POST(request: NextRequest) {
   // 共通フォルダのファイルも読む（詳細確認用）
   const commonTexts: { name: string; content: string }[] = [];
   for (const sub of company.subfolders) {
-    if (sub.role === "common" && sub.files) {
-      for (const f of sub.files) {
-        if (!f.enabled) continue;
-        const content = await readFileById(f.id, f.name, f.mimeType);
-        if (content && !content.base64) {
-          commonTexts.push({ name: f.name, content: content.content });
+    if (sub.role === "common") {
+      const files = await readAllFilesInFolder(sub.id);
+      const disabled = sub.disabledFiles || [];
+      for (const f of files) {
+        if (isPathDisabled(f.path, disabled)) continue;
+        if (!f.base64) {
+          commonTexts.push({ name: f.name, content: f.content });
         }
       }
     }

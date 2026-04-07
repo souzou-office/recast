@@ -1,7 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
-import { listFoldersGoogle } from "@/lib/files-google";
-import type { FolderProvider, Subfolder } from "@/types";
+import { listFiles } from "@/lib/files";
+import type { Subfolder } from "@/types";
+
+// サブフォルダを検出（中間フォルダはスキップして中に入る）
+async function detectSubfolders(companyPath: string, patterns: string[]): Promise<Subfolder[]> {
+  const topEntries = await listFiles(companyPath);
+  const topDirs = topEntries.filter(e => e.isDirectory);
+  const topFiles = topEntries.filter(e => !e.isDirectory);
+
+  // 直下にファイルがある場合はそのまま登録
+  if (topFiles.length > 0 || topDirs.length === 0) {
+    return topDirs.map(d => ({
+      id: d.path,
+      name: d.name,
+      role: matchesCommonPattern(d.name, patterns) ? "common" as const : "job" as const,
+      active: matchesCommonPattern(d.name, patterns),
+    }));
+  }
+
+  // 直下にファイルがなくサブフォルダのみ → 中間フォルダとして中を見る
+  const subfolders: Subfolder[] = [];
+  for (const topDir of topDirs) {
+    const innerEntries = await listFiles(topDir.path);
+    const innerDirs = innerEntries.filter(e => e.isDirectory);
+    const innerFiles = innerEntries.filter(e => !e.isDirectory);
+
+    if (innerDirs.length > 0 && innerFiles.length === 0) {
+      // さらに中間フォルダ → その中のフォルダを登録
+      for (const innerDir of innerDirs) {
+        subfolders.push({
+          id: innerDir.path,
+          name: innerDir.name,
+          role: matchesCommonPattern(innerDir.name, patterns) ? "common" as const : "job" as const,
+          active: matchesCommonPattern(innerDir.name, patterns),
+        });
+      }
+    } else {
+      // ファイルがある or 空 → このフォルダ自体を登録
+      subfolders.push({
+        id: topDir.path,
+        name: topDir.name,
+        role: matchesCommonPattern(topDir.name, patterns) ? "common" as const : "job" as const,
+        active: matchesCommonPattern(topDir.name, patterns),
+      });
+    }
+  }
+  return subfolders;
+}
+
+function matchesCommonPattern(name: string, patterns: string[]): boolean {
+  return patterns.some(p => name.toLowerCase().includes(p.toLowerCase()));
+}
 
 // 設定取得
 export async function GET() {
@@ -9,31 +59,32 @@ export async function GET() {
   return NextResponse.json(config);
 }
 
-// ルートフォルダ追加
+// ベースパス設定 + 会社自動検出
 export async function POST(request: NextRequest) {
-  const { folderId, name, provider } = await request.json() as {
-    folderId: string;
-    name: string;
-    provider: FolderProvider;
-  };
-
-  if (!folderId || !name || !provider) {
-    return NextResponse.json({ error: "folderId, name, provider は必須です" }, { status: 400 });
+  const { basePath } = await request.json() as { basePath: string };
+  if (!basePath) {
+    return NextResponse.json({ error: "basePath は必須です" }, { status: 400 });
   }
 
   const config = await getWorkspaceConfig();
+  config.basePath = basePath;
 
-  // 既に登録済みなら追加しない
-  if (config.baseFolders.some(b => b.folderId === folderId)) {
-    return NextResponse.json(config);
+  const entries = await listFiles(basePath);
+  const dirs = entries.filter(e => e.isDirectory);
+  const patterns = config.defaultCommonPatterns || [];
+
+  for (const dir of dirs) {
+    const existing = config.companies.find(c => c.id === dir.path);
+    if (existing) continue;
+
+    const subfolders = await detectSubfolders(dir.path, patterns);
+
+    config.companies.push({
+      id: dir.path,
+      name: dir.name,
+      subfolders,
+    });
   }
-
-  config.baseFolders.push({
-    id: `base_${Date.now()}`,
-    name,
-    folderId,
-    provider,
-  });
 
   await saveWorkspaceConfig(config);
   return NextResponse.json(config);
@@ -59,6 +110,39 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "selectSingleJob": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        for (const sub of company.subfolders) {
+          if (sub.role === "job") {
+            sub.active = sub.id === body.subfolderId ? body.active : false;
+          }
+        }
+      }
+      break;
+    }
+
+    case "selectSingleFolder": {
+      // 同階層の兄弟フォルダを全部disable、選んだものだけenable
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const sub = company.subfolders.find(s => s.id === body.subfolderId);
+        if (sub) {
+          if (!sub.disabledFiles) sub.disabledFiles = [];
+          const siblings: string[] = body.siblingPaths || [];
+          // 兄弟を全部disableに
+          for (const sib of siblings) {
+            if (sib !== body.selectedPath && !sub.disabledFiles.includes(sib)) {
+              sub.disabledFiles.push(sib);
+            }
+          }
+          // 選んだものをenabledに
+          sub.disabledFiles = sub.disabledFiles.filter(f => f !== body.selectedPath);
+        }
+      }
+      break;
+    }
+
     case "setSubfolderRole": {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company) {
@@ -71,19 +155,26 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
-    case "toggleGlobalCommon": {
-      if (body.enabled) {
-        if (!config.globalCommon.find(g => g.id === body.folderId)) {
-          config.globalCommon.push({ id: body.folderId, name: body.folderName });
+    case "toggleFile": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const sub = company.subfolders.find(s => s.id === body.subfolderId);
+        if (sub) {
+          if (!sub.disabledFiles) sub.disabledFiles = [];
+          if (body.enabled) {
+            sub.disabledFiles = sub.disabledFiles.filter(f => f !== body.filePath);
+          } else {
+            if (!sub.disabledFiles.includes(body.filePath)) {
+              sub.disabledFiles.push(body.filePath);
+            }
+          }
         }
-      } else {
-        config.globalCommon = config.globalCommon.filter(g => g.id !== body.folderId);
       }
       break;
     }
 
-    case "setCompanies": {
-      config.companies = body.companies;
+    case "setTemplateBasePath": {
+      config.templateBasePath = body.templateBasePath || "";
       break;
     }
 
@@ -93,14 +184,15 @@ export async function PATCH(request: NextRequest) {
     }
 
     case "applyDefaultCommon": {
+      const patterns = config.defaultCommonPatterns || [];
       for (const company of config.companies) {
         for (const sub of company.subfolders) {
-          const matchesPattern = config.defaultCommonPatterns.some(pattern =>
-            sub.name.toLowerCase().includes(pattern.toLowerCase())
-          );
-          if (matchesPattern && sub.role !== "common") {
+          if (sub.role === "none") continue; // 除外は触らない
+          if (matchesCommonPattern(sub.name, patterns)) {
             sub.role = "common";
             sub.active = true;
+          } else {
+            sub.role = "job";
           }
         }
       }
@@ -115,62 +207,51 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
-    case "addFileToSubfolder": {
+    case "rescanCompany": {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company) {
-        const sub = company.subfolders.find(s => s.id === body.subfolderId);
-        if (sub) {
-          if (!sub.files) sub.files = [];
-          const existing = sub.files.find(f => f.id === body.file.id);
-          if (!existing) {
-            sub.files.push(body.file);
-          } else {
-            existing.enabled = body.file.enabled;
+        const patterns = config.defaultCommonPatterns || [];
+        const newSubs = await detectSubfolders(company.id, patterns);
+        // 既存設定を保持しつつ新しいフォルダを追加
+        for (const ns of newSubs) {
+          if (!company.subfolders.find(s => s.id === ns.id)) {
+            company.subfolders.push(ns);
           }
         }
+        // 存在しないフォルダを除去
+        const { existsSync } = require("fs");
+        company.subfolders = company.subfolders.filter(s => existsSync(s.id));
       }
       break;
     }
 
-    case "autoSetupCompany": {
+    case "removeCompany": {
+      config.companies = config.companies.filter(c => c.id !== body.companyId);
+      if (config.selectedCompanyId === body.companyId) {
+        config.selectedCompanyId = null;
+      }
+      break;
+    }
+
+    case "saveGeneratedDocument": {
       const company = config.companies.find(c => c.id === body.companyId);
-      if (company && (company.subfolders.length === 0 || body.force)) {
-        try {
-          const result = await listFoldersGoogle(company.id);
-          const patterns = config.defaultCommonPatterns || [];
-          const newSubs: Subfolder[] = result.dirs.map(d => {
-            const isCommon = patterns.some(p => d.name.toLowerCase() === p.toLowerCase());
-            return {
-              id: d.path,
-              name: d.name,
-              role: isCommon ? "common" as const : "job" as const,
-              active: isCommon,
-            };
-          });
-          company.subfolders = newSubs;
-        } catch { /* Google Drive未接続等 */ }
+      if (company) {
+        if (!company.generatedDocuments) company.generatedDocuments = [];
+        company.generatedDocuments.push({
+          templateName: body.templateName,
+          docxBase64: body.docxBase64,
+          previewHtml: body.previewHtml,
+          fileName: body.fileName,
+          createdAt: new Date().toISOString(),
+        });
       }
       break;
     }
 
-    case "batchAutoSetup": {
-      const patterns = config.defaultCommonPatterns || [];
-      if (patterns.length > 0) {
-        for (const company of config.companies) {
-          if (company.subfolders.length > 0) continue;
-          try {
-            const result = await listFoldersGoogle(company.id);
-            company.subfolders = result.dirs.map(d => {
-              const isCommon = patterns.some(p => d.name.toLowerCase() === p.toLowerCase());
-              return {
-                id: d.path,
-                name: d.name,
-                role: isCommon ? "common" as const : "job" as const,
-                active: isCommon,
-              };
-            });
-          } catch { /* skip */ }
-        }
+    case "deleteGeneratedDocument": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company && company.generatedDocuments) {
+        company.generatedDocuments.splice(body.index, 1);
       }
       break;
     }
@@ -179,16 +260,6 @@ export async function PATCH(request: NextRequest) {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company) {
         delete company.masterSheet;
-      }
-      break;
-    }
-
-    case "removeBaseFolder": {
-      const baseFolderId = body.baseFolderId;
-      config.baseFolders = config.baseFolders.filter(b => b.id !== baseFolderId);
-      config.companies = config.companies.filter(c => c.baseFolderId !== baseFolderId);
-      if (config.companies.length > 0 && !config.companies.find(c => c.id === config.selectedCompanyId)) {
-        config.selectedCompanyId = null;
       }
       break;
     }
@@ -204,8 +275,8 @@ export async function PATCH(request: NextRequest) {
 // リセット
 export async function DELETE() {
   const config = {
-    baseFolders: [],
-    globalCommon: [],
+    basePath: "",
+    templateBasePath: "",
     defaultCommonPatterns: [],
     companies: [],
     selectedCompanyId: null,

@@ -6,16 +6,24 @@ import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import type { Company, ChatMessage } from "@/types";
 import { v4 as uuidv4 } from "uuid";
-import ChatInput from "./chat/ChatInput";
 import MessageBubble from "./chat/MessageBubble";
+import FilePreview from "./FilePreview";
 
 interface Props {
   company: Company | null;
 }
 
-interface BrowseData {
-  dirs: { name: string; path: string }[];
-  files?: { name: string; mimeType: string }[];
+interface FolderData {
+  files: { name: string; path: string }[];
+  subfolders: { name: string; path: string }[];
+}
+
+function fileIcon(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (ext === "pdf") return "📄";
+  if (["doc", "docx"].includes(ext)) return "📝";
+  if (["xls", "xlsx"].includes(ext)) return "📊";
+  return "📎";
 }
 
 export default function VerificationView({ company }: Props) {
@@ -25,11 +33,10 @@ export default function VerificationView({ company }: Props) {
   const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
 
-  // Google Driveブラウザ
-  const [browseData, setBrowseData] = useState<BrowseData | null>(null);
-  const [browseLoading, setBrowseLoading] = useState(false);
-  const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
-  const [dragOver, setDragOver] = useState(false);
+  // ローカルフォルダブラウザ
+  const [folderData, setFolderData] = useState<Record<string, FolderData>>({});
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [browseRoot, setBrowseRoot] = useState<string>("");
 
   if (!company) {
     return (
@@ -42,57 +49,132 @@ export default function VerificationView({ company }: Props) {
   const hasMasterSheet = !!company.masterSheet;
   const hasProfile = !!company.profile;
 
-  // フォルダブラウズ
-  const browseTo = async (folderId?: string, folderName?: string) => {
-    setBrowseLoading(true);
+  // フォルダ読み込み
+  const loadFolder = async (folderPath: string) => {
+    if (folderData[folderPath]) return;
     try {
-      const params = new URLSearchParams({ provider: "google" });
-      if (folderId) params.set("path", folderId);
-      const res = await fetch(`/api/browse?${params}`);
-      if (res.ok) {
-        setBrowseData(await res.json());
-        if (folderId && folderName) setBreadcrumbs(prev => [...prev, { id: folderId, name: folderName }]);
-      }
+      const res = await fetch("/api/workspace/list-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: folderPath }),
+      });
+      const data = await res.json();
+      setFolderData(prev => ({
+        ...prev,
+        [folderPath]: { files: data.files || [], subfolders: data.subfolders || [] },
+      }));
     } catch { /* ignore */ }
-    finally { setBrowseLoading(false); }
   };
+
+  // 案件フォルダ内のチェック済みサブフォルダを取得
+  const [checkedSubfolders, setCheckedSubfolders] = useState<{ id: string; name: string; parentName: string }[]>([]);
 
   useEffect(() => {
-    if (company) {
-      setBreadcrumbs([{ id: company.id, name: company.name }]);
-      browseTo(company.id, company.name);
-      setBreadcrumbs([{ id: company.id, name: company.name }]);
+    if (!company) return;
+    setFolderData({});
+    setSelectedFiles([]);
+    setChatMessages([]);
+    setCheckedSubfolders([]);
+
+    const activeJobs = company.subfolders.filter(s => s.role === "job" && s.active);
+    if (activeJobs.length === 0) {
+      setBrowseRoot(company.id);
+      setExpandedFolders(new Set([company.id]));
+      loadFolder(company.id);
+      return;
     }
+
+    // 各activeフォルダの中身を読み、disabledでないサブフォルダを収集
+    setBrowseRoot("checked");
+    const expanded = new Set<string>();
+
+    Promise.all(activeJobs.map(async (job) => {
+      const res = await fetch("/api/workspace/list-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: job.id }),
+      });
+      const data = await res.json();
+      const disabled = new Set(job.disabledFiles || []);
+      const subs = (data.subfolders || [])
+        .filter((sf: { path: string }) => !disabled.has(sf.path))
+        .map((sf: { name: string; path: string }) => ({ id: sf.path, name: sf.name, parentName: job.name }));
+
+      // ファイルもfolderDataに入れる
+      setFolderData(prev => ({
+        ...prev,
+        [job.id]: { files: data.files || [], subfolders: data.subfolders || [] },
+      }));
+
+      for (const sf of subs) {
+        expanded.add(sf.id);
+        loadFolder(sf.id);
+      }
+      return subs;
+    })).then(results => {
+      setCheckedSubfolders(results.flat());
+      setExpandedFolders(expanded);
+    });
   }, [company?.id]);
 
-  const navigateUp = () => {
-    const bc = breadcrumbs.slice(0, -1);
-    setBreadcrumbs(bc);
-    if (bc.length === 0) {
-      browseTo(company.id);
-      setBreadcrumbs([{ id: company.id, name: company.name }]);
-    } else {
-      setBrowseLoading(true);
-      fetch(`/api/browse?path=${bc[bc.length - 1].id}&provider=google`).then(r => r.json()).then(d => setBrowseData(d)).finally(() => setBrowseLoading(false));
+  const toggleFolder = (path: string) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else { next.add(path); loadFolder(path); }
+      return next;
+    });
+  };
+
+  const [lastClickedFile, setLastClickedFile] = useState<string | null>(null);
+
+  const addFile = (f: { name: string; path: string }) => {
+    const ext = f.name.split(".").pop()?.toLowerCase() || "";
+    if (!selectedFiles.some(sf => sf.id === f.path)) {
+      setSelectedFiles(prev => [...prev, { id: f.path, name: f.name, mimeType: ext }]);
+    }
+    setLastClickedFile(f.path);
+  };
+
+  const removeFile = (filePath: string) => {
+    setSelectedFiles(prev => prev.filter(f => f.id !== filePath));
+  };
+
+  // フォルダ内の全ファイルを追加
+  const addAllFilesInFolder = (folderPath: string) => {
+    const data = folderData[folderPath];
+    if (!data) return;
+    for (const f of data.files) {
+      addFile(f);
+    }
+    // サブフォルダも再帰
+    for (const sf of data.subfolders) {
+      addAllFilesInFolder(sf.path);
     }
   };
 
-  const addFile = (f: { name: string; mimeType: string }) => {
-    if (!selectedFiles.some(sf => sf.name === f.name)) {
-      setSelectedFiles(prev => [...prev, { id: f.name, name: f.name, mimeType: f.mimeType }]);
-    }
-  };
+  // Shift+クリックで範囲選択
+  const handleFileClick = (f: { name: string; path: string }, e: React.MouseEvent, allFiles: { name: string; path: string }[]) => {
+    const isSelected = selectedFiles.some(sf => sf.id === f.path);
 
-  const selectAllFiles = () => {
-    if (!browseData?.files) return;
-    for (const f of browseData.files) {
-      if (!selectedFiles.some(sf => sf.name === f.name)) {
-        setSelectedFiles(prev => [...prev, { id: f.name, name: f.name, mimeType: f.mimeType }]);
+    if (e.shiftKey && lastClickedFile) {
+      // 範囲選択
+      const lastIdx = allFiles.findIndex(af => af.path === lastClickedFile);
+      const currentIdx = allFiles.findIndex(af => af.path === f.path);
+      if (lastIdx >= 0 && currentIdx >= 0) {
+        const start = Math.min(lastIdx, currentIdx);
+        const end = Math.max(lastIdx, currentIdx);
+        for (let i = start; i <= end; i++) {
+          addFile(allFiles[i]);
+        }
       }
+    } else {
+      if (isSelected) removeFile(f.path);
+      else addFile(f);
     }
   };
 
-  // 突合せ実行 → チャット形式で結果表示
+  // 突合せ実行
   const handleVerify = async () => {
     if (selectedFiles.length === 0) return;
     setChatLoading(true);
@@ -230,6 +312,59 @@ export default function VerificationView({ company }: Props) {
     },
   };
 
+  // 再帰フォルダツリー
+  const renderTree = (folderPath: string, depth: number = 0) => {
+    const data = folderData[folderPath];
+    if (!data) return <p className="text-[10px] text-gray-400 py-1 pl-2">読み込み中...</p>;
+
+    return (
+      <ul className={depth > 0 ? "ml-3 border-l border-gray-200 pl-2" : ""}>
+        {data.subfolders.map(sf => {
+          const isOpen = expandedFolders.has(sf.path);
+          const hasAnySelected = folderData[sf.path]?.files.some(f => selectedFiles.some(s => s.id === f.path));
+          return (
+            <li key={sf.path}>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => toggleFolder(sf.path)}
+                  className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-gray-700 hover:bg-gray-100"
+                >
+                  <span className="text-[11px]">{isOpen ? "📂" : "📁"}</span>
+                  <span className="truncate">{sf.name}</span>
+                </button>
+                <button
+                  onClick={() => { loadFolder(sf.path); setTimeout(() => addAllFilesInFolder(sf.path), 500); }}
+                  className="text-[9px] text-blue-500 hover:text-blue-700 shrink-0 px-1"
+                  title="フォルダ内を全選択"
+                >
+                  全選択
+                </button>
+              </div>
+              {isOpen && renderTree(sf.path, depth + 1)}
+            </li>
+          );
+        })}
+        {data.files.map(f => {
+          const isSelected = selectedFiles.some(sf => sf.id === f.path);
+          return (
+            <li key={f.path}>
+              <button
+                onClick={(e) => handleFileClick(f, e, data.files)}
+                className={`w-full flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-left transition-colors ${
+                  isSelected ? "bg-blue-50 text-blue-700" : "text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                <span className="text-[10px]">{fileIcon(f.name)}</span>
+                <span className="truncate">{f.name}</span>
+                {isSelected && <span className="ml-auto text-[9px] text-blue-500">✓</span>}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
+
   return (
     <div className="flex h-full">
       {/* 左: ファイル選択 + チャット */}
@@ -247,111 +382,88 @@ export default function VerificationView({ company }: Props) {
               </span>
             </div>
           </div>
-          <button
-            onClick={handleVerify}
-            disabled={chatLoading || (!hasProfile && !hasMasterSheet) || selectedFiles.length === 0}
-            className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
-          >
-            {chatLoading ? "突合せ中..." : `突合せ実行${selectedFiles.length > 0 ? `（${selectedFiles.length}件）` : ""}`}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {chatMessages.length > 0 && (
+              <button
+                onClick={() => {
+                  if (!confirm("突合せ結果を削除しますか？")) return;
+                  setChatMessages([]);
+                  setSourceLinks({});
+                  setSelectedFiles([]);
+                }}
+                className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
+              >
+                削除
+              </button>
+            )}
+            <button
+              onClick={handleVerify}
+              disabled={chatLoading || (!hasProfile && !hasMasterSheet) || selectedFiles.length === 0}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+            >
+              {chatLoading ? "突合せ中..." : `突合せ実行${selectedFiles.length > 0 ? `（${selectedFiles.length}件）` : ""}`}
+            </button>
+          </div>
         </div>
 
         {/* メインエリア */}
         <div className="flex-1 overflow-y-auto">
-          {/* ファイル選択（チャットがなければ表示） */}
           {chatMessages.length === 0 && (
             <div className="flex h-full">
               {/* 左: フォルダブラウザ */}
               <div className="w-1/2 border-r border-gray-200 overflow-y-auto p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1 text-xs text-gray-400 flex-wrap">
-                    {breadcrumbs.map((bc, i) => (
-                      <span key={`${bc.id}-${i}`} className="flex items-center gap-1">
-                        {i > 0 && <span>/</span>}
-                        <button onClick={() => {
-                          const newBc = breadcrumbs.slice(0, i + 1);
-                          setBreadcrumbs(newBc);
-                          setBrowseLoading(true);
-                          fetch(`/api/browse?path=${bc.id}&provider=google`).then(r => r.json()).then(d => setBrowseData(d)).finally(() => setBrowseLoading(false));
-                        }} className="hover:text-gray-600">{bc.name}</button>
-                      </span>
-                    ))}
-                  </div>
-                  <button onClick={selectAllFiles} className="text-xs text-blue-500 hover:text-blue-700 shrink-0">全選択</button>
-                </div>
-
-                {browseLoading ? (
-                  <p className="text-sm text-gray-400 py-4 text-center">読み込み中...</p>
-                ) : browseData ? (
-                  <ul className="space-y-0.5">
-                    {breadcrumbs.length > 1 && (
-                      <li>
-                        <button onClick={navigateUp} className="flex items-center gap-2 px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded w-full text-left">
-                          ↑ 上の階層へ
-                        </button>
-                      </li>
-                    )}
-                    {browseData.dirs.map(dir => (
-                      <li key={dir.path}>
-                        <button onClick={() => browseTo(dir.path, dir.name)}
-                          className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded w-full text-left">
-                          <span className="text-yellow-500">📁</span> {dir.name}
-                        </button>
-                      </li>
-                    ))}
-                    {browseData.files?.map((f, i) => {
-                      const isSelected = selectedFiles.some(sf => sf.name === f.name);
-                      return (
-                        <li key={`file-${i}`}
-                          draggable
-                          onDragStart={e => { e.dataTransfer.setData("text/plain", JSON.stringify(f)); e.dataTransfer.effectAllowed = "copy"; }}
+                <p className="text-[10px] text-gray-400 mb-2">突合せ対象のファイルを選択（クリックで追加）</p>
+                {browseRoot === "checked" ? (
+                  <ul>
+                    {checkedSubfolders.map(sf => (
+                      <li key={sf.id}>
+                        <button
+                          onClick={() => toggleFolder(sf.id)}
+                          className="w-full flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-gray-800 font-medium hover:bg-gray-100"
                         >
-                          <button onClick={() => !isSelected && addFile(f)}
-                            className={`flex items-center gap-2 px-3 py-2 text-sm rounded w-full text-left ${
-                              isSelected ? "opacity-40 bg-gray-100" : "text-gray-700 hover:bg-blue-50"
-                            }`}>
-                            <span className="text-gray-400">📄</span>
-                            <span className="truncate">{f.name}</span>
-                            {isSelected && <span className="text-xs text-green-500 ml-auto">選択済</span>}
-                          </button>
-                        </li>
-                      );
-                    })}
+                          <span className="text-[11px]">{expandedFolders.has(sf.id) ? "📂" : "📁"}</span>
+                          {sf.name}
+                        </button>
+                        {expandedFolders.has(sf.id) && renderTree(sf.id, 1)}
+                      </li>
+                    ))}
+                    {checkedSubfolders.length === 0 && (
+                      <li className="text-[10px] text-gray-400 py-4 text-center">サイドバーでフォルダにチェックを入れてください</li>
+                    )}
+                    <li className="mt-2 border-t border-gray-100 pt-2">
+                      <button
+                        onClick={() => { setBrowseRoot(company.id); loadFolder(company.id); setExpandedFolders(prev => new Set([...prev, company.id])); }}
+                        className="text-[10px] text-blue-500 hover:text-blue-700"
+                      >
+                        ↑ 会社フォルダ全体を表示
+                      </button>
+                    </li>
                   </ul>
-                ) : null}
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setBrowseRoot("checked")}
+                      className="text-[10px] text-blue-500 hover:text-blue-700 mb-2"
+                    >
+                      ↓ チェック済みフォルダに戻る
+                    </button>
+                    {renderTree(company.id)}
+                  </>
+                )}
               </div>
 
               {/* 右: 選択済みファイル */}
-              <div
-                className={`w-1/2 overflow-y-auto p-3 transition-colors ${dragOver ? "bg-blue-50" : "bg-gray-50"}`}
-                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={e => {
-                  e.preventDefault();
-                  setDragOver(false);
-                  try {
-                    const f = JSON.parse(e.dataTransfer.getData("text/plain"));
-                    if (f.name) addFile(f);
-                  } catch { /* ignore */ }
-                }}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-gray-700">突合せ対象（{selectedFiles.length}件）</h3>
-                  {selectedFiles.length > 0 && (
-                    <button onClick={() => setSelectedFiles([])} className="text-xs text-red-400 hover:text-red-600">クリア</button>
-                  )}
-                </div>
+              <div className="w-1/2 overflow-y-auto p-3 bg-gray-50">
+                <p className="text-[10px] text-gray-400 mb-2">選択済み（{selectedFiles.length}件）</p>
                 {selectedFiles.length === 0 ? (
-                  <div className="flex h-32 items-center justify-center">
-                    <p className="text-sm text-gray-400 text-center">左からファイルをクリック<br />またはドラッグして追加</p>
-                  </div>
+                  <p className="text-xs text-gray-400 py-8 text-center">左からファイルを選択してください</p>
                 ) : (
                   <ul className="space-y-0.5">
                     {selectedFiles.map(f => (
-                      <li key={f.name} className="flex items-center justify-between rounded px-3 py-2 bg-white">
-                        <span className="text-sm text-gray-700 truncate">📄 {f.name}</span>
-                        <button onClick={() => setSelectedFiles(prev => prev.filter(sf => sf.name !== f.name))}
-                          className="text-xs text-red-400 hover:text-red-600 shrink-0 ml-1">×</button>
+                      <li key={f.id} className="flex items-center gap-1 rounded bg-white px-2 py-1.5 border border-gray-200">
+                        <span className="text-[10px]">{fileIcon(f.name)}</span>
+                        <span className="text-xs text-gray-700 flex-1 truncate">{f.name}</span>
+                        <button onClick={() => removeFile(f.id)} className="text-[10px] text-red-400 hover:text-red-600 shrink-0">×</button>
                       </li>
                     ))}
                   </ul>
@@ -360,16 +472,16 @@ export default function VerificationView({ company }: Props) {
             </div>
           )}
 
-          {/* チャットメッセージ（突合せ結果） */}
+          {/* チャットメッセージ */}
           {chatMessages.length > 0 && (
-            <div className="p-6">
+            <div className="p-6 space-y-4">
               {chatMessages.map((msg, i) => (
                 <MessageBubble
                   key={msg.id}
                   message={msg}
                   streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"}
                   sourceLinks={msg.role === "assistant" ? sourceLinks : undefined}
-                  onPreviewFile={(fileId) => setPreviewFileId(previewFileId === fileId ? null : fileId)}
+                  onPreviewFile={setPreviewFileId}
                   activePreviewId={previewFileId}
                 />
               ))}
@@ -377,27 +489,15 @@ export default function VerificationView({ company }: Props) {
           )}
         </div>
 
-        {/* チャット入力欄（結果が出た後のみ） */}
-        {chatMessages.length > 0 && (
-          <ChatInput onSend={handleChatSend} disabled={chatLoading} />
-        )}
       </div>
 
-      {/* 右: ファイルプレビュー */}
+      {/* 右: プレビュー */}
       {previewFileId && (
-        <div className="flex w-1/2 flex-col border-l border-gray-200">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-            <span className="text-sm text-gray-600 truncate">
-              {selectedFiles.find(f => f.id === previewFileId)?.name}
-            </span>
-            <div className="flex items-center gap-2">
-              <a href={`https://drive.google.com/file/d/${previewFileId}/view`} target="_blank" rel="noopener noreferrer"
-                className="text-xs text-blue-500 hover:text-blue-700">別タブで開く</a>
-              <button onClick={() => setPreviewFileId(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">×</button>
-            </div>
-          </div>
-          <iframe src={`https://drive.google.com/file/d/${previewFileId}/preview`} className="flex-1 w-full" allow="autoplay" />
-        </div>
+        <FilePreview
+          filePath={previewFileId}
+          fileName={selectedFiles.find(f => f.id === previewFileId)?.name || previewFileId.split(/[\\/]/).pop() || ""}
+          onClose={() => setPreviewFileId(null)}
+        />
       )}
     </div>
   );

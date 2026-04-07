@@ -1,8 +1,15 @@
 import fs from "fs/promises";
 import path from "path";
-import type { FileInfo, FileContent, FolderProvider } from "@/types";
-import { readAllFilesInFolderGoogle } from "./files-google";
-import { readAllFilesInFolderDropbox } from "./files-dropbox";
+import type { FileInfo, FileContent } from "@/types";
+import {
+  mimeFromExtension,
+  parseBuffer,
+  MAX_BINARY_SIZE,
+  MAX_TOTAL_BINARY_SIZE,
+  BINARY_MIME_TYPES,
+  TEXT_MIME_TYPES,
+  MAX_TEXT_SIZE,
+} from "./file-parsers";
 
 const SUPPORTED_EXTENSIONS = new Set([
   ".txt", ".csv", ".json", ".md", ".xml",
@@ -10,13 +17,7 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".doc", ".docx", ".xls", ".xlsx", ".pdf",
 ]);
 
-const TEXT_EXTENSIONS = new Set([
-  ".txt", ".csv", ".json", ".md", ".xml",
-  ".html", ".htm", ".log", ".tsv",
-]);
-
-const MAX_FILE_SIZE = 100 * 1024; // 100KB
-
+/** ローカルフォルダのファイル一覧 */
 export async function listFiles(dirPath: string): Promise<FileInfo[]> {
   try {
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
@@ -51,55 +52,50 @@ export async function listFiles(dirPath: string): Promise<FileInfo[]> {
   }
 }
 
+/** ローカルファイル読み取り（テキスト・PDF・docx・xlsx対応） */
 export async function readFileContent(filePath: string): Promise<FileContent | null> {
   try {
+    const name = path.basename(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    if (!TEXT_EXTENSIONS.has(ext)) {
-      return {
-        name: path.basename(filePath),
-        path: filePath,
-        content: `[バイナリファイル: ${path.basename(filePath)}]`,
-      };
-    }
-
-    const stat = await fs.stat(filePath);
-    if (stat.size > MAX_FILE_SIZE) {
-      return {
-        name: path.basename(filePath),
-        path: filePath,
-        content: `[ファイルサイズが大きすぎます: ${(stat.size / 1024).toFixed(1)}KB]`,
-      };
-    }
-
-    const content = await fs.readFile(filePath, "utf-8");
-    return {
-      name: path.basename(filePath),
-      path: filePath,
-      content,
-    };
+    const mime = mimeFromExtension(ext);
+    const buffer = await fs.readFile(filePath);
+    return parseBuffer(buffer, name, filePath, mime);
   } catch {
     return null;
   }
 }
 
-export async function readAllFilesInFolder(
-  folderPath: string,
-  provider: FolderProvider = "local"
-): Promise<FileContent[]> {
-  switch (provider) {
-    case "google":
-      return readAllFilesInFolderGoogle(folderPath);
-    case "dropbox":
-      return readAllFilesInFolderDropbox(folderPath);
-    default: {
-      const files = await listFiles(folderPath);
-      const contents: FileContent[] = [];
-      for (const file of files) {
-        if (file.isDirectory) continue;
-        const content = await readFileContent(file.path);
-        if (content) contents.push(content);
+/** ローカルフォルダ内の全ファイルを再帰的に読む */
+export async function readAllFilesInFolder(dirPath: string): Promise<FileContent[]> {
+  const contents: FileContent[] = [];
+  let totalBinarySize = 0;
+
+  async function walk(dir: string) {
+    const entries = await listFiles(dir);
+    for (const entry of entries) {
+      if (entry.isDirectory) {
+        await walk(entry.path);
+        continue;
       }
-      return contents;
+
+      const ext = path.extname(entry.name).toLowerCase();
+      const mime = mimeFromExtension(ext);
+
+      if (TEXT_MIME_TYPES.has(mime) && entry.size > MAX_TEXT_SIZE) continue;
+      if (BINARY_MIME_TYPES.has(mime)) {
+        if (entry.size > MAX_BINARY_SIZE) continue;
+        if (totalBinarySize + entry.size > MAX_TOTAL_BINARY_SIZE) {
+          contents.push({ name: entry.name, path: entry.path, content: `[スキップ: 合計サイズ上限に達しました]` });
+          continue;
+        }
+        totalBinarySize += entry.size;
+      }
+
+      const content = await readFileContent(entry.path);
+      if (content) contents.push(content);
     }
   }
+
+  await walk(dirPath);
+  return contents;
 }

@@ -1,55 +1,19 @@
 import { getValidGoogleToken } from "./tokens";
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require("pdf-parse");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const mammoth = require("mammoth");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const XLSX = require("xlsx");
 import type { FileInfo, FileContent } from "@/types";
+import {
+  TEXT_MIME_TYPES,
+  BINARY_MIME_TYPES,
+  OFFICE_MIME_TYPES,
+  GOOGLE_EXPORT_TYPES,
+  MAX_TEXT_SIZE,
+  MAX_BINARY_SIZE,
+  MAX_TOTAL_BINARY_SIZE,
+  isSupportedMimeType,
+  parseBuffer,
+  parseSpreadsheet,
+} from "./file-parsers";
 
 const API_BASE = "https://www.googleapis.com/drive/v3";
-
-// テキストとして読めるMIMEタイプ
-const TEXT_MIME_TYPES = new Set([
-  "text/plain",
-  "text/csv",
-  "text/html",
-  "text/xml",
-  "text/tab-separated-values",
-  "application/json",
-  "text/markdown",
-]);
-
-// バイナリだがClaudeに渡せるMIMEタイプ
-const BINARY_MIME_TYPES = new Set([
-  "application/pdf",
-]);
-
-// Google Docs系はエクスポートで対応
-const GOOGLE_EXPORT_TYPES: Record<string, string> = {
-  "application/vnd.google-apps.document": "text/plain",
-  "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-};
-
-// Office系
-const OFFICE_MIME_TYPES = new Set([
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",      // .xlsx
-  "application/vnd.ms-excel",                                                // .xls
-]);
-
-const MAX_TEXT_SIZE = 100 * 1024; // 100KB
-const MAX_BINARY_SIZE = 3 * 1024 * 1024; // 3MB per file
-const MAX_TOTAL_BINARY_SIZE = 8 * 1024 * 1024; // 全PDFの合計上限 8MB
-
-function isSupportedMimeType(mimeType: string): boolean {
-  return (
-    TEXT_MIME_TYPES.has(mimeType) ||
-    BINARY_MIME_TYPES.has(mimeType) ||
-    OFFICE_MIME_TYPES.has(mimeType) ||
-    mimeType in GOOGLE_EXPORT_TYPES
-  );
-}
 
 async function driveRequest(path: string, token: string, init?: RequestInit) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -115,117 +79,21 @@ export async function readFileContentGoogle(
       // Google Spreadsheet → xlsx でエクスポートしてパース
       if (exportMime.includes("spreadsheet")) {
         const buffer = Buffer.from(await res.arrayBuffer());
-        const workbook = XLSX.read(buffer, { type: "buffer" });
-        let text = "";
-        for (const sheetName of workbook.SheetNames) {
-          const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { rawNumbers: true });
-          // 残存するExcelシリアル値(5桁の数値)を日付に変換
-          const fixed = csv.replace(/\b(\d{5})\b/g, (match: string) => {
-            const num = parseInt(match, 10);
-            if (num >= 40000 && num <= 55000) { // 2009年〜2050年の範囲
-              const date = new Date((num - 25569) * 86400 * 1000);
-              return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
-            }
-            return match;
-          });
-          text += `[シート: ${sheetName}]\n${fixed}\n\n`;
-        }
-        if (text.trim()) return { name: fileName, path: fileId, content: text.trim() };
-        return null;
+        return parseSpreadsheet(buffer, fileName, fileId);
       }
 
       const content = await res.text();
       return { name: fileName, path: fileId, content };
     }
 
-    // PDF → まずテキスト抽出、ダメならbase64
-    if (mimeType && BINARY_MIME_TYPES.has(mimeType)) {
-      const res = await driveRequest(`/files/${fileId}?alt=media&supportsAllDrives=true`, token);
-      if (!res.ok) return null;
-
-      const contentLength = res.headers.get("content-length");
-      if (contentLength && parseInt(contentLength, 10) > MAX_BINARY_SIZE) {
-        return { name: fileName, path: fileId, content: `[ファイルサイズが大きすぎます: ${(parseInt(contentLength, 10) / 1024 / 1024).toFixed(1)}MB]` };
-      }
-
-      const buffer = Buffer.from(await res.arrayBuffer());
-
-      // テキスト抽出を試みる
-      try {
-        const parsed = await pdfParse(buffer);
-        const text = parsed.text?.trim();
-        if (text && text.length > 50) {
-          // テキストが十分にある → テキストとして渡す（軽い）
-          return { name: fileName, path: fileId, content: text };
-        }
-      } catch {
-        // パース失敗 → base64にフォールバック
-      }
-
-      // テキストが取れない（スキャンPDF等）→ base64で画像として渡す
-      const base64 = buffer.toString("base64");
-      return {
-        name: fileName,
-        path: fileId,
-        content: `[スキャンPDF: ${fileName}]`,
-        mimeType,
-        base64,
-      };
-    }
-
-    // Office系 → テキスト抽出
-    if (mimeType && OFFICE_MIME_TYPES.has(mimeType)) {
-      const res = await driveRequest(`/files/${fileId}?alt=media&supportsAllDrives=true`, token);
-      if (!res.ok) return null;
-
-      const buffer = Buffer.from(await res.arrayBuffer());
-
-      try {
-        // docx
-        if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-          const result = await mammoth.extractRawText({ buffer });
-          const text = result.value?.trim();
-          if (text) return { name: fileName, path: fileId, content: text };
-        }
-
-        // xlsx / xls
-        if (
-          mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-          mimeType === "application/vnd.ms-excel"
-        ) {
-          const workbook = XLSX.read(buffer, { type: "buffer" });
-          let text = "";
-          for (const sheetName of workbook.SheetNames) {
-            const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { rawNumbers: true });
-            const fixed = csv.replace(/\b(\d{5})\b/g, (match: string) => {
-              const num = parseInt(match, 10);
-              if (num >= 40000 && num <= 55000) {
-                const date = new Date((num - 25569) * 86400 * 1000);
-                return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
-              }
-              return match;
-            });
-            text += `[シート: ${sheetName}]\n${fixed}\n\n`;
-          }
-          if (text.trim()) return { name: fileName, path: fileId, content: text.trim() };
-        }
-      } catch {
-        // パース失敗
-      }
-
-      return { name: fileName, path: fileId, content: `[読み取れませんでした: ${fileName}]` };
-    }
-
-    // テキスト系
+    // ダウンロード
     const res = await driveRequest(`/files/${fileId}?alt=media&supportsAllDrives=true`, token);
     if (!res.ok) return null;
 
-    const content = await res.text();
-    if (content.length > MAX_TEXT_SIZE) {
-      return { name: fileName, path: fileId, content: `[ファイルサイズが大きすぎます]` };
-    }
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const effectiveMime = mimeType || "application/octet-stream";
 
-    return { name: fileName, path: fileId, content };
+    return parseBuffer(buffer, fileName, fileId, effectiveMime);
   } catch {
     return null;
   }
@@ -288,7 +156,6 @@ export async function listFoldersGoogle(
   const token = await getValidGoogleToken();
   if (!token) throw new Error("Google Drive未接続");
 
-  // ルートでは「マイドライブ」「共有アイテム」「共有ドライブ」を表示
   if (parentId === "root") {
     const dirs: { name: string; path: string }[] = [
       { name: "マイドライブ", path: "my-drive" },
@@ -334,7 +201,6 @@ export async function listFoldersGoogle(
     return listDriveFolders(driveId, parentId, "root", token, driveId);
   }
 
-  // 通常のフォルダ — 親はGoogle APIから取得
   try {
     const metaParams = new URLSearchParams({
       fields: "parents",
@@ -380,7 +246,6 @@ async function listDriveFolders(
     .map((f: { id: string; name: string }) => ({ name: f.name, path: f.id }))
     .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
 
-  // ファイル一覧も取得（フォルダ以外）
   const fileQ = `'${folderId}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
   const fileParams = new URLSearchParams({
     q: fileQ, fields: "files(name,mimeType)", pageSize: "50",

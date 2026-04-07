@@ -1,28 +1,19 @@
 export type FolderProvider = "local" | "google" | "dropbox";
 
-export type SubfolderRole = "common" | "job";
+export type SubfolderRole = "common" | "job" | "none";
 
-export interface CachedFile {
-  id: string;
-  name: string;
-  mimeType: string;
-  size: number;
-  modifiedTime: string;
-  enabled: boolean;
-}
-
+// Local-First: ファイルはライブ読み取り。無効化リストのみ保存
 export interface Subfolder {
-  id: string;
+  id: string;              // ローカルパス（フォルダ）
   name: string;
   role: SubfolderRole;
   active: boolean;
-  files?: CachedFile[];
-  childFolders?: { id: string; name: string }[];
+  disabledFiles?: string[]; // 無効化したファイルの相対パス
 }
 
 export interface SourceFile {
   name: string;
-  id: string;
+  id: string;              // ローカルパス
 }
 
 export interface OfficerInfo {
@@ -66,7 +57,7 @@ export interface ChangeHistoryEntry {
 }
 
 export interface CompanyProfile {
-  summary?: string; // 後方互換: 旧フリーテキスト
+  summary?: string;
   structured?: StructuredProfile;
   変更履歴?: ChangeHistoryEntry[];
   updatedAt: string;
@@ -75,47 +66,48 @@ export interface CompanyProfile {
 
 export interface DocumentTemplatePart {
   id: string;
-  name: string;          // 例: "議案: 役員選任"
+  name: string;
   content: string;
 }
 
 export interface DocumentTemplate {
   id: string;
-  name: string;          // 文書名（例: "株主総会議事録"）
-  category?: string;     // 任意のカテゴリ
-  content: string;       // 雛形テキスト（個人情報除去済み）
-  parts?: DocumentTemplatePart[]; // 差し込みパーツ（議案等）
+  name: string;
+  category?: string;
+  content: string;
+  parts?: DocumentTemplatePart[];
   createdAt: string;
 }
 
 export interface MasterSheet {
   templateId: string;
   templateName: string;
-  content: string; // マークダウン表示用
-  structured?: Record<string, unknown>; // JSON構造化データ
+  content: string;
+  structured?: Record<string, unknown>;
   sourceFiles?: { id: string; name: string; mimeType: string }[];
   createdAt: string;
 }
 
+export interface GeneratedDocument {
+  templateName: string;
+  docxBase64: string;       // docxバイナリ（base64）
+  previewHtml: string;      // HTMLプレビュー
+  fileName: string;
+  createdAt: string;
+}
+
 export interface Company {
-  id: string;
+  id: string;              // ローカルパス（会社フォルダ）
   name: string;
   subfolders: Subfolder[];
   profile?: CompanyProfile;
-  masterSheet?: MasterSheet; // テンプレート実行結果
-  baseFolderId?: string; // どのルートフォルダから来たか
-}
-
-export interface BaseFolder {
-  id: string;          // エントリの一意ID
-  name: string;        // 表示名
-  folderId: string;    // クラウド上のフォルダID
-  provider: FolderProvider;
+  masterSheet?: MasterSheet;
+  generatedDocuments?: GeneratedDocument[];
 }
 
 export interface WorkspaceConfig {
-  baseFolders: BaseFolder[];
-  globalCommon: { id: string; name: string }[];
+  basePath: string;        // 顧問先フォルダのローカルパス
+  templateBasePath: string; // 書類テンプレートフォルダのローカルパス
   defaultCommonPatterns: string[];
   companies: Company[];
   selectedCompanyId: string | null;
@@ -140,7 +132,7 @@ export interface FileContent {
 export interface CheckTemplate {
   id: string;
   name: string;
-  items: string[]; // 確認項目名のリスト
+  items: string[];
 }
 
 export interface ChatMessage {

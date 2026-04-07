@@ -1,25 +1,46 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import type { WorkspaceConfig, Company } from "@/types";
+import { useState, useEffect, useCallback, useRef } from "react";
+import type { WorkspaceConfig } from "@/types";
 import ChatWindow from "@/components/chat/ChatWindow";
 import CompanyProfile from "@/components/CompanyProfile";
 import DocumentGenerator from "@/components/DocumentGenerator";
 import VerificationView from "@/components/VerificationView";
 import CaseOrganizer from "@/components/CaseOrganizer";
 import SettingsView from "@/components/SettingsView";
-import TemplateSidebar from "@/components/TemplateSidebar";
+import FileSidebar from "@/components/FileSidebar";
 
-type MainTab = "chat" | "profile" | "organize" | "search" | "verify" | "documents" | "settings";
+// ChatWindowは横断検索でのみ使用
+
+type MainTab = "main" | "chat" | "profile" | "search" | "verify" | "documents" | "settings";
 
 export default function Home() {
-  const [tab, setTab] = useState<MainTab>("chat");
+  const [tab, setTab] = useState<MainTab>("main");
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
-  const [companyDropdownOpen, setCompanyDropdownOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [jobDropdownOpen, setJobDropdownOpen] = useState(false);
   const [executeTemplateId, setExecuteTemplateId] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(240);
+  const resizing = useRef(false);
+
+  const handleMouseDown = useCallback(() => {
+    resizing.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizing.current) return;
+      const newWidth = Math.max(180, Math.min(500, e.clientX));
+      setSidebarWidth(newWidth);
+    };
+    const handleMouseUp = () => {
+      resizing.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  }, []);
 
   const fetchConfig = useCallback(async () => {
     const res = await fetch("/api/workspace");
@@ -28,44 +49,7 @@ export default function Home() {
 
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
 
-  // サイドバーの変更を検知して自動更新（2秒ごと）
-  useEffect(() => {
-    const interval = setInterval(fetchConfig, 2000);
-    return () => clearInterval(interval);
-  }, [fetchConfig]);
-
   const selectedCompany = config?.companies.find(c => c.id === config.selectedCompanyId);
-
-  // 会社追加
-  const handleAddCompanies = async (folders: { id: string; name: string }[]) => {
-    if (!config) return;
-    const existingIds = new Set(config.companies.map(c => c.id));
-    const newCompanies: Company[] = folders
-      .filter(f => !existingIds.has(f.id))
-      .map(f => ({ id: f.id, name: f.name, subfolders: [] }));
-
-    if (newCompanies.length === 0) return;
-
-    const allCompanies = [...config.companies, ...newCompanies];
-    const res = await fetch("/api/workspace", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "setCompanies", companies: allCompanies }),
-    });
-    if (res.ok) setConfig(await res.json());
-  };
-
-  // 会社削除
-  const handleRemoveCompany = async (companyId: string) => {
-    if (!config) return;
-    const companies = config.companies.filter(c => c.id !== companyId);
-    const res = await fetch("/api/workspace", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "setCompanies", companies }),
-    });
-    if (res.ok) setConfig(await res.json());
-  };
 
   const handleSelectCompany = async (companyId: string) => {
     await fetch("/api/workspace", {
@@ -74,40 +58,51 @@ export default function Home() {
       body: JSON.stringify({ action: "selectCompany", companyId }),
     });
     await fetchConfig();
-    setCompanyDropdownOpen(false);
-    setSearchQuery("");
-
-    // 未設定の会社を自動セットアップ
-    if (config) {
-      const company = config.companies.find(c => c.id === companyId);
-      if (company && company.subfolders.length === 0 && config.defaultCommonPatterns.length > 0) {
-        await fetch("/api/workspace", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "autoSetupCompany", companyId }),
-        });
-        await fetchConfig();
-      }
-    }
   };
 
   const handleToggleJob = async (subfolderId: string, active: boolean) => {
+    if (!config?.selectedCompanyId) return;
+    // 単一選択: 選んだフォルダだけON、他は全部OFF
     await fetch("/api/workspace", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "toggleSubfolder", companyId: config?.selectedCompanyId, subfolderId, active }),
+      body: JSON.stringify({
+        action: "selectSingleJob",
+        companyId: config.selectedCompanyId,
+        subfolderId,
+        active,
+      }),
     });
     await fetchConfig();
   };
 
-  const jobSubs = selectedCompany?.subfolders.filter(s => s.role === "job") || [];
-  const activeJobs = jobSubs.filter(s => s.active);
+  const handleToggleFile = async (companyId: string, subfolderId: string, filePath: string, enabled: boolean) => {
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "toggleFile", companyId, subfolderId, filePath, enabled }),
+    });
+    await fetchConfig();
+  };
 
-  const filteredCompanies = (config?.companies || [])
-    .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const handleSelectSingleFolder = async (companyId: string, subfolderId: string, selectedPath: string, siblingPaths: string[]) => {
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "selectSingleFolder", companyId, subfolderId, selectedPath, siblingPaths }),
+    });
+    await fetchConfig();
+  };
 
-  // 横断検索から会社の基本情報に飛ぶ
+  const handleChangeRole = async (companyId: string, subfolderId: string, newRole: string) => {
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "setSubfolderRole", companyId, subfolderId, role: newRole }),
+    });
+    await fetchConfig();
+  };
+
   const handleNavigateToCompany = async (targetCompanyId: string) => {
     await fetch("/api/workspace", {
       method: "PATCH",
@@ -118,150 +113,58 @@ export default function Home() {
     setTab("profile");
   };
 
-  const showSidebar = tab === "chat" || tab === "organize";
+  // テンプレート→フォルダ推論結果でactive切替
+  const handleSuggestFolders = async (folderIds: string[]) => {
+    if (!config?.selectedCompanyId) return;
+    const company = config.companies.find(c => c.id === config.selectedCompanyId);
+    if (!company) return;
+    // 案件フォルダを全部OFF→推論結果だけON
+    for (const sub of company.subfolders) {
+      if (sub.role === "job") {
+        const shouldBeActive = folderIds.includes(sub.id);
+        if (sub.active !== shouldBeActive) {
+          await fetch("/api/workspace", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "toggleSubfolder", companyId: company.id, subfolderId: sub.id, active: shouldBeActive }),
+          });
+        }
+      }
+    }
+    await fetchConfig();
+  };
+
+  const showSidebar = tab !== "settings" && tab !== "search";
 
   return (
     <main className="flex h-screen flex-col">
-      {/* ヘッダー: ロゴ + 会社セレクター + タブ */}
+      {/* ヘッダー: ロゴ + タブ + アイコン */}
       <div className="flex items-center border-b border-gray-200 bg-white">
-        {/* ロゴ */}
         <div className="px-4 shrink-0">
-          <img src="/logo.png" alt="Recast" className="h-8" />
+          <img src="/logo.png" alt="Recast" className="h-10" />
         </div>
-
-        {/* 会社セレクター */}
-        <div className="relative shrink-0 mr-2">
-          <button
-            onClick={() => setCompanyDropdownOpen(!companyDropdownOpen)}
-            className="flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm hover:border-blue-400 transition-colors"
-          >
-            <span className="truncate max-w-[200px]">
-              {selectedCompany ? selectedCompany.name : "会社を選択"}
-            </span>
-            <span className="text-gray-400 text-xs">{companyDropdownOpen ? "▲" : "▼"}</span>
-          </button>
-          {companyDropdownOpen && (
-            <div className="absolute z-50 mt-1 w-72 rounded-lg border border-gray-200 bg-white shadow-lg" style={{ maxHeight: "400px" }}>
-              <div className="border-b border-gray-100 p-2">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="会社名で検索..."
-                  autoFocus
-                  className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
-                />
-              </div>
-              <ul className="max-h-[300px] overflow-y-auto py-1">
-                {filteredCompanies.length === 0 ? (
-                  <li className="px-3 py-2 text-xs text-gray-400">見つかりません</li>
-                ) : (
-                  filteredCompanies.map(c => (
-                    <li key={c.id}>
-                      <button
-                        onClick={() => handleSelectCompany(c.id)}
-                        className={`w-full px-3 py-1.5 text-left text-sm transition-colors ${
-                          c.id === config?.selectedCompanyId
-                            ? "bg-blue-50 text-blue-700"
-                            : "text-gray-700 hover:bg-gray-100"
-                        }`}
-                      >
-                        {c.name}
-                      </button>
-                    </li>
-                  ))
-                )}
-              </ul>
-            </div>
-          )}
-        </div>
-
-        {/* 案件セレクター */}
-        {selectedCompany && jobSubs.length > 0 && (
-          <div className="relative shrink-0 mr-2">
-            <button
-              onClick={() => setJobDropdownOpen(!jobDropdownOpen)}
-              className="flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm hover:border-blue-400 transition-colors"
-            >
-              <span className="truncate max-w-[180px]">
-                {activeJobs.length > 0 ? activeJobs.map(j => j.name).join(", ") : "案件を選択"}
-              </span>
-              <span className="text-gray-400 text-xs">{jobDropdownOpen ? "▲" : "▼"}</span>
-            </button>
-            {jobDropdownOpen && (
-              <div className="absolute z-50 mt-1 w-72 rounded-lg border border-gray-200 bg-white shadow-lg">
-                <ul className="max-h-[300px] overflow-y-auto py-1">
-                  {jobSubs.map(sub => (
-                    <li key={sub.id}>
-                      <button
-                        onClick={() => { handleToggleJob(sub.id, !sub.active); setJobDropdownOpen(false); }}
-                        className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 transition-colors ${
-                          sub.active ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
-                        }`}
-                      >
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${sub.active ? "bg-blue-500" : "bg-gray-300"}`} />
-                        {sub.name}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* タブ */}
         <div className="flex flex-1 overflow-x-auto">
-              <button
-                onClick={() => !chatLoading && setTab("chat")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${
-                  tab === "chat"
-                    ? "border-b-2 border-blue-500 text-blue-600"
-                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                チャット
-              </button>
-              <button
-                onClick={() => !chatLoading && setTab("profile")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${
-                  tab === "profile"
-                    ? "border-b-2 border-blue-500 text-blue-600"
-                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                基本情報
-              </button>
-              <button
-                onClick={() => !chatLoading && setTab("organize")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${
-                  tab === "organize"
-                    ? "border-b-2 border-blue-500 text-blue-600"
-                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                案件整理
-              </button>
-              <button
-                onClick={() => !chatLoading && setTab("verify")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${
-                  tab === "verify"
-                    ? "border-b-2 border-blue-500 text-blue-600"
-                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                突合せ
-              </button>
-              <button
-                onClick={() => !chatLoading && setTab("documents")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${
-                  tab === "documents"
-                    ? "border-b-2 border-blue-500 text-blue-600"
-                    : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
-                書類生成
-              </button>
+          {([
+            { id: "main", label: "案件整理" },
+            { id: "chat", label: "チャット" },
+            { id: "profile", label: "基本情報" },
+            { id: "verify", label: "突合せ" },
+            { id: "documents", label: "書類生成" },
+          ] as { id: MainTab; label: string }[]).map(t => (
+            <button
+              key={t.id}
+              onClick={() => !chatLoading && setTab(t.id)}
+              className={`px-4 py-3 text-sm font-medium transition-colors ${
+                tab === t.id
+                  ? "border-b-2 border-blue-500 text-blue-600"
+                  : chatLoading ? "text-gray-300 cursor-not-allowed" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
         {/* 右端: 横断検索・設定アイコン */}
@@ -289,22 +192,30 @@ export default function Home() {
 
       {/* メインコンテンツ */}
       <div className="flex flex-1 overflow-hidden">
-        {/* サイドバー: テンプレート */}
+        {/* サイドバー: 会社選択 + ファイラー */}
         {showSidebar && (
-          <TemplateSidebar
-            tab={tab}
-            onSelectPrompt={(prompt) => {
-              // チャットタブの場合はプロンプトを入力欄に設定
-              // TODO: ChatWindowにプロンプト注入の仕組みが必要
-            }}
-            onSelectTemplate={(templateId) => {
-              // 案件整理タブの場合はテンプレートを実行
-              // TODO: CaseOrganizerにテンプレート実行の仕組みが必要
-            }}
-          />
+          <div className="flex shrink-0" style={{ width: sidebarWidth }}>
+            <FileSidebar
+              companies={config?.companies || []}
+              selectedCompanyId={config?.selectedCompanyId || null}
+              onSelectCompany={handleSelectCompany}
+              onToggleJob={handleToggleJob}
+              onToggleFile={handleToggleFile}
+              onSelectSingleFolder={handleSelectSingleFolder}
+              onChangeRole={handleChangeRole}
+            />
+            {/* リサイズハンドル */}
+            <div
+              onMouseDown={handleMouseDown}
+              className="w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors"
+            />
+          </div>
         )}
         <div className="flex-1 overflow-hidden">
-        {tab === "chat" && <ChatWindow key={config?.selectedCompanyId || "none"} companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} />}
+        {/* メインタブは非表示で保持（状態維持） */}
+        <div className={tab === "main" ? "h-full" : "hidden"}><CaseOrganizer key={config?.selectedCompanyId || "none"} company={selectedCompany || null} executeTemplateId={executeTemplateId} onExecuteComplete={() => setExecuteTemplateId(null)} onSuggestFolders={handleSuggestFolders} visible={tab === "main"} onUpdate={fetchConfig} /></div>
+        <div className={tab === "chat" ? "h-full" : "hidden"}><ChatWindow key={config?.selectedCompanyId || "none"} companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} /></div>
+        <div className={tab === "verify" ? "h-full" : "hidden"}><VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} /></div>
         {tab === "profile" && (
           <CompanyProfile
             key={config?.selectedCompanyId || "none"}
@@ -312,11 +223,9 @@ export default function Home() {
             onUpdate={fetchConfig}
           />
         )}
-        {tab === "organize" && <CaseOrganizer key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
         {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
-        {tab === "verify" && <VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
-        {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
-        {tab === "settings" && <SettingsView config={config} onAddCompanies={handleAddCompanies} onRemoveCompany={handleRemoveCompany} onUpdateConfig={fetchConfig} />}
+        {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} onUpdate={fetchConfig} />}
+        {tab === "settings" && <SettingsView config={config} onUpdateConfig={fetchConfig} />}
         </div>
       </div>
     </main>

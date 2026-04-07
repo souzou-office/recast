@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Company } from "@/types";
 import ProfileTemplateModal from "./ProfileTemplateModal";
+import FilePreview from "./FilePreview";
 
 interface ViewerFile {
   id: string;
@@ -169,8 +170,6 @@ function renderValue(value: string) {
 export default function CompanyProfile({ company, onUpdate }: Props) {
   const [generating, setGenerating] = useState(false);
   const [viewerFile, setViewerFile] = useState<ViewerFile | null>(null);
-  const [splitRatio, setSplitRatio] = useState(50);
-  const [dragging, setDragging] = useState(false);
   const [showJson, setShowJson] = useState(false);
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
@@ -346,7 +345,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                   {profile.sourceFiles.map((f, i) => {
                     const name = typeof f === "string" ? f : f.name;
                     const fileId = typeof f === "string" ? null : f.id;
-                    const url = fileId ? `https://drive.google.com/file/d/${fileId}/view` : null;
                     return (
                       <li key={i} className="text-sm flex items-center gap-2">
                         <span className="text-gray-400 text-xs">&#128196;</span>
@@ -358,10 +356,27 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                             >
                               {name}
                             </button>
-                            <a href={url!} target="_blank" rel="noopener noreferrer"
-                              className="text-[10px] text-gray-400 hover:text-gray-600 shrink-0">
-                              別タブ
-                            </a>
+                            <button
+                              onClick={async () => {
+                                const res = await fetch("/api/workspace/raw-file", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ path: fileId }),
+                                });
+                                if (res.ok) {
+                                  const blob = await res.blob();
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = name;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                }
+                              }}
+                              className="text-[10px] text-gray-400 hover:text-gray-600 shrink-0"
+                            >
+                              DL
+                            </button>
                           </div>
                         ) : (
                           <span className="text-gray-600">{name}</span>
@@ -411,57 +426,16 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   }
 
   // ビューワーあり → 左右分割
-  const previewUrl = `https://drive.google.com/file/d/${viewerFile.id}/preview`;
-  const openUrl = `https://drive.google.com/file/d/${viewerFile.id}/view`;
-
-  const handleMouseDown = () => {
-    setDragging(true);
-    const handleMouseMove = (e: MouseEvent) => {
-      const container = document.getElementById("split-container");
-      if (!container) return;
-      const rect = container.getBoundingClientRect();
-      const ratio = ((e.clientX - rect.left) / rect.width) * 100;
-      setSplitRatio(Math.min(Math.max(ratio, 20), 80));
-    };
-    const handleMouseUp = () => {
-      setDragging(false);
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
-  };
-
   return (
-    <div id="split-container" className="flex h-full" style={{ userSelect: dragging ? "none" : undefined }}>
-      <div className="min-w-0 overflow-hidden" style={{ width: `${splitRatio}%` }}>
+    <div className="flex h-full">
+      <div className="min-w-0 flex-1 overflow-hidden">
         {profileContent}
       </div>
-      <div
-        onMouseDown={handleMouseDown}
-        className="w-1.5 shrink-0 cursor-col-resize bg-gray-200 hover:bg-blue-400 transition-colors"
+      <FilePreview
+        filePath={viewerFile.id}
+        fileName={viewerFile.name}
+        onClose={() => setViewerFile(null)}
       />
-      <div className="flex min-w-0 flex-1 flex-col bg-white overflow-hidden">
-        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 shrink-0">
-          <h3 className="text-sm font-medium text-gray-700 truncate" title={viewerFile.name}>
-            {viewerFile.name}
-          </h3>
-          <div className="flex items-center gap-3 shrink-0">
-            <a href={openUrl} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-blue-600 hover:text-blue-800">
-              別タブで開く
-            </a>
-            <button onClick={() => setViewerFile(null)}
-              className="text-gray-400 hover:text-gray-600 text-lg leading-none">
-              &times;
-            </button>
-          </div>
-        </div>
-        <div className="flex-1 overflow-hidden">
-          <iframe src={previewUrl} className="h-full w-full border-0"
-            style={{ pointerEvents: dragging ? "none" : undefined }} allow="autoplay" />
-        </div>
-      </div>
       {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
     </div>
   );

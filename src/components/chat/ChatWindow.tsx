@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { ChatMessage } from "@/types";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
+import FilePreview from "../FilePreview";
 import TemplateSelectModal from "./TemplateSelectModal";
 
 interface Props {
@@ -452,41 +453,18 @@ export default function ChatWindow({ companyId, companies, onLoadingChange, onNa
         {/* 入力エリア */}
         <ChatInput
           onSend={handleSend}
-          onOpenTemplateModal={companyId !== "__search__" ? () => setShowTemplateModal(true) : undefined}
+
           disabled={isLoading}
         />
       </div>
 
       {/* 右側: ファイルプレビュー */}
       {previewFileId && (
-        <div className="flex w-1/2 flex-col border-l border-gray-200">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-            <span className="text-xs text-gray-600 truncate">
-              {allSourceFiles.find(f => f.id === previewFileId)?.name}
-            </span>
-            <div className="flex items-center gap-2">
-              <a
-                href={`https://drive.google.com/file/d/${previewFileId}/view`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[10px] text-blue-500 hover:text-blue-700"
-              >
-                別タブで開く
-              </a>
-              <button
-                onClick={() => setPreviewFileId(null)}
-                className="text-gray-400 hover:text-gray-600 text-lg leading-none"
-              >
-                ×
-              </button>
-            </div>
-          </div>
-          <iframe
-            src={`https://drive.google.com/file/d/${previewFileId}/preview`}
-            className="flex-1 w-full"
-            allow="autoplay"
-          />
-        </div>
+        <FilePreview
+          filePath={previewFileId}
+          fileName={allSourceFiles.find(f => f.id === previewFileId)?.name || ""}
+          onClose={() => setPreviewFileId(null)}
+        />
       )}
 
       {/* テンプレート選択モーダル */}
