@@ -264,6 +264,89 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "createCaseRoom": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        if (!company.caseRooms) company.caseRooms = [];
+        const now = new Date().toISOString();
+        company.caseRooms.push({
+          id: `case_${Date.now()}`,
+          folderPath: body.folderPath || "",
+          displayName: body.displayName || "新規案件",
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      break;
+    }
+
+    case "updateCaseRoom": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          if (body.displayName !== undefined) room.displayName = body.displayName;
+          if (body.folderPath !== undefined) room.folderPath = body.folderPath;
+          if (body.masterSheet !== undefined) room.masterSheet = body.masterSheet;
+          if (body.generatedDocuments !== undefined) room.generatedDocuments = body.generatedDocuments;
+          if (body.checkResult !== undefined) room.checkResult = body.checkResult;
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
+    case "deleteCaseRoom": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company && company.caseRooms) {
+        company.caseRooms = company.caseRooms.filter(r => r.id !== body.caseRoomId);
+      }
+      break;
+    }
+
+    case "saveCaseRoomMasterSheet": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          room.masterSheet = body.masterSheet;
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
+    case "saveCaseRoomDocument": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          if (!room.generatedDocuments) room.generatedDocuments = [];
+          room.generatedDocuments.push({
+            templateName: body.templateName,
+            docxBase64: body.docxBase64,
+            previewHtml: body.previewHtml,
+            fileName: body.fileName,
+            createdAt: new Date().toISOString(),
+          });
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
+    case "saveCaseRoomCheck": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          room.checkResult = body.checkResult;
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
     default:
       return NextResponse.json({ error: "不明なaction" }, { status: 400 });
   }

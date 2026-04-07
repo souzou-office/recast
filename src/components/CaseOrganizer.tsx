@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Company } from "@/types";
+import type { Company, CaseRoom } from "@/types";
 import FilePreview from "./FilePreview";
 
 interface CheckTemplate {
@@ -23,14 +23,12 @@ function fileIcon(name: string): string {
 
 interface Props {
   company: Company | null;
-  executeTemplateId?: string | null;
-  onExecuteComplete?: () => void;
-  onSuggestFolders?: (folderIds: string[]) => void;
+  caseRoom?: CaseRoom;
   visible?: boolean;
   onUpdate?: () => void;
 }
 
-export default function CaseOrganizer({ company, executeTemplateId, onExecuteComplete, onSuggestFolders, visible, onUpdate }: Props) {
+export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: Props) {
   const [result, setResult] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
@@ -91,7 +89,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
       const allExpanded = new Set<string>([company.id]);
       setExpandedPreviews(allExpanded);
       // サイドバーも更新
-      if (onSuggestFolders) onSuggestFolders(Array.from(suggested));
+      // フォルダ推論結果（UIで使用）
     } catch { /* ignore */ }
     setInferring(false);
   };
@@ -118,7 +116,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
       if (next.has(folderId)) next.delete(folderId);
       else next.add(folderId);
       // サイドバーも同期
-      if (onSuggestFolders) onSuggestFolders(Array.from(next));
+      // フォルダ切替
       return next;
     });
   };
@@ -223,13 +221,6 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [result]);
 
-  // サイドバーからのテンプレート実行
-  useEffect(() => {
-    if (executeTemplateId) {
-      handleExecute(executeTemplateId);
-      onExecuteComplete?.();
-    }
-  }, [executeTemplateId]);
 
   if (!company) {
     return (
@@ -240,7 +231,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
   }
 
   // 保存済みマスターシートがあればそれを表示
-  const savedResult = company.masterSheet?.content || "";
+  const savedResult = caseRoom?.masterSheet?.content || company.masterSheet?.content || "";
   const displayResult = result || savedResult;
 
   const handleExecute = async (templateId: string) => {
@@ -322,18 +313,35 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
         const finalResult = await new Promise<string>(resolve => {
           setResult(prev => { resolve(prev); return prev; });
         });
+        const masterData = {
+          templateId: metaTemplateId,
+          templateName: metaTemplateName,
+          content: finalResult,
+          sourceFiles: metaSourceFiles,
+          createdAt: new Date().toISOString(),
+        };
         try {
-          await fetch("/api/templates/save-master", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              companyId: company.id,
-              templateId: metaTemplateId,
-              templateName: metaTemplateName,
-              content: finalResult,
-              sourceFiles: metaSourceFiles,
-            }),
-          });
+          if (caseRoom) {
+            // caseRoom単位で保存
+            await fetch("/api/workspace", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "saveCaseRoomMasterSheet",
+                companyId: company.id,
+                caseRoomId: caseRoom.id,
+                masterSheet: masterData,
+              }),
+            });
+          } else {
+            // 旧方式: 会社単位で保存
+            await fetch("/api/templates/save-master", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ companyId: company.id, ...masterData }),
+            });
+          }
+          onUpdate?.();
         } catch { /* ignore */ }
       }
     } catch {

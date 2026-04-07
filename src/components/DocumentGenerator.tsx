@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Company, GeneratedDocument } from "@/types";
+import type { Company, CaseRoom, GeneratedDocument } from "@/types";
 import FilePreview from "./FilePreview";
 
 interface TemplateFolder {
@@ -14,6 +14,7 @@ interface TemplateFolder {
 
 interface Props {
   company: Company | null;
+  caseRoom?: CaseRoom;
   onUpdate?: () => void;
 }
 
@@ -30,7 +31,7 @@ function downloadDocx(base64: string, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-export default function DocumentGenerator({ company, onUpdate }: Props) {
+export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props) {
   const [templateFolders, setTemplateFolders] = useState<TemplateFolder[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateFolder | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -80,8 +81,8 @@ export default function DocumentGenerator({ company, onUpdate }: Props) {
     );
   }
 
-  const hasMasterSheet = !!company.masterSheet;
-  const savedDocs = company.generatedDocuments || [];
+  const hasMasterSheet = !!(caseRoom?.masterSheet || company.masterSheet);
+  const savedDocs = caseRoom?.generatedDocuments || company.generatedDocuments || [];
 
   const handleGenerate = async () => {
     if (!selectedTemplate) return;
@@ -111,7 +112,15 @@ export default function DocumentGenerator({ company, onUpdate }: Props) {
             await fetch("/api/workspace", {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
+              body: JSON.stringify(caseRoom ? {
+                action: "saveCaseRoomDocument",
+                companyId: company.id,
+                caseRoomId: caseRoom.id,
+                templateName: d.name,
+                docxBase64: d.docxBase64,
+                previewHtml: d.previewHtml,
+                fileName: d.fileName,
+              } : {
                 action: "saveGeneratedDocument",
                 companyId: company.id,
                 templateName: d.name,

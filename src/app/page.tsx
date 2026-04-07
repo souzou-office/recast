@@ -4,21 +4,16 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { WorkspaceConfig } from "@/types";
 import ChatWindow from "@/components/chat/ChatWindow";
 import CompanyProfile from "@/components/CompanyProfile";
-import DocumentGenerator from "@/components/DocumentGenerator";
-import VerificationView from "@/components/VerificationView";
-import CaseOrganizer from "@/components/CaseOrganizer";
+import CaseRoomView from "@/components/CaseRoomView";
 import SettingsView from "@/components/SettingsView";
 import FileSidebar from "@/components/FileSidebar";
 
-// ChatWindowは横断検索でのみ使用
-
-type MainTab = "main" | "chat" | "profile" | "search" | "verify" | "documents" | "settings";
+type MainTab = "chat" | "profile" | "cases" | "search" | "settings";
 
 export default function Home() {
-  const [tab, setTab] = useState<MainTab>("main");
+  const [tab, setTab] = useState<MainTab>("chat");
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
-  const [executeTemplateId, setExecuteTemplateId] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const resizing = useRef(false);
 
@@ -113,27 +108,6 @@ export default function Home() {
     setTab("profile");
   };
 
-  // テンプレート→フォルダ推論結果でactive切替
-  const handleSuggestFolders = async (folderIds: string[]) => {
-    if (!config?.selectedCompanyId) return;
-    const company = config.companies.find(c => c.id === config.selectedCompanyId);
-    if (!company) return;
-    // 案件フォルダを全部OFF→推論結果だけON
-    for (const sub of company.subfolders) {
-      if (sub.role === "job") {
-        const shouldBeActive = folderIds.includes(sub.id);
-        if (sub.active !== shouldBeActive) {
-          await fetch("/api/workspace", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "toggleSubfolder", companyId: company.id, subfolderId: sub.id, active: shouldBeActive }),
-          });
-        }
-      }
-    }
-    await fetchConfig();
-  };
-
   const showSidebar = tab !== "settings" && tab !== "search";
 
   return (
@@ -147,11 +121,9 @@ export default function Home() {
         {/* タブ */}
         <div className="flex flex-1 overflow-x-auto">
           {([
-            { id: "main", label: "案件整理" },
             { id: "chat", label: "チャット" },
             { id: "profile", label: "基本情報" },
-            { id: "verify", label: "突合せ" },
-            { id: "documents", label: "書類生成" },
+            { id: "cases", label: "案件" },
           ] as { id: MainTab; label: string }[]).map(t => (
             <button
               key={t.id}
@@ -213,9 +185,7 @@ export default function Home() {
         )}
         <div className="flex-1 overflow-hidden">
         {/* メインタブは非表示で保持（状態維持） */}
-        <div className={tab === "main" ? "h-full" : "hidden"}><CaseOrganizer key={config?.selectedCompanyId || "none"} company={selectedCompany || null} executeTemplateId={executeTemplateId} onExecuteComplete={() => setExecuteTemplateId(null)} onSuggestFolders={handleSuggestFolders} visible={tab === "main"} onUpdate={fetchConfig} /></div>
         <div className={tab === "chat" ? "h-full" : "hidden"}><ChatWindow key={config?.selectedCompanyId || "none"} companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} /></div>
-        <div className={tab === "verify" ? "h-full" : "hidden"}><VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} /></div>
         {tab === "profile" && (
           <CompanyProfile
             key={config?.selectedCompanyId || "none"}
@@ -223,8 +193,8 @@ export default function Home() {
             onUpdate={fetchConfig}
           />
         )}
+        {tab === "cases" && <CaseRoomView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} onUpdate={fetchConfig} />}
         {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
-        {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} onUpdate={fetchConfig} />}
         {tab === "settings" && <SettingsView config={config} onUpdateConfig={fetchConfig} />}
         </div>
       </div>

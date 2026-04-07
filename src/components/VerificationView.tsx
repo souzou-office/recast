@@ -4,13 +4,15 @@ import { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
-import type { Company, ChatMessage } from "@/types";
+import type { Company, CaseRoom, ChatMessage } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 import MessageBubble from "./chat/MessageBubble";
 import FilePreview from "./FilePreview";
 
 interface Props {
   company: Company | null;
+  caseRoom?: CaseRoom;
+  onUpdate?: () => void;
 }
 
 interface FolderData {
@@ -26,7 +28,7 @@ function fileIcon(name: string): string {
   return "📎";
 }
 
-export default function VerificationView({ company }: Props) {
+export default function VerificationView({ company, caseRoom, onUpdate }: Props) {
   const [selectedFiles, setSelectedFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
@@ -46,7 +48,7 @@ export default function VerificationView({ company }: Props) {
     );
   }
 
-  const hasMasterSheet = !!company.masterSheet;
+  const hasMasterSheet = !!(caseRoom?.masterSheet || company.masterSheet);
   const hasProfile = !!company.profile;
 
   // フォルダ読み込み
