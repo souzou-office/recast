@@ -162,11 +162,16 @@ export async function POST(request: NextRequest) {
       } catch { /* パース失敗時はテキストのみ保存 */ }
     }
 
-    // テキスト部分を抽出（JSONブロックを除去）
+    // テキスト部分を抽出（JSONブロック・ブロックヘッダーを除去）
     const summary = rawText
       .replace(/```json[\s\S]*?```/g, "")
+      .replace(/\{[\s\S]*\}/g, "") // 残ったJSONオブジェクトも除去
       .replace(/【ブロック2[\s\S]*/g, "")
-      .replace(/【ブロック1[：:]\s*表示用テキスト】\s*/g, "")
+      .replace(/##\s*ブロック\s*2[\s\S]*/g, "")
+      .replace(/【ブロック1[：:][^】]*】\s*/g, "")
+      .replace(/##\s*ブロック\s*1[^\n]*\n?/g, "")
+      .replace(/\*\*ブロック\s*1[^\n]*\n?/g, "")
+      .replace(/\*\*ブロック\s*2[\s\S]*/g, "")
       .trim();
 
     const allFiles = [

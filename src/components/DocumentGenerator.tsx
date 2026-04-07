@@ -41,6 +41,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
 
   // プレビュー中のドキュメント
   const [viewingDoc, setViewingDoc] = useState<GeneratedDocument | null>(null);
+  const [deleteChecked, setDeleteChecked] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     fetch("/api/workspace").then(r => r.json()).then(config => {
@@ -99,7 +100,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
       const res = await fetch("/api/document-templates/produce", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, templateFolderPath: selectedTemplate.path }),
+        body: JSON.stringify({ companyId: company.id, templateFolderPath: selectedTemplate.path, caseRoomId: caseRoom?.id }),
       });
 
       const contentType = res.headers.get("Content-Type") || "";
@@ -168,11 +169,26 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
 
   const handleDeleteDoc = async (index: number) => {
     if (!confirm("この書類を削除しますか？")) return;
-    await fetch("/api/workspace", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "deleteGeneratedDocument", companyId: company.id, index }),
-    });
+    if (caseRoom) {
+      const updated = [...savedDocs];
+      updated.splice(index, 1);
+      await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "updateCaseRoom",
+          companyId: company.id,
+          caseRoomId: caseRoom.id,
+          generatedDocuments: updated,
+        }),
+      });
+    } else {
+      await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "deleteGeneratedDocument", companyId: company.id, index }),
+      });
+    }
     if (viewingDoc === savedDocs[index]) setViewingDoc(null);
     onUpdate?.();
   };
@@ -190,7 +206,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
 
   return (
     <div className="flex h-full overflow-hidden">
-      <div className={`flex flex-col overflow-hidden ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+      <div className={`flex flex-col overflow-hidden ${previewFileId || viewingDoc ? "flex-1 min-w-0" : "w-full"} transition-all`}>
         <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
           <div>
             <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
@@ -211,12 +227,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
         <div className="flex-1 overflow-y-auto p-6 flex justify-center">
           <div className="w-full max-w-4xl">
 
-          {/* ドキュメントプレビュー（右側に表示するため空） */}
-          {viewingDoc ? (
-            <div className="flex h-full items-center justify-center text-gray-400">
-              <p className="text-sm">← 右側にプレビュー表示中</p>
-            </div>
-          ) : result ? (
+          {result ? (
             <>
               {generating ? (
                 <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
@@ -237,10 +248,58 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
               {/* 保存済みドキュメント */}
               {savedDocs.length > 0 && (
                 <div className="mb-6">
-                  <h3 className="text-xs font-semibold text-gray-500 mb-2">生成済み書類</h3>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xs font-semibold text-gray-500">生成済み書類</h3>
+                    {deleteChecked.size > 0 && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`${deleteChecked.size}件の書類を削除しますか？`)) return;
+                          // インデックスの大きい方から削除
+                          const indices = Array.from(deleteChecked).sort((a, b) => b - a);
+                          if (caseRoom) {
+                            const updated = savedDocs.filter((_, i) => !deleteChecked.has(i));
+                            await fetch("/api/workspace", {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                action: "updateCaseRoom",
+                                companyId: company.id,
+                                caseRoomId: caseRoom.id,
+                                generatedDocuments: updated,
+                              }),
+                            });
+                          } else {
+                            for (const idx of indices) {
+                              await fetch("/api/workspace", {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ action: "deleteGeneratedDocument", companyId: company.id, index: idx }),
+                              });
+                            }
+                          }
+                          setDeleteChecked(new Set());
+                          if (viewingDoc && deleteChecked.has(savedDocs.indexOf(viewingDoc))) setViewingDoc(null);
+                          onUpdate?.();
+                        }}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        {deleteChecked.size}件を削除
+                      </button>
+                    )}
+                  </div>
                   <div className="space-y-1">
                     {savedDocs.map((doc, i) => (
-                      <div key={i} className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-2">
+                      <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={deleteChecked.has(i)}
+                          onChange={() => setDeleteChecked(prev => {
+                            const next = new Set(prev);
+                            if (next.has(i)) next.delete(i); else next.add(i);
+                            return next;
+                          })}
+                          className="w-4 h-4 shrink-0"
+                        />
                         <button
                           onClick={() => setViewingDoc(doc)}
                           className="flex-1 text-left"
@@ -248,27 +307,21 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
                           <span className="text-sm text-gray-800 font-medium">{doc.templateName}</span>
                           <span className="text-[10px] text-gray-400 ml-2">{new Date(doc.createdAt).toLocaleString("ja-JP")}</span>
                         </button>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
-                            className="text-[10px] text-blue-500 hover:text-blue-700"
-                          >
-                            DL
-                          </button>
-                          <button
-                            onClick={() => handleDeleteDoc(i)}
-                            className="text-[10px] text-red-400 hover:text-red-600"
-                          >
-                            削除
-                          </button>
-                        </div>
+                        <button
+                          onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
+                          className="text-[10px] text-blue-500 hover:text-blue-700 shrink-0"
+                        >
+                          DL
+                        </button>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* テンプレート選択 */}
+              {/* テンプレート選択（生成済み書類がなければ表示） */}
+              {savedDocs.length === 0 && (
+                <>
               {!hasMasterSheet && (
                 <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-4">
                   案件整理を先に実行してください。
@@ -318,6 +371,8 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
                   <p className="text-sm text-gray-400 py-4 text-center">テンプレートフォルダにフォルダがありません</p>
                 )}
               </div>
+                </>
+              )}
             </div>
           )}
 

@@ -370,7 +370,7 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
   return (
     <div className="flex h-full">
       {/* 左: ファイル選択 + チャット */}
-      <div className={`flex flex-col ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+      <div className={`flex flex-col ${previewFileId ? "flex-1 min-w-0" : "w-full"} transition-all`}>
         {/* ヘッダー */}
         <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
           <div>

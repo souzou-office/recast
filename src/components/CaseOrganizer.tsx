@@ -146,8 +146,8 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
   };
 
   return (
-    <div className="flex h-full overflow-hidden">
-      <div className={`flex flex-col overflow-hidden ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+    <div id="main-content-area" className="flex h-full overflow-hidden">
+      <div className={`flex flex-col overflow-hidden ${previewFileId ? "flex-1 min-w-0" : "w-full"} transition-all`}>
         {/* ヘッダー */}
         <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
           <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
