@@ -32,6 +32,7 @@ export const BINARY_MIME_TYPES = new Set([
 // Office系
 export const OFFICE_MIME_TYPES = new Set([
   "application/msword",                                                      // .doc
+  "application/vnd.ms-word.document.macroEnabled.12",                        // .docm
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",      // .xlsx
   "application/vnd.ms-excel",                                                // .xls
@@ -51,6 +52,7 @@ export const MAX_TOTAL_BINARY_SIZE = 8 * 1024 * 1024; // 全PDFの合計上限 8
 const EXT_TO_MIME: Record<string, string> = {
   ".pdf": "application/pdf",
   ".doc": "application/msword",
+  ".docm": "application/vnd.ms-word.document.macroEnabled.12",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".xls": "application/vnd.ms-excel",
@@ -152,9 +154,10 @@ export async function parseBuffer(buffer: Buffer, name: string, filePath: string
     return parsePdf(buffer, name, filePath);
   }
 
-  // DOC / DOCX
+  // DOC / DOCX / DOCM
   if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-      mimeType === "application/msword") {
+      mimeType === "application/msword" ||
+      mimeType === "application/vnd.ms-word.document.macroEnabled.12") {
     return parseDocx(buffer, name, filePath);
   }
 

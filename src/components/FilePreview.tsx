@@ -10,7 +10,7 @@ interface Props {
 }
 
 const RAW_VIEWABLE = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".htm"]);
-const WORD_EXTS = new Set([".doc", ".docx", ".odt", ".ppt", ".pptx"]);
+const WORD_EXTS = new Set([".doc", ".docx", ".docm", ".odt", ".ppt", ".pptx"]);
 const EXCEL_EXTS = new Set([".xls", ".xlsx", ".ods"]);
 
 export default function FilePreview({ filePath, fileName, onClose, docxBase64 }: Props) {

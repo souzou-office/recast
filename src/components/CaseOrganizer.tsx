@@ -368,11 +368,24 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
                 setSourceLinks({});
                 setSelectedTemplateId(null);
                 if (company) {
-                  await fetch("/api/workspace", {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
-                  });
+                  if (caseRoom) {
+                    await fetch("/api/workspace", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        action: "updateCaseRoom",
+                        companyId: company.id,
+                        caseRoomId: caseRoom.id,
+                        masterSheet: null,
+                      }),
+                    });
+                  } else {
+                    await fetch("/api/workspace", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
+                    });
+                  }
                   onUpdate?.();
                 }
               }}

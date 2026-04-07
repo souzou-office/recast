@@ -14,7 +14,7 @@ import {
 const SUPPORTED_EXTENSIONS = new Set([
   ".txt", ".csv", ".json", ".md", ".xml",
   ".html", ".htm", ".log", ".tsv",
-  ".doc", ".docx", ".xls", ".xlsx", ".pdf",
+  ".doc", ".docx", ".docm", ".xls", ".xlsx", ".pdf",
 ]);
 
 /** ローカルフォルダのファイル一覧 */

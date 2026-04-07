@@ -12,10 +12,26 @@ const PizZip = require("pizzip");
 
 const client = new Anthropic();
 
-// テンプレートdocxからプレースホルダー【】を抽出
-function extractPlaceholders(text: string): string[] {
-  const matches = text.match(/【[^】]+】/g);
-  return matches ? [...new Set(matches)] : [];
+// テンプレートからプレースホルダーを抽出（【】{{}} ＜＞ ［］ {} <> [] 全対応）
+function extractPlaceholders(text: string): { raw: string; name: string; delimiters: [string, string] }[] {
+  const patterns = [
+    { regex: /【([^】]+)】/g, start: "【", end: "】" },
+    { regex: /\{\{([^}]+)\}\}/g, start: "{{", end: "}}" },
+    { regex: /｛｛([^｝]+)｝｝/g, start: "｛｛", end: "｝｝" },
+    { regex: /＜([^＞]+)＞/g, start: "＜", end: "＞" },
+    { regex: /［([^\］]+)］/g, start: "［", end: "］" },
+  ];
+  const found = new Map<string, { raw: string; name: string; delimiters: [string, string] }>();
+  for (const p of patterns) {
+    let m;
+    while ((m = p.regex.exec(text)) !== null) {
+      const name = m[1].trim();
+      if (!found.has(name)) {
+        found.set(name, { raw: m[0], name, delimiters: [p.start, p.end] });
+      }
+    }
+  }
+  return Array.from(found.values());
 }
 
 // 半角英数字→全角変換
@@ -58,12 +74,14 @@ export async function POST(request: NextRequest) {
     案件情報: masterSheet?.structured || {},
   }, null, 2);
 
-  // docxテンプレートを全部探す
-  const docxFiles = templateFiles.filter(f =>
-    (f.name.endsWith(".docx") || f.name.endsWith(".doc")) &&
-    !f.name.toLowerCase().includes("メモ") &&
-    !f.name.toLowerCase().includes("memo")
-  );
+  // テンプレートファイルを全部探す（docx/docm/xlsx/xls）
+  const templateExts = [".docx", ".doc", ".docm", ".xlsx", ".xls"];
+  const docxFiles = templateFiles.filter(f => {
+    const ext = f.name.toLowerCase().split(".").pop() || "";
+    return templateExts.some(e => f.name.toLowerCase().endsWith(e)) &&
+      !f.name.toLowerCase().includes("メモ") &&
+      !f.name.toLowerCase().includes("memo");
+  });
 
   // メモファイル
   const memoFiles = templateFiles.filter(f =>
@@ -76,19 +94,22 @@ export async function POST(request: NextRequest) {
   // docxテンプレートがある場合 → プレースホルダー置換モード
   if (docxFiles.length > 0 && mode !== "generate") {
     // 全docxからプレースホルダーを抽出
-    const allPlaceholders = new Set<string>();
+    const allPlaceholders = new Map<string, { raw: string; name: string; delimiters: [string, string] }>();
     for (const df of docxFiles) {
-      for (const p of extractPlaceholders(df.content)) allPlaceholders.add(p);
+      for (const p of extractPlaceholders(df.content)) {
+        if (!allPlaceholders.has(p.name)) allPlaceholders.set(p.name, p);
+      }
     }
 
     if (allPlaceholders.size === 0) {
-      return new Response(JSON.stringify({ error: "テンプレートに【プレースホルダー】が見つかりません" }), {
+      return new Response(JSON.stringify({ error: "テンプレートにプレースホルダーが見つかりません。【】や{{}}で囲んだプレースホルダーを入れてください" }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
 
     // AIにプレースホルダーの値を一括生成させる
-    const placeholderList = Array.from(allPlaceholders).map(p => `- ${p}`).join("\n");
+    const placeholderEntries = Array.from(allPlaceholders.values());
+    const placeholderList = placeholderEntries.map(p => `- ${p.name}`).join("\n");
     const prompt = `以下の会社データから、テンプレートのプレースホルダーに入る値をJSON形式で返してください。
 
 ## 会社データ
@@ -99,8 +120,9 @@ ${memoText ? `\n## 注意事項\n${memoText}\n` : ""}
 ## プレースホルダー一覧
 ${placeholderList}
 
-回答はJSONのみ返してください。キーは【】を含むプレースホルダーそのまま、値は埋める文字列です。
-データにない情報は "（要確認）" としてください。`;
+回答はJSONのみ返してください。キーはプレースホルダー名（括弧なし）、値は埋める文字列です。
+データにない情報は "（要確認）" としてください。
+例: {"会社名": "株式会社ABC", "代表取締役": "山田太郎"}`;
 
     try {
       const response = await client.messages.create({
@@ -119,11 +141,10 @@ ${placeholderList}
 
       const values: Record<string, string> = JSON.parse(jsonMatch[0]);
 
-      // 全角変換 + キー整理
+      // 全角変換
       const templateData: Record<string, string> = {};
       for (const [key, value] of Object.entries(values)) {
-        const cleanKey = key.replace(/^【/, "").replace(/】$/, "");
-        templateData[cleanKey] = toFullWidth(value);
+        templateData[key] = toFullWidth(value);
       }
 
       // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -134,10 +155,14 @@ ${placeholderList}
 
       for (const df of docxFiles) {
         try {
+          // このdocxで使われているdelimitersを検出
+          const filePlaceholders = extractPlaceholders(df.content);
+          const delims = filePlaceholders.length > 0 ? filePlaceholders[0].delimiters : ["【", "】"];
+
           const rawBuffer = await fs.readFile(df.path);
           const zip = new PizZip(rawBuffer);
           const doc = new Docxtemplater(zip, {
-            delimiters: { start: "【", end: "】" },
+            delimiters: { start: delims[0], end: delims[1] },
             paragraphLoop: true,
             linebreaks: true,
             nullGetter: () => "（要確認）",

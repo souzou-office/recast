@@ -212,7 +212,7 @@ export default function Home() {
             onUpdate={fetchConfig}
           />
         )}
-        {tab === "cases" && <CaseRoomView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} onUpdate={fetchConfig} />}
+        <div className={tab === "cases" ? "h-full" : "hidden"}><CaseRoomView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} onUpdate={fetchConfig} /></div>
         {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
         {tab === "settings" && <SettingsView config={config} onUpdateConfig={fetchConfig} />}
         </div>

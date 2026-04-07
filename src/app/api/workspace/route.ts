@@ -161,8 +161,20 @@ export async function PATCH(request: NextRequest) {
       if (company) {
         const sub = company.subfolders.find(s => s.id === body.subfolderId);
         if (sub) {
-          sub.role = body.role;
-          if (body.role === "common") sub.active = true;
+          // 案件に変更する場合、他の案件フォルダを除外に
+          if (body.role === "job") {
+            for (const s of company.subfolders) {
+              if (s.role === "job" && s.id !== body.subfolderId) {
+                s.role = "none";
+                s.active = false;
+              }
+            }
+            sub.role = "job";
+            sub.active = true;
+          } else {
+            sub.role = body.role;
+            if (body.role === "common") sub.active = true;
+          }
         }
       }
       break;
@@ -300,9 +312,9 @@ export async function PATCH(request: NextRequest) {
         if (room) {
           if (body.displayName !== undefined) room.displayName = body.displayName;
           if (body.folderPath !== undefined) room.folderPath = body.folderPath;
-          if (body.masterSheet !== undefined) room.masterSheet = body.masterSheet;
-          if (body.generatedDocuments !== undefined) room.generatedDocuments = body.generatedDocuments;
-          if (body.checkResult !== undefined) room.checkResult = body.checkResult;
+          if ("masterSheet" in body) { if (body.masterSheet) room.masterSheet = body.masterSheet; else delete room.masterSheet; }
+          if ("generatedDocuments" in body) room.generatedDocuments = body.generatedDocuments;
+          if ("checkResult" in body) { if (body.checkResult) room.checkResult = body.checkResult; else delete room.checkResult; }
           room.updatedAt = new Date().toISOString();
         }
       }

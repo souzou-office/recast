@@ -195,7 +195,7 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
                   {selectedPaths.map(p => (
                     <div key={p} className="flex items-center gap-2 rounded bg-blue-50 px-2 py-1">
                       <span className="text-xs text-blue-700 truncate flex-1">{p}</span>
-                      <button onClick={() => handleRemovePath(p)} className="text-[10px] text-red-400 hover:text-red-600 shrink-0">×</button>
+                      <button onClick={() => handleRemovePath(p)} className="text-xs text-red-400 hover:text-red-600 shrink-0 px-2 py-0.5 rounded hover:bg-red-50">削除</button>
                     </div>
                   ))}
                   <button

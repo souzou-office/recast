@@ -10,7 +10,7 @@ const PizZip = require("pizzip");
 
 const SOFFICE = "C:/Program Files/LibreOffice/program/soffice.exe";
 const TMP_DIR = nodePath.join(os.tmpdir(), "recast-preview");
-const CONVERTIBLE = new Set([".doc", ".docx", ".ppt", ".pptx", ".odt", ".xls", ".xlsx", ".ods"]);
+const CONVERTIBLE = new Set([".doc", ".docx", ".docm", ".ppt", ".pptx", ".odt", ".xls", ".xlsx", ".ods"]);
 const SPREADSHEET_EXTS = new Set([".xls", ".xlsx", ".ods"]);
 
 export async function POST(request: NextRequest) {
