@@ -123,7 +123,6 @@ export default function Home() {
           {([
             { id: "chat", label: "チャット" },
             { id: "profile", label: "基本情報" },
-            { id: "cases", label: "案件" },
           ] as { id: MainTab; label: string }[]).map(t => (
             <button
               key={t.id}
@@ -137,6 +136,16 @@ export default function Home() {
               {t.label}
             </button>
           ))}
+          <button
+            onClick={() => !chatLoading && setTab("cases")}
+            className={`mx-2 my-1.5 px-4 py-1.5 text-xs font-bold rounded-lg border-2 transition-colors ${
+              tab === "cases"
+                ? "border-blue-500 bg-blue-600 text-white shadow-sm"
+                : chatLoading ? "border-gray-200 bg-gray-100 text-gray-300 cursor-not-allowed" : "border-blue-400 bg-blue-50 text-blue-700 hover:bg-blue-100"
+            }`}
+          >
+            案件整理 → 書類作成 → チェック
+          </button>
         </div>
 
         {/* 右端: 横断検索・設定アイコン */}
