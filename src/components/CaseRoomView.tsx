@@ -35,10 +35,11 @@ export default function CaseRoomView({ company, onUpdate }: Props) {
   const handleCreate = async () => {
     setCreating(true);
 
-    // activeなjobフォルダからフォルダ名・ファイル名を取得
+    // activeなjobフォルダの中のチェック付きサブフォルダを案件名のベースにする
     const activeSub = company.subfolders.find(s => s.role === "job" && s.active);
-    let folderName = activeSub?.name || "";
-    let fileNames: string[] = [];
+    const disabled = new Set(activeSub?.disabledFiles || []);
+    let checkedFolderNames: string[] = [];
+    let folderPath = activeSub?.id || "";
 
     if (activeSub) {
       try {
@@ -48,19 +49,24 @@ export default function CaseRoomView({ company, onUpdate }: Props) {
           body: JSON.stringify({ path: activeSub.id }),
         });
         const data = await res.json();
-        fileNames = (data.files || []).map((f: { name: string }) => f.name);
-        // サブフォルダ名も含める
-        fileNames.push(...(data.subfolders || []).map((f: { name: string }) => f.name));
+        // チェックが付いている（disabledに入っていない）サブフォルダ名
+        checkedFolderNames = (data.subfolders || [])
+          .filter((sf: { path: string }) => !disabled.has(sf.path))
+          .map((sf: { name: string }) => sf.name);
       } catch { /* ignore */ }
     }
 
-    // AIで案件名を自動生成
-    let displayName = folderName || "新規案件";
+    // チェック付きフォルダ名から案件名を生成
+    let displayName = checkedFolderNames.join(" / ") || activeSub?.name || "新規案件";
     try {
       const res = await fetch("/api/workspace/suggest-case-name", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderName, fileNames, companyName: company.name }),
+        body: JSON.stringify({
+          folderName: checkedFolderNames.join(", ") || activeSub?.name || "",
+          fileNames: checkedFolderNames,
+          companyName: company.name,
+        }),
       });
       const data = await res.json();
       if (data.name) displayName = data.name;
@@ -73,7 +79,7 @@ export default function CaseRoomView({ company, onUpdate }: Props) {
       body: JSON.stringify({
         action: "createCaseRoom",
         companyId: company.id,
-        folderPath: activeSub?.id || "",
+        folderPath: folderPath,
         displayName,
       }),
     });
