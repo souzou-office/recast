@@ -59,31 +59,44 @@ export async function GET() {
   return NextResponse.json(config);
 }
 
-// ベースパス設定 + 会社自動検出
+// ベースパス設定 + 会社自動検出（複数パス対応）
 export async function POST(request: NextRequest) {
-  const { basePath } = await request.json() as { basePath: string };
-  if (!basePath) {
-    return NextResponse.json({ error: "basePath は必須です" }, { status: 400 });
+  const { basePaths } = await request.json() as { basePaths: string[] };
+  if (!basePaths || basePaths.length === 0) {
+    return NextResponse.json({ error: "basePaths は必須です" }, { status: 400 });
   }
 
   const config = await getWorkspaceConfig();
-  config.basePath = basePath;
+  config.basePaths = basePaths;
+  delete config.basePath; // 旧フィールド削除
 
-  const entries = await listFiles(basePath);
-  const dirs = entries.filter(e => e.isDirectory);
   const patterns = config.defaultCommonPatterns || [];
 
-  for (const dir of dirs) {
-    const existing = config.companies.find(c => c.id === dir.path);
-    if (existing) continue;
+  // basePaths配下にある会社だけ残す
+  const validCompanyIds = new Set<string>();
 
-    const subfolders = await detectSubfolders(dir.path, patterns);
+  for (const bp of basePaths) {
+    const entries = await listFiles(bp);
+    const dirs = entries.filter(e => e.isDirectory);
 
-    config.companies.push({
-      id: dir.path,
-      name: dir.name,
-      subfolders,
-    });
+    for (const dir of dirs) {
+      validCompanyIds.add(dir.path);
+      const existing = config.companies.find(c => c.id === dir.path);
+      if (existing) continue;
+
+      const subfolders = await detectSubfolders(dir.path, patterns);
+      config.companies.push({
+        id: dir.path,
+        name: dir.name,
+        subfolders,
+      });
+    }
+  }
+
+  // 選択されたパス配下にない会社を削除
+  config.companies = config.companies.filter(c => validCompanyIds.has(c.id));
+  if (config.selectedCompanyId && !validCompanyIds.has(config.selectedCompanyId)) {
+    config.selectedCompanyId = null;
   }
 
   await saveWorkspaceConfig(config);
@@ -358,7 +371,7 @@ export async function PATCH(request: NextRequest) {
 // リセット
 export async function DELETE() {
   const config = {
-    basePath: "",
+    basePaths: [],
     templateBasePath: "",
     defaultCommonPatterns: [],
     companies: [],

@@ -72,6 +72,13 @@ export default function CaseRoomView({ company, onUpdate }: Props) {
       if (data.name) displayName = data.name;
     } catch { /* ignore */ }
 
+    // 同じフォルダの案件が既にあればスキップ
+    if (folderPath && caseRooms.some(r => r.folderPath === folderPath)) {
+      alert("この案件フォルダは既に登録されています");
+      setCreating(false);
+      return;
+    }
+
     // 保存
     await fetch("/api/workspace", {
       method: "PATCH",

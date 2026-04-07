@@ -119,7 +119,8 @@ export interface Company {
 }
 
 export interface WorkspaceConfig {
-  basePath: string;        // 顧問先フォルダのローカルパス
+  basePath?: string;       // 後方互換
+  basePaths: string[];     // 顧問先フォルダのローカルパス（複数）
   templateBasePath: string; // 書類テンプレートフォルダのローカルパス
   defaultCommonPatterns: string[];
   companies: Company[];

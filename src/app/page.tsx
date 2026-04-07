@@ -80,6 +80,15 @@ export default function Home() {
     await fetchConfig();
   };
 
+  const handleRemoveCompany = async (companyId: string) => {
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "removeCompany", companyId }),
+    });
+    await fetchConfig();
+  };
+
   const handleSelectSingleFolder = async (companyId: string, subfolderId: string, selectedPath: string, siblingPaths: string[]) => {
     await fetch("/api/workspace", {
       method: "PATCH",
@@ -184,6 +193,7 @@ export default function Home() {
               onToggleFile={handleToggleFile}
               onSelectSingleFolder={handleSelectSingleFolder}
               onChangeRole={handleChangeRole}
+              onRemoveCompany={handleRemoveCompany}
             />
             {/* リサイズハンドル */}
             <div
