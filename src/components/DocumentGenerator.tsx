@@ -3,10 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { v4 as uuidv4 } from "uuid";
-import type { Company, ChatMessage, GeneratedDocument } from "@/types";
-import ChatInput from "./chat/ChatInput";
-import MessageBubble from "./chat/MessageBubble";
+import type { Company, GeneratedDocument } from "@/types";
 import FilePreview from "./FilePreview";
 
 interface TemplateFolder {
@@ -38,8 +35,6 @@ export default function DocumentGenerator({ company, onUpdate }: Props) {
   const [selectedTemplate, setSelectedTemplate] = useState<TemplateFolder | null>(null);
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatLoading, setChatLoading] = useState(false);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [templateBasePath, setTemplateBasePath] = useState<string>("");
 
@@ -76,47 +71,6 @@ export default function DocumentGenerator({ company, onUpdate }: Props) {
       setTemplateFolders(folders);
     } catch { /* ignore */ }
   };
-
-  const handleChatSend = useCallback(async (content: string) => {
-    const userMsg: ChatMessage = { id: uuidv4(), role: "user", content, timestamp: Date.now() };
-    setChatMessages(prev => [...prev, userMsg]);
-    setChatLoading(true);
-    const assistantMsg: ChatMessage = { id: uuidv4(), role: "assistant", content: "", timestamp: Date.now() };
-    setChatMessages(prev => [...prev, assistantMsg]);
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [...chatMessages, userMsg].map(m => ({ role: m.role, content: m.content })) }),
-      });
-      const reader = res.body?.getReader();
-      if (!reader) return;
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (line === "data: [DONE]") continue;
-          const match = line.match(/^data: (.+)$/m);
-          if (!match) continue;
-          const data = JSON.parse(match[1]);
-          if (data.text) {
-            setChatMessages(prev => {
-              const updated = [...prev];
-              const last = updated[updated.length - 1];
-              if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: last.content + data.text };
-              return updated;
-            });
-          }
-        }
-      }
-    } catch { /* ignore */ }
-    finally { setChatLoading(false); }
-  }, [chatMessages]);
 
   if (!company) {
     return (
@@ -358,19 +312,9 @@ export default function DocumentGenerator({ company, onUpdate }: Props) {
             </div>
           )}
 
-          {chatMessages.length > 0 && (
-            <div className="mt-4 border-t border-gray-200 pt-4">
-              {chatMessages.map((msg, i) => (
-                <MessageBubble key={msg.id} message={msg}
-                  streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"} />
-              ))}
-            </div>
-          )}
-
           </div>
         </div>
 
-        <ChatInput onSend={handleChatSend} disabled={chatLoading || generating} />
       </div>
 
       {viewingDoc && (

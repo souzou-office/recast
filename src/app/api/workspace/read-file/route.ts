@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ html: result.value, name: nodePath.basename(filePath) });
       }
 
-      // Excel → スプレッドシート風HTMLテーブル
+      // Excel → スプレッドシート風HTMLテーブル（結合・列幅反映）
       if (ext === ".xlsx" || ext === ".xls") {
         const workbook = XLSX.read(buffer, { type: "buffer", cellStyles: true });
         let html = `<style>
@@ -37,18 +37,24 @@ export async function POST(request: NextRequest) {
           .xl-tab { padding: 4px 12px; font-size: 11px; background: #e8e8e8; border-radius: 4px 4px 0 0; cursor: pointer; color: #333; }
           .xl-tab.active { background: #fff; font-weight: bold; }
           .xl-sheet { border: 1px solid #d4d4d4; overflow: auto; }
-          .xl-sheet table { border-collapse: collapse; width: max-content; min-width: 100%; }
-          .xl-sheet th, .xl-sheet td { border: 1px solid #d4d4d4; padding: 2px 6px; white-space: nowrap; min-width: 64px; height: 20px; vertical-align: middle; }
-          .xl-sheet th { background: #f0f0f0; color: #666; font-weight: normal; text-align: center; position: sticky; font-size: 10px; }
-          .xl-sheet th.xl-row { min-width: 36px; width: 36px; left: 0; z-index: 1; }
-          .xl-sheet th.xl-col { top: 0; z-index: 2; }
-          .xl-sheet td { background: #fff; color: #333; }
+          .xl-sheet table { border-collapse: collapse; table-layout: fixed; }
+          .xl-sheet th, .xl-sheet td { border: 1px solid #d4d4d4; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; height: 20px; vertical-align: middle; }
+          .xl-sheet th { background: #f0f0f0; color: #666; font-weight: normal; text-align: center; font-size: 10px; }
+          .xl-sheet th.xl-row { width: 36px; min-width: 36px; position: sticky; left: 0; z-index: 1; }
+          .xl-sheet th.xl-col { position: sticky; top: 0; z-index: 2; }
+          .xl-sheet td { background: #fff; color: #333; white-space: pre-wrap; }
         </style><div class="xl-container">`;
 
         for (let si = 0; si < workbook.SheetNames.length; si++) {
           const sheetName = workbook.SheetNames[si];
           const sheet = workbook.Sheets[sheetName];
           const data: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" }) as string[][];
+          const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = sheet["!merges"] || [];
+          const colWidths: number[] = (sheet["!cols"] || []).map((c: { wch?: number; wpx?: number }) => {
+            if (c?.wpx) return c.wpx;
+            if (c?.wch) return c.wch * 7; // 大体の変換
+            return 72; // デフォルト
+          });
 
           if (workbook.SheetNames.length > 1) {
             html += `<div class="xl-tabs">`;
@@ -58,10 +64,35 @@ export async function POST(request: NextRequest) {
             html += `</div>`;
           }
 
-          // 列数を計算
           const maxCols = Math.max(...data.map(r => r.length), 0);
 
+          // 結合セルのスキップマップ
+          const skipMap = new Set<string>();
+          const mergeMap = new Map<string, { colspan: number; rowspan: number }>();
+          for (const m of merges) {
+            for (let r = m.s.r; r <= m.e.r; r++) {
+              for (let c = m.s.c; c <= m.e.c; c++) {
+                if (r === m.s.r && c === m.s.c) {
+                  mergeMap.set(`${r},${c}`, {
+                    colspan: m.e.c - m.s.c + 1,
+                    rowspan: m.e.r - m.s.r + 1,
+                  });
+                } else {
+                  skipMap.add(`${r},${c}`);
+                }
+              }
+            }
+          }
+
           html += `<div class="xl-sheet"><table>`;
+          // colgroup で列幅指定
+          html += `<colgroup><col style="width:36px">`;
+          for (let c = 0; c < maxCols; c++) {
+            const w = colWidths[c] || 72;
+            html += `<col style="width:${w}px">`;
+          }
+          html += `</colgroup>`;
+
           // 列ヘッダー
           html += `<tr><th class="xl-col xl-row"></th>`;
           for (let c = 0; c < maxCols; c++) {
@@ -69,12 +100,55 @@ export async function POST(request: NextRequest) {
             html += `<th class="xl-col">${colLetter}</th>`;
           }
           html += `</tr>`;
-          // 行データ
+
+          // セルアドレスをA1形式で取得
+          const cellAddr = (r: number, c: number) => {
+            const col = c < 26 ? String.fromCharCode(65 + c) : String.fromCharCode(64 + Math.floor(c / 26)) + String.fromCharCode(65 + (c % 26));
+            return `${col}${r + 1}`;
+          };
+
+          // 色をHEXに変換
+          const toHex = (color: { rgb?: string; theme?: number } | undefined): string | null => {
+            if (!color) return null;
+            if (color.rgb && color.rgb !== "000000") return `#${color.rgb.slice(-6)}`;
+            return null;
+          };
+
+          // 行データ（セルスタイル反映）
           for (let r = 0; r < data.length; r++) {
-            html += `<tr><th class="xl-row">${r + 1}</th>`;
+            const rowInfo = (sheet["!rows"] || [])[r];
+            const rowHeight = rowInfo?.hpx ? `height:${rowInfo.hpx}px` : "";
+            html += `<tr${rowHeight ? ` style="${rowHeight}"` : ""}><th class="xl-row">${r + 1}</th>`;
             for (let c = 0; c < maxCols; c++) {
+              const key = `${r},${c}`;
+              if (skipMap.has(key)) continue;
+
+              const merge = mergeMap.get(key);
               const val = data[r]?.[c] ?? "";
-              html += `<td>${val}</td>`;
+              const mergeAttrs = merge ? ` colspan="${merge.colspan}" rowspan="${merge.rowspan}"` : "";
+
+              // セルスタイル取得
+              const cell = sheet[cellAddr(r, c)];
+              const style: string[] = [];
+              if (cell?.s) {
+                const s = cell.s;
+                if (s.font?.bold) style.push("font-weight:bold");
+                if (s.font?.italic) style.push("font-style:italic");
+                if (s.font?.sz) style.push(`font-size:${s.font.sz}pt`);
+                const fgColor = toHex(s.fill?.fgColor);
+                if (fgColor) style.push(`background:${fgColor}`);
+                const fontColor = toHex(s.font?.color);
+                if (fontColor) style.push(`color:${fontColor}`);
+                if (s.alignment?.horizontal) style.push(`text-align:${s.alignment.horizontal}`);
+                if (s.alignment?.vertical) {
+                  const vMap: Record<string, string> = { top: "top", center: "middle", bottom: "bottom" };
+                  style.push(`vertical-align:${vMap[s.alignment.vertical] || "middle"}`);
+                }
+                if (s.alignment?.wrapText) style.push("white-space:pre-wrap");
+              }
+              const styleAttr = style.length > 0 ? ` style="${style.join(";")}"` : "";
+
+              html += `<td${mergeAttrs}${styleAttr}>${val}</td>`;
             }
             html += `</tr>`;
           }

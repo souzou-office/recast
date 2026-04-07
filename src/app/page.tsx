@@ -12,7 +12,7 @@ import FileSidebar from "@/components/FileSidebar";
 
 // ChatWindowは横断検索でのみ使用
 
-type MainTab = "main" | "profile" | "search" | "verify" | "documents" | "settings";
+type MainTab = "main" | "chat" | "profile" | "search" | "verify" | "documents" | "settings";
 
 export default function Home() {
   const [tab, setTab] = useState<MainTab>("main");
@@ -148,6 +148,7 @@ export default function Home() {
         <div className="flex flex-1 overflow-x-auto">
           {([
             { id: "main", label: "案件整理" },
+            { id: "chat", label: "チャット" },
             { id: "profile", label: "基本情報" },
             { id: "verify", label: "突合せ" },
             { id: "documents", label: "書類生成" },
@@ -213,6 +214,7 @@ export default function Home() {
         <div className="flex-1 overflow-hidden">
         {/* メインタブは非表示で保持（状態維持） */}
         <div className={tab === "main" ? "h-full" : "hidden"}><CaseOrganizer key={config?.selectedCompanyId || "none"} company={selectedCompany || null} executeTemplateId={executeTemplateId} onExecuteComplete={() => setExecuteTemplateId(null)} onSuggestFolders={handleSuggestFolders} visible={tab === "main"} onUpdate={fetchConfig} /></div>
+        <div className={tab === "chat" ? "h-full" : "hidden"}><ChatWindow key={config?.selectedCompanyId || "none"} companyId={config?.selectedCompanyId} onLoadingChange={setChatLoading} /></div>
         <div className={tab === "verify" ? "h-full" : "hidden"}><VerificationView key={config?.selectedCompanyId || "none"} company={selectedCompany || null} /></div>
         {tab === "profile" && (
           <CompanyProfile

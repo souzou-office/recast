@@ -3,10 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Company, ChatMessage } from "@/types";
-import { v4 as uuidv4 } from "uuid";
-import ChatInput from "./chat/ChatInput";
-import MessageBubble from "./chat/MessageBubble";
+import type { Company } from "@/types";
 import FilePreview from "./FilePreview";
 
 interface CheckTemplate {
@@ -39,8 +36,6 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
   const [templateName, setTemplateName] = useState("");
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatLoading, setChatLoading] = useState(false);
   const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
   const [templates, setTemplates] = useState<CheckTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
@@ -226,7 +221,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [result, chatMessages]);
+  }, [result]);
 
   // サイドバーからのテンプレート実行
   useEffect(() => {
@@ -235,50 +230,6 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
       onExecuteComplete?.();
     }
   }, [executeTemplateId]);
-
-  const handleChatSend = useCallback(async (content: string) => {
-    const userMsg: ChatMessage = { id: uuidv4(), role: "user", content, timestamp: Date.now() };
-    setChatMessages(prev => [...prev, userMsg]);
-    setChatLoading(true);
-
-    const assistantMsg: ChatMessage = { id: uuidv4(), role: "assistant", content: "", timestamp: Date.now() };
-    setChatMessages(prev => [...prev, assistantMsg]);
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [...chatMessages, userMsg].map(m => ({ role: m.role, content: m.content })) }),
-      });
-      const reader = res.body?.getReader();
-      if (!reader) return;
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (line === "data: [DONE]") continue;
-          const match = line.match(/^data: (.+)$/m);
-          if (!match) continue;
-          const data = JSON.parse(match[1]);
-          if (data.text) {
-            setChatMessages(prev => {
-              const updated = [...prev];
-              const last = updated[updated.length - 1];
-              if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: last.content + data.text };
-              return updated;
-            });
-          }
-        }
-      }
-    } catch { /* ignore */ }
-    finally { setChatLoading(false); }
-  }, [chatMessages]);
 
   if (!company) {
     return (
@@ -319,6 +270,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
       let buffer = "";
       let metaTemplateId = "";
       let metaTemplateName = "";
+      let metaSourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -336,6 +288,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
           if (data.type === "meta") {
             metaTemplateId = data.templateId || "";
             metaTemplateName = data.templateName || "";
+            metaSourceFiles = data.sourceFiles || [];
             setTemplateName(metaTemplateName);
             if (data.sourceFiles) setSourceFiles(data.sourceFiles);
           } else if (data.type === "text") {
@@ -347,7 +300,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
       setIsLoading(false);
 
       // Haikuで各セクションとファイルの紐付け
-      if (sourceFiles.length > 0) {
+      if (metaSourceFiles.length > 0) {
         const finalResult = await new Promise<string>(resolve => {
           setResult(prev => { resolve(prev); return prev; });
         });
@@ -355,7 +308,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
           const linkRes = await fetch("/api/templates/link-sources", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: finalResult, sourceFiles }),
+            body: JSON.stringify({ content: finalResult, sourceFiles: metaSourceFiles }),
           });
           if (linkRes.ok) {
             const { links } = await linkRes.json();
@@ -378,7 +331,7 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
               templateId: metaTemplateId,
               templateName: metaTemplateName,
               content: finalResult,
-              sourceFiles,
+              sourceFiles: metaSourceFiles,
             }),
           });
         } catch { /* ignore */ }
@@ -404,7 +357,6 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
               onClick={async () => {
                 if (!confirm("案件整理の結果を削除しますか？")) return;
                 setResult("");
-                setChatMessages([]);
                 setSourceLinks({});
                 setSelectedTemplateId(null);
                 if (company) {
@@ -557,26 +509,8 @@ export default function CaseOrganizer({ company, executeTemplateId, onExecuteCom
               </div>
             </div>
           )}
-          {/* チャットメッセージ */}
-          {chatMessages.length > 0 && (
-            <div className="mt-4 border-t border-gray-200 pt-4">
-              {chatMessages.map((msg, i) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"}
-                />
-              ))}
-            </div>
-          )}
         </div>
         </div>
-
-        {/* チャット入力欄 */}
-        <ChatInput
-          onSend={handleChatSend}
-          disabled={chatLoading || isLoading}
-        />
       </div>
 
       {/* 右: ファイルプレビュー */}

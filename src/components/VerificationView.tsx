@@ -6,7 +6,6 @@ import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import type { Company, ChatMessage } from "@/types";
 import { v4 as uuidv4 } from "uuid";
-import ChatInput from "./chat/ChatInput";
 import MessageBubble from "./chat/MessageBubble";
 import FilePreview from "./FilePreview";
 
@@ -490,7 +489,6 @@ export default function VerificationView({ company }: Props) {
           )}
         </div>
 
-        <ChatInput onSend={handleChatSend} disabled={chatLoading} />
       </div>
 
       {/* 右: プレビュー */}
