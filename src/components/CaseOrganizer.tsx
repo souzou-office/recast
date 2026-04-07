@@ -1,25 +1,10 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Company, CaseRoom } from "@/types";
 import FilePreview from "./FilePreview";
-
-interface CheckTemplate {
-  id: string;
-  name: string;
-  items: string[];
-}
-
-function fileIcon(name: string): string {
-  const ext = name.split(".").pop()?.toLowerCase() || "";
-  if (ext === "pdf") return "📄";
-  if (["doc", "docx"].includes(ext)) return "📝";
-  if (["xls", "xlsx"].includes(ext)) return "📊";
-  if (["jpg", "jpeg", "png", "gif"].includes(ext)) return "🖼";
-  return "📎";
-}
 
 interface Props {
   company: Company | null;
@@ -33,194 +18,12 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
   const [isLoading, setIsLoading] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<{ id: string; name: string; mimeType: string }[]>([]);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
-  const [templateName, setTemplateName] = useState("");
   const [sourceLinks, setSourceLinks] = useState<Record<string, { id: string; name: string }[]>>({});
-  const [templates, setTemplates] = useState<CheckTemplate[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
-  const [inferring, setInferring] = useState(false);
-  const [suggestedFolders, setSuggestedFolders] = useState<Set<string>>(new Set());
-  const [checkedFolders, setCheckedFolders] = useState<Set<string>>(new Set());
-  const [showFolderSelection, setShowFolderSelection] = useState(false);
-  const [folderData, setFolderData] = useState<Record<string, { files: { name: string; path: string }[]; subfolders: { name: string; path: string }[] }>>({});
-  const [expandedPreviews, setExpandedPreviews] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  // テンプレート一覧を読み込み（表示時に毎回再取得）
-  useEffect(() => {
-    if (visible !== false) {
-      fetch("/api/templates").then(r => r.json()).then(d => {
-        setTemplates(Array.isArray(d) ? d : []);
-      }).catch(() => {});
-    }
-  }, [visible]);
-
-  // テンプレート選択→フォルダ推論
-  const handleSelectTemplate = async (template: CheckTemplate) => {
-    setSelectedTemplateId(template.id);
-    setShowFolderSelection(false);
-    setSuggestedFolders(new Set());
-    if (!company) return;
-
-    const allFolders = company.subfolders.filter(s => s.role !== "none");
-    if (allFolders.length === 0) return;
-
-    setInferring(true);
-    try {
-      const res = await fetch("/api/templates/suggest-folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          templateName: template.name,
-          templateItems: template.items,
-          folderNames: allFolders.map(s => ({ id: s.id, name: s.name })),
-        }),
-      });
-      const data = await res.json();
-      const suggested = new Set<string>(data.suggested || []);
-      // 共通フォルダは常にON
-      for (const sub of company.subfolders) {
-        if (sub.role === "common") suggested.add(sub.id);
-      }
-      setSuggestedFolders(suggested);
-      setCheckedFolders(new Set(suggested));
-      setShowFolderSelection(true);
-      // 会社ルートを読み込み、1階層目を展開
-      loadFolderData(company.id);
-      const allExpanded = new Set<string>([company.id]);
-      setExpandedPreviews(allExpanded);
-      // サイドバーも更新
-      // フォルダ推論結果（UIで使用）
-    } catch { /* ignore */ }
-    setInferring(false);
-  };
-
-  const loadFolderData = async (folderPath: string) => {
-    if (folderData[folderPath]) return;
-    try {
-      const res = await fetch("/api/workspace/list-files", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: folderPath }),
-      });
-      const data = await res.json();
-      setFolderData(prev => ({
-        ...prev,
-        [folderPath]: { files: data.files || [], subfolders: data.subfolders || [] },
-      }));
-    } catch { /* ignore */ }
-  };
-
-  const toggleFolderCheck = (folderId: string) => {
-    setCheckedFolders(prev => {
-      const next = new Set(prev);
-      if (next.has(folderId)) next.delete(folderId);
-      else next.add(folderId);
-      // サイドバーも同期
-      // フォルダ切替
-      return next;
-    });
-  };
-
-  // 会社フォルダ全体をブラウズできるツリー
-  const renderBrowseTree = (folderPath: string, depth: number): React.ReactNode => {
-    const data = folderData[folderPath];
-    if (!data) return <p className="text-[10px] text-gray-400 py-2 pl-4">読み込み中...</p>;
-
-    return (
-      <ul className={depth > 0 ? "ml-4 border-l border-gray-100" : ""}>
-        {data.subfolders.map(sf => {
-          const isOpen = expandedPreviews.has(sf.path);
-          const isChecked = checkedFolders.has(sf.path);
-          const isSuggested = suggestedFolders.has(sf.path);
-          return (
-            <li key={sf.path} className={isChecked ? "bg-blue-50/40" : ""}>
-              <div className="flex items-center gap-1 px-2 py-1 hover:bg-gray-50">
-                <input
-                  type="checkbox"
-                  checked={isChecked}
-                  onChange={() => toggleFolderCheck(sf.path)}
-                  className="w-3.5 h-3.5 shrink-0"
-                />
-                <button
-                  onClick={() => {
-                    const next = new Set(expandedPreviews);
-                    if (next.has(sf.path)) next.delete(sf.path);
-                    else { next.add(sf.path); loadFolderData(sf.path); }
-                    setExpandedPreviews(next);
-                  }}
-                  className="flex-1 flex items-center gap-1 text-xs text-left text-gray-700 hover:text-gray-900"
-                >
-                  <span className="text-[11px]">{isOpen ? "📂" : "📁"}</span>
-                  <span className={isChecked ? "font-medium" : ""}>{sf.name}</span>
-                </button>
-                {isSuggested && (
-                  <span className="text-[8px] bg-blue-100 text-blue-600 rounded px-1 py-0.5 shrink-0">AI推奨</span>
-                )}
-              </div>
-              {isOpen && renderBrowseTree(sf.path, depth + 1)}
-            </li>
-          );
-        })}
-        {data.files.map(f => (
-          <li key={f.path} className="flex items-center gap-1 px-2 py-0.5 pl-8">
-            <span className="text-[10px]">{fileIcon(f.name)}</span>
-            <span className="text-[11px] text-gray-500 truncate">{f.name}</span>
-          </li>
-        ))}
-      </ul>
-    );
-  };
-
-  const renderFolderTree = (path: string, depth: number): React.ReactNode => {
-    const data = folderData[path];
-    if (!data) return <p className="text-[10px] text-gray-400 py-1 pl-4 ml-4">読み込み中...</p>;
-
-    return (
-      <div className={`border-t border-gray-100 py-1 ${depth === 1 ? "ml-8 px-2" : "ml-4"}`}>
-        {data.subfolders.map(sf => {
-          const sfOpen = expandedPreviews.has(sf.path);
-          return (
-            <div key={sf.path}>
-              <button
-                onClick={() => {
-                  const next = new Set(expandedPreviews);
-                  if (next.has(sf.path)) next.delete(sf.path);
-                  else { next.add(sf.path); loadFolderData(sf.path); }
-                  setExpandedPreviews(next);
-                }}
-                className="w-full flex items-center gap-1 text-xs text-gray-600 hover:text-gray-800 py-0.5 text-left"
-              >
-                <span className="text-[10px]">{sfOpen ? "📂" : "📁"}</span>
-                <span className="truncate">{sf.name}</span>
-              </button>
-              {sfOpen && renderFolderTree(sf.path, depth + 1)}
-            </div>
-          );
-        })}
-        {data.files.map(f => (
-          <p key={f.path} className="text-[11px] text-gray-500 py-0.5 pl-4 truncate flex items-center gap-1">
-            <span className="text-[10px]">{fileIcon(f.name)}</span>
-            {f.name}
-          </p>
-        ))}
-        {data.files.length === 0 && data.subfolders.length === 0 && (
-          <p className="text-[10px] text-gray-400 py-1 pl-4">空</p>
-        )}
-      </div>
-    );
-  };
-
-  const handleExecuteWithFolders = () => {
-    if (!selectedTemplateId) return;
-    // checkedFoldersをactiveに反映してから実行
-    handleExecute(selectedTemplateId);
-    setShowFolderSelection(false);
-  };
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [result]);
-
 
   if (!company) {
     return (
@@ -230,21 +33,20 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
     );
   }
 
-  // 保存済みマスターシートがあればそれを表示
   const savedResult = caseRoom?.masterSheet?.content || company.masterSheet?.content || "";
   const displayResult = result || savedResult;
 
-  const handleExecute = async (templateId: string) => {
+  const handleExecute = async () => {
     setIsLoading(true);
     setResult("");
     setSourceFiles([]);
-    setTemplateName("");
+    setSourceLinks({});
 
     try {
       const res = await fetch("/api/templates/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ templateId }),
+        body: JSON.stringify({ companyId: company.id }),
       });
 
       if (!res.ok) {
@@ -259,8 +61,6 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
 
       const decoder = new TextDecoder();
       let buffer = "";
-      let metaTemplateId = "";
-      let metaTemplateName = "";
       let metaSourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
       while (true) {
@@ -277,11 +77,8 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
           const data = JSON.parse(match[1]);
 
           if (data.type === "meta") {
-            metaTemplateId = data.templateId || "";
-            metaTemplateName = data.templateName || "";
             metaSourceFiles = data.sourceFiles || [];
-            setTemplateName(metaTemplateName);
-            if (data.sourceFiles) setSourceFiles(data.sourceFiles);
+            setSourceFiles(metaSourceFiles);
           } else if (data.type === "text") {
             setResult(prev => prev + data.text);
           }
@@ -314,15 +111,14 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
           setResult(prev => { resolve(prev); return prev; });
         });
         const masterData = {
-          templateId: metaTemplateId,
-          templateName: metaTemplateName,
+          templateId: "",
+          templateName: "案件整理",
           content: finalResult,
           sourceFiles: metaSourceFiles,
           createdAt: new Date().toISOString(),
         };
         try {
           if (caseRoom) {
-            // caseRoom単位で保存
             await fetch("/api/workspace", {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -334,7 +130,6 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
               }),
             });
           } else {
-            // 旧方式: 会社単位で保存
             await fetch("/api/templates/save-master", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -352,48 +147,45 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* 左: 結果表示 */}
       <div className={`flex flex-col overflow-hidden ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
         {/* ヘッダー */}
         <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
-            {templateName && <span className="text-[10px] text-gray-400">{templateName}</span>}
-          </div>
-          {displayResult && !isLoading && (
-            <button
-              onClick={async () => {
-                if (!confirm("案件整理の結果を削除しますか？")) return;
-                setResult("");
-                setSourceLinks({});
-                setSelectedTemplateId(null);
-                if (company) {
-                  if (caseRoom) {
-                    await fetch("/api/workspace", {
-                      method: "PATCH",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        action: "updateCaseRoom",
-                        companyId: company.id,
-                        caseRoomId: caseRoom.id,
-                        masterSheet: null,
-                      }),
-                    });
-                  } else {
-                    await fetch("/api/workspace", {
-                      method: "PATCH",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
-                    });
+          <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
+          <div className="flex items-center gap-2">
+            {displayResult && !isLoading && (
+              <button
+                onClick={async () => {
+                  if (!confirm("案件整理の結果を削除しますか？")) return;
+                  setResult("");
+                  setSourceLinks({});
+                  if (company) {
+                    if (caseRoom) {
+                      await fetch("/api/workspace", {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action: "updateCaseRoom",
+                          companyId: company.id,
+                          caseRoomId: caseRoom.id,
+                          masterSheet: null,
+                        }),
+                      });
+                    } else {
+                      await fetch("/api/workspace", {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "deleteMasterSheet", companyId: company.id }),
+                      });
+                    }
+                    onUpdate?.();
                   }
-                  onUpdate?.();
-                }
-              }}
-              className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
-            >
-              削除
-            </button>
-          )}
+                }}
+                className="text-[10px] text-red-400 hover:text-red-600 transition-colors"
+              >
+                削除
+              </button>
+            )}
+          </div>
         </div>
 
         {/* 結果 */}
@@ -447,11 +239,11 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
               )}
 
               {/* 参照元資料 */}
-              {(sourceFiles.length > 0 || company.masterSheet?.sourceFiles) && !isLoading && (
+              {(sourceFiles.length > 0 || caseRoom?.masterSheet?.sourceFiles || company.masterSheet?.sourceFiles) && !isLoading && (
                 <div className="mt-4 border-t border-gray-100 pt-3">
                   <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400">参照元資料</p>
                   <div className="flex flex-wrap gap-1.5">
-                    {(sourceFiles.length > 0 ? sourceFiles : company.masterSheet?.sourceFiles || []).map((f, i) => (
+                    {(sourceFiles.length > 0 ? sourceFiles : caseRoom?.masterSheet?.sourceFiles || company.masterSheet?.sourceFiles || []).map((f, i) => (
                       <button
                         key={`${f.id}-${i}`}
                         onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
@@ -470,67 +262,20 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
             </>
           ) : (
             <div className="flex h-full items-center justify-center">
-              <div className="w-full max-w-4xl px-6">
-                <h2 className="text-lg font-bold text-gray-800 mb-6">案件を整理する</h2>
-                {templates.length === 0 ? (
-                  <p className="text-sm text-gray-400">設定からテンプレートを追加してください</p>
-                ) : (
-                  <div className="grid grid-cols-1 gap-3">
-                    {templates.map(t => {
-                      const isSelected = selectedTemplateId === t.id;
-                      return (
-                        <div
-                          key={t.id}
-                          className={`rounded-xl border-2 transition-all cursor-pointer ${
-                            isSelected
-                              ? "border-blue-500 bg-blue-50 shadow-md col-span-full"
-                              : "border-gray-200 hover:border-blue-300 hover:shadow-sm"
-                          }`}
-                          onClick={() => setSelectedTemplateId(isSelected ? null : t.id)}
-                        >
-                          <div className="px-5 py-4 flex items-center justify-between">
-                            <h3 className={`text-lg font-bold ${isSelected ? "text-blue-700" : "text-gray-800"}`}>
-                              {t.name}
-                            </h3>
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              isSelected ? "bg-blue-200 text-blue-700" : "bg-gray-100 text-gray-500"
-                            }`}>
-                              {t.items.length}項目
-                            </span>
-                          </div>
-                          {isSelected && (
-                            <>
-                              <div className="border-t border-blue-200 px-5 py-3">
-                                <ul className="space-y-1">
-                                  {t.items.map((item, i) => (
-                                    <li key={i} className="text-sm text-gray-700 flex gap-2">
-                                      <span className="text-gray-400 shrink-0">{i + 1}.</span>
-                                      {item}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                              <div className="px-5 py-4">
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); handleExecute(t.id); }}
-                                  disabled={isLoading}
-                                  className="w-full rounded-lg bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
-                                >
-                                  {isLoading ? "実行中..." : "この内容で案件を整理"}
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <p className="text-xs text-gray-400 mt-6 text-center">サイドバーで使用するフォルダを選択してから実行してください</p>
+              <div className="text-center">
+                <p className="text-3xl mb-4">📋</p>
+                <p className="text-sm text-gray-500 mb-4">サイドバーで選択したフォルダの資料を<br />AIが自動で抽出・整理します</p>
+                <button
+                  onClick={handleExecute}
+                  disabled={isLoading}
+                  className="rounded-lg bg-blue-600 px-8 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+                >
+                  {isLoading ? "整理中..." : "案件を整理"}
+                </button>
               </div>
             </div>
           )}
-        </div>
+          </div>
         </div>
       </div>
 
@@ -538,11 +283,10 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
       {previewFileId && (
         <FilePreview
           filePath={previewFileId}
-          fileName={(sourceFiles.length > 0 ? sourceFiles : company.masterSheet?.sourceFiles || []).find(f => f.id === previewFileId)?.name || ""}
+          fileName={(sourceFiles.length > 0 ? sourceFiles : caseRoom?.masterSheet?.sourceFiles || company.masterSheet?.sourceFiles || []).find(f => f.id === previewFileId)?.name || ""}
           onClose={() => setPreviewFileId(null)}
         />
       )}
-
     </div>
   );
 }

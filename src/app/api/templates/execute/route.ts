@@ -1,33 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import fs from "fs/promises";
 import path from "path";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
 import { mimeFromExtension } from "@/lib/file-parsers";
 import { isPathDisabled } from "@/lib/disabled-filter";
-import type { CheckTemplate } from "@/types";
 
 const client = new Anthropic();
-const TEMPLATES_PATH = path.join(process.cwd(), "data", "templates.json");
 
 export async function POST(request: NextRequest) {
-  const { templateId } = await request.json();
-
-  const raw = await fs.readFile(TEMPLATES_PATH, "utf-8");
-  const templates: CheckTemplate[] = JSON.parse(raw);
-  const template = templates.find(t => t.id === templateId);
-  if (!template) {
-    return NextResponse.json({ error: "テンプレートが見つかりません" }, { status: 404 });
-  }
+  const { companyId } = await request.json();
 
   const config = await getWorkspaceConfig();
-  const company = config.companies.find(c => c.id === config.selectedCompanyId);
+  const company = companyId
+    ? config.companies.find(c => c.id === companyId)
+    : config.companies.find(c => c.id === config.selectedCompanyId);
+
   if (!company) {
     return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
   }
 
-  // 全資料を収集（ライブ読み取り）
+  // 全資料を収集
   const allTexts: string[] = [];
   const pdfFiles: { name: string; base64: string; mimeType: string }[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
@@ -60,19 +53,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "読み取れるファイルがありません" }, { status: 400 });
   }
 
-  const itemList = template.items.map((item, i) => `${i + 1}. ${item}`).join("\n");
-
-  const promptText = `以下の資料を全て確認し、確認項目について情報を抽出・整理してください。
-
-確認項目:
-${itemList}
+  const promptText = `以下の資料を全て確認し、内容を抽出・整理してください。
 
 ルール:
-- 各確認項目は ## 見出しで区切る
-- 各項目は結論を1〜2行で簡潔に記載。冗長な説明は不要
+- 資料の種類（定款、登記簿、株主名簿、議事録、契約書等）を自動判別し、それぞれの重要情報を抽出
+- 各カテゴリは ## 見出しで区切る
+- 結論を簡潔に記載。冗長な説明は不要
 - 一覧系（役員・株主など）は表形式で簡潔に
-- 不明・未確認の項目は「*要確認*」とだけ記載
-- 根拠条文の引用は不要（ファイル名だけ記載）
+- 日付・金額・人名は正確に転記
+- 矛盾や不整合があれば「⚠ 要確認」として指摘
+- 根拠となるファイル名を各項目に記載
+- 不明・未確認の情報は「*要確認*」とだけ記載
 
 資料:
 ${allTexts.join("\n\n")}`;
@@ -97,8 +88,6 @@ ${allTexts.join("\n\n")}`;
       async start(controller) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({
           type: "meta",
-          templateId: template.id,
-          templateName: template.name,
           sourceFiles,
         })}\n\n`));
 
