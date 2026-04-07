@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder, readFileContent } from "@/lib/files";
 import { isPathDisabled } from "@/lib/disabled-filter";
+import { mimeFromExtension } from "@/lib/file-parsers";
 import path from "path";
 
 const client = new Anthropic();
@@ -45,7 +46,6 @@ export async function POST(request: NextRequest) {
       if (!fc) continue;
 
       const ext = path.extname(fc.name).toLowerCase();
-      const { mimeFromExtension } = require("@/lib/file-parsers");
       const mime = mimeFromExtension(ext);
       sourceFiles.push({ id: fc.path, name: fc.name, mimeType: mime });
 

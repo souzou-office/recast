@@ -90,10 +90,21 @@ export interface MasterSheet {
 
 export interface GeneratedDocument {
   templateName: string;
-  docxBase64: string;       // docxバイナリ（base64）
-  previewHtml: string;      // HTMLプレビュー
+  docxBase64: string;
+  previewHtml: string;
   fileName: string;
   createdAt: string;
+}
+
+export interface CaseRoom {
+  id: string;              // 一意ID (timestamp-based)
+  folderPath: string;      // 案件フォルダのパス
+  displayName: string;     // 表示名（AIが自動生成、ユーザー変更可）
+  masterSheet?: MasterSheet;
+  generatedDocuments?: GeneratedDocument[];
+  checkResult?: string;    // 突合せ結果
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Company {
@@ -101,12 +112,15 @@ export interface Company {
   name: string;
   subfolders: Subfolder[];
   profile?: CompanyProfile;
+  caseRooms?: CaseRoom[];
+  // 後方互換: 旧データ
   masterSheet?: MasterSheet;
   generatedDocuments?: GeneratedDocument[];
 }
 
 export interface WorkspaceConfig {
-  basePath: string;        // 顧問先フォルダのローカルパス
+  basePath?: string;       // 後方互換
+  basePaths: string[];     // 顧問先フォルダのローカルパス（複数）
   templateBasePath: string; // 書類テンプレートフォルダのローカルパス
   defaultCommonPatterns: string[];
   companies: Company[];

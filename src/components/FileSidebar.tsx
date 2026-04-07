@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Company, SubfolderRole } from "@/types";
 
 interface LiveFile {
@@ -26,6 +26,7 @@ interface Props {
   onToggleFile: (companyId: string, subfolderId: string, filePath: string, enabled: boolean) => void;
   onSelectSingleFolder: (companyId: string, subfolderId: string, selectedPath: string, siblingPaths: string[]) => void;
   onChangeRole: (companyId: string, subfolderId: string, newRole: SubfolderRole) => void;
+  onRemoveCompany: (companyId: string) => void;
 }
 
 function fileIcon(name: string): string {
@@ -52,7 +53,7 @@ function roleBadge(role: SubfolderRole) {
 
 export default function FileSidebar({
   companies, selectedCompanyId, onSelectCompany,
-  onToggleJob, onToggleFile, onSelectSingleFolder, onChangeRole,
+  onToggleJob, onToggleFile, onSelectSingleFolder, onChangeRole, onRemoveCompany,
 }: Props) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [folderData, setFolderData] = useState<Record<string, FolderData>>({});
@@ -92,24 +93,31 @@ export default function FileSidebar({
         body: JSON.stringify({ path: folderPath }),
       });
       const data = await res.json();
-      setFolderData(prev => ({
-        ...prev,
-        [folderPath]: {
+      // 前のデータを上書き（マージではなく置換）
+      setFolderData(prev => {
+        const next = { ...prev };
+        next[folderPath] = {
           files: data.files || [],
           subfolders: data.subfolders || [],
-        },
-      }));
+        };
+        return next;
+      });
     } catch { /* ignore */ }
   }, []);
 
-  // ウィンドウにフォーカスが戻ったら展開中フォルダを再取得
+  // フォーカス復帰時に展開中フォルダを再取得（ポーリングは削除）
+  const expandedRef = useRef(expandedFolders);
+  expandedRef.current = expandedFolders;
   useEffect(() => {
-    const handleFocus = () => {
-      expandedFolders.forEach(path => loadFolder(path));
+    const reload = () => expandedRef.current.forEach(path => loadFolder(path));
+    const handleVisibility = () => { if (!document.hidden) reload(); };
+    window.addEventListener("focus", reload);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("focus", reload);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
-  }, [expandedFolders, loadFolder]);
+  }, [loadFolder]);
 
   const toggleFolder = (folderId: string) => {
     setExpandedFolders(prev => {

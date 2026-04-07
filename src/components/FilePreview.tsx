@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 interface Props {
   filePath?: string;
@@ -10,7 +10,7 @@ interface Props {
 }
 
 const RAW_VIEWABLE = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".htm"]);
-const WORD_EXTS = new Set([".doc", ".docx", ".odt", ".ppt", ".pptx"]);
+const WORD_EXTS = new Set([".doc", ".docx", ".docm", ".odt", ".ppt", ".pptx"]);
 const EXCEL_EXTS = new Set([".xls", ".xlsx", ".ods"]);
 
 export default function FilePreview({ filePath, fileName, onClose, docxBase64 }: Props) {
@@ -22,6 +22,27 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [width, setWidth] = useState(50); // パーセント
+
+  const handleDragStart = useCallback(() => {
+    const handleMove = (e: MouseEvent) => {
+      const container = document.getElementById("main-content-area");
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const pct = 100 - ((e.clientX - rect.left) / rect.width) * 100;
+      setWidth(Math.max(20, Math.min(80, pct)));
+    };
+    const handleUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleUp);
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleUp);
+  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -38,7 +59,7 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
         .then(async (res) => {
           if (!res.ok) throw new Error();
           const blob = await res.blob();
-          setBlobUrl(URL.createObjectURL(blob));
+          setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
         })
         .catch(() => setTextContent("プレビューに失敗しました"))
         .finally(() => setLoading(false));
@@ -56,7 +77,7 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
         .then(async (res) => {
           if (!res.ok) throw new Error();
           const blob = await res.blob();
-          setBlobUrl(URL.createObjectURL(blob));
+          setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
         })
         .catch(() => setTextContent("ファイルを読み取れませんでした"))
         .finally(() => setLoading(false));
@@ -70,7 +91,7 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
         .then(async (res) => {
           if (!res.ok) throw new Error();
           const blob = await res.blob();
-          setBlobUrl(URL.createObjectURL(blob));
+          setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
         })
         .catch(() => setTextContent("プレビューに失敗しました"))
         .finally(() => setLoading(false));
@@ -133,7 +154,12 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
   };
 
   return (
-    <div className="flex w-1/2 flex-col border-l border-gray-200">
+    <>
+    <div
+      onMouseDown={handleDragStart}
+      className="w-1.5 shrink-0 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-gray-200"
+    />
+    <div className="flex flex-col border-l border-gray-200" style={{ width: `${width}%` }}>
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2 bg-gray-50">
         <span className="text-xs text-gray-600 truncate font-medium">{fileName}</span>
         <div className="flex items-center gap-2 shrink-0">
@@ -155,5 +181,6 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
         )}
       </div>
     </div>
+    </>
   );
 }

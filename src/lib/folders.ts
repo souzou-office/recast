@@ -5,7 +5,7 @@ import type { WorkspaceConfig } from "@/types";
 const DATA_PATH = path.join(process.cwd(), "data", "folders.json");
 
 const DEFAULT_CONFIG: WorkspaceConfig = {
-  basePath: "",
+  basePaths: [],
   templateBasePath: "",
   defaultCommonPatterns: [],
   companies: [],
@@ -18,8 +18,14 @@ export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
     const data = JSON.parse(raw);
 
     // 旧形式からの移行: baseFolders/globalCommon は無視
+    // 旧basePath → basePaths移行
+    let basePaths: string[] = data.basePaths || [];
+    if (basePaths.length === 0 && data.basePath) {
+      basePaths = [data.basePath];
+    }
+
     const config: WorkspaceConfig = {
-      basePath: data.basePath || "",
+      basePaths,
       templateBasePath: data.templateBasePath || "",
       defaultCommonPatterns: data.defaultCommonPatterns || [],
       companies: data.companies || [],

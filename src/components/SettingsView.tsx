@@ -101,13 +101,27 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
     }
   };
 
-  // このフォルダをベースフォルダに設定
-  const handleSelectAsBase = async (dirPath: string) => {
+  const [selectedPaths, setSelectedPaths] = useState<string[]>(config?.basePaths || []);
+
+  // パスを追加
+  const handleAddPath = (dirPath: string) => {
+    if (!selectedPaths.includes(dirPath)) {
+      setSelectedPaths(prev => [...prev, dirPath]);
+    }
+  };
+
+  // パスを削除
+  const handleRemovePath = (dirPath: string) => {
+    setSelectedPaths(prev => prev.filter(p => p !== dirPath));
+  };
+
+  // 保存（会社も同期）
+  const handleSavePaths = async () => {
     setSaving(true);
     await fetch("/api/workspace", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ basePath: dirPath }),
+      body: JSON.stringify({ basePaths: selectedPaths }),
     });
     onUpdateConfig();
     setSaving(false);
@@ -173,12 +187,24 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
             <div className="px-6 pt-6 pb-3">
               <h2 className="text-lg font-semibold text-gray-900 mb-1">ベースフォルダ</h2>
               <p className="text-xs text-gray-500">
-                会社フォルダが入っている親フォルダを選択してください。直下の各フォルダが会社として自動登録されます。
+                会社フォルダが入っている親フォルダを選択してください（複数可）。直下の各フォルダが会社として自動登録されます。
               </p>
-              {config?.basePath && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="text-xs text-gray-500">現在:</span>
-                  <span className="text-xs font-medium text-blue-600 truncate">{config.basePath}</span>
+              {/* 選択済みパス一覧 */}
+              {selectedPaths.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {selectedPaths.map(p => (
+                    <div key={p} className="flex items-center gap-2 rounded bg-blue-50 px-2 py-1">
+                      <span className="text-xs text-blue-700 truncate flex-1">{p}</span>
+                      <button onClick={() => handleRemovePath(p)} className="text-xs text-red-400 hover:text-red-600 shrink-0 px-2 py-0.5 rounded hover:bg-red-50">削除</button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={handleSavePaths}
+                    disabled={saving}
+                    className="mt-1 rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300"
+                  >
+                    {saving ? "反映中..." : "保存して会社を更新"}
+                  </button>
                 </div>
               )}
             </div>
@@ -204,11 +230,11 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
               ))}
               {browseCurrent && (
                 <button
-                  onClick={() => handleSelectAsBase(browseCurrent)}
-                  disabled={saving}
+                  onClick={() => handleAddPath(browseCurrent)}
+                  disabled={selectedPaths.includes(browseCurrent)}
                   className="ml-auto rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
                 >
-                  {saving ? "設定中..." : "このフォルダに設定"}
+                  {selectedPaths.includes(browseCurrent) ? "追加済み" : "このフォルダを追加"}
                 </button>
               )}
             </div>

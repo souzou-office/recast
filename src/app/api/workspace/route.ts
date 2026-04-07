@@ -59,31 +59,44 @@ export async function GET() {
   return NextResponse.json(config);
 }
 
-// ベースパス設定 + 会社自動検出
+// ベースパス設定 + 会社自動検出（複数パス対応）
 export async function POST(request: NextRequest) {
-  const { basePath } = await request.json() as { basePath: string };
-  if (!basePath) {
-    return NextResponse.json({ error: "basePath は必須です" }, { status: 400 });
+  const { basePaths } = await request.json() as { basePaths: string[] };
+  if (!basePaths || basePaths.length === 0) {
+    return NextResponse.json({ error: "basePaths は必須です" }, { status: 400 });
   }
 
   const config = await getWorkspaceConfig();
-  config.basePath = basePath;
+  config.basePaths = basePaths;
+  delete config.basePath; // 旧フィールド削除
 
-  const entries = await listFiles(basePath);
-  const dirs = entries.filter(e => e.isDirectory);
   const patterns = config.defaultCommonPatterns || [];
 
-  for (const dir of dirs) {
-    const existing = config.companies.find(c => c.id === dir.path);
-    if (existing) continue;
+  // basePaths配下にある会社だけ残す
+  const validCompanyIds = new Set<string>();
 
-    const subfolders = await detectSubfolders(dir.path, patterns);
+  for (const bp of basePaths) {
+    const entries = await listFiles(bp);
+    const dirs = entries.filter(e => e.isDirectory);
 
-    config.companies.push({
-      id: dir.path,
-      name: dir.name,
-      subfolders,
-    });
+    for (const dir of dirs) {
+      validCompanyIds.add(dir.path);
+      const existing = config.companies.find(c => c.id === dir.path);
+      if (existing) continue;
+
+      const subfolders = await detectSubfolders(dir.path, patterns);
+      config.companies.push({
+        id: dir.path,
+        name: dir.name,
+        subfolders,
+      });
+    }
+  }
+
+  // 選択されたパス配下にない会社を削除
+  config.companies = config.companies.filter(c => validCompanyIds.has(c.id));
+  if (config.selectedCompanyId && !validCompanyIds.has(config.selectedCompanyId)) {
+    config.selectedCompanyId = null;
   }
 
   await saveWorkspaceConfig(config);
@@ -148,8 +161,20 @@ export async function PATCH(request: NextRequest) {
       if (company) {
         const sub = company.subfolders.find(s => s.id === body.subfolderId);
         if (sub) {
-          sub.role = body.role;
-          if (body.role === "common") sub.active = true;
+          // 案件に変更する場合、他の案件フォルダを除外に
+          if (body.role === "job") {
+            for (const s of company.subfolders) {
+              if (s.role === "job" && s.id !== body.subfolderId) {
+                s.role = "none";
+                s.active = false;
+              }
+            }
+            sub.role = "job";
+            sub.active = true;
+          } else {
+            sub.role = body.role;
+            if (body.role === "common") sub.active = true;
+          }
         }
       }
       break;
@@ -264,6 +289,89 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "createCaseRoom": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        if (!company.caseRooms) company.caseRooms = [];
+        const now = new Date().toISOString();
+        company.caseRooms.push({
+          id: `case_${Date.now()}`,
+          folderPath: body.folderPath || "",
+          displayName: body.displayName || "新規案件",
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      break;
+    }
+
+    case "updateCaseRoom": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          if (body.displayName !== undefined) room.displayName = body.displayName;
+          if (body.folderPath !== undefined) room.folderPath = body.folderPath;
+          if ("masterSheet" in body) { if (body.masterSheet) room.masterSheet = body.masterSheet; else delete room.masterSheet; }
+          if ("generatedDocuments" in body) room.generatedDocuments = body.generatedDocuments;
+          if ("checkResult" in body) { if (body.checkResult) room.checkResult = body.checkResult; else delete room.checkResult; }
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
+    case "deleteCaseRoom": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company && company.caseRooms) {
+        company.caseRooms = company.caseRooms.filter(r => r.id !== body.caseRoomId);
+      }
+      break;
+    }
+
+    case "saveCaseRoomMasterSheet": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          room.masterSheet = body.masterSheet;
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
+    case "saveCaseRoomDocument": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          if (!room.generatedDocuments) room.generatedDocuments = [];
+          room.generatedDocuments.push({
+            templateName: body.templateName,
+            docxBase64: body.docxBase64,
+            previewHtml: body.previewHtml,
+            fileName: body.fileName,
+            createdAt: new Date().toISOString(),
+          });
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
+    case "saveCaseRoomCheck": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const room = company.caseRooms?.find(r => r.id === body.caseRoomId);
+        if (room) {
+          room.checkResult = body.checkResult;
+          room.updatedAt = new Date().toISOString();
+        }
+      }
+      break;
+    }
+
     default:
       return NextResponse.json({ error: "不明なaction" }, { status: 400 });
   }
@@ -275,7 +383,7 @@ export async function PATCH(request: NextRequest) {
 // リセット
 export async function DELETE() {
   const config = {
-    basePath: "",
+    basePaths: [],
     templateBasePath: "",
     defaultCommonPatterns: [],
     companies: [],

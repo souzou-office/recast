@@ -319,7 +319,7 @@ export default function ChatWindow({ companyId, companies, onLoadingChange, onNa
   return (
     <div className="flex h-full">
       {/* 左側: チャット */}
-      <div className={`flex flex-col ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+      <div className={`flex flex-col ${previewFileId ? "flex-1 min-w-0" : "w-full"} transition-all`}>
         {/* ツールバー */}
         {messages.length > 0 && !isLoading && (
           <div className="flex justify-end gap-3 px-4 pt-2">

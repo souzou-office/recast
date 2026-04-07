@@ -32,6 +32,7 @@ export const BINARY_MIME_TYPES = new Set([
 // Office系
 export const OFFICE_MIME_TYPES = new Set([
   "application/msword",                                                      // .doc
+  "application/vnd.ms-word.document.macroEnabled.12",                        // .docm
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",      // .xlsx
   "application/vnd.ms-excel",                                                // .xls
@@ -51,6 +52,7 @@ export const MAX_TOTAL_BINARY_SIZE = 8 * 1024 * 1024; // 全PDFの合計上限 8
 const EXT_TO_MIME: Record<string, string> = {
   ".pdf": "application/pdf",
   ".doc": "application/msword",
+  ".docm": "application/vnd.ms-word.document.macroEnabled.12",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".xls": "application/vnd.ms-excel",
@@ -117,14 +119,35 @@ export async function parsePdf(buffer: Buffer, name: string, filePath: string): 
   };
 }
 
-/** DOCX Buffer → FileContent */
+/** DOCX/DOC Buffer → FileContent */
 export async function parseDocx(buffer: Buffer, name: string, filePath: string): Promise<FileContent> {
   try {
     const result = await mammoth.extractRawText({ buffer });
     const text = result.value?.trim();
     if (text) return { name, path: filePath, content: text };
   } catch {
-    // パース失敗
+    // mammoth失敗（.doc等）→ LibreOfficeでテキスト変換を試みる
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const os = require("os");
+      const { execSync } = require("child_process");
+      const soffice = "C:/Program Files/LibreOffice/program/soffice.exe";
+      const tmpDir = path.join(os.tmpdir(), "recast-doc-parse");
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const tmpFile = path.join(tmpDir, `tmp_${Date.now()}_${name}`);
+      fs.writeFileSync(tmpFile, buffer);
+      execSync(`"${soffice}" --headless --convert-to txt --outdir "${tmpDir}" "${tmpFile}"`, { timeout: 30000 });
+      const baseName = path.basename(tmpFile, path.extname(tmpFile));
+      const txtFile = path.join(tmpDir, `${baseName}.txt`);
+      if (fs.existsSync(txtFile)) {
+        const text = fs.readFileSync(txtFile, "utf-8").trim();
+        try { fs.unlinkSync(txtFile); } catch { /* ignore */ }
+        try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+        if (text) return { name, path: filePath, content: text };
+      }
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    } catch { /* LibreOffice失敗 */ }
   }
   return { name, path: filePath, content: `[読み取れませんでした: ${name}]` };
 }
@@ -152,9 +175,10 @@ export async function parseBuffer(buffer: Buffer, name: string, filePath: string
     return parsePdf(buffer, name, filePath);
   }
 
-  // DOC / DOCX
+  // DOC / DOCX / DOCM
   if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-      mimeType === "application/msword") {
+      mimeType === "application/msword" ||
+      mimeType === "application/vnd.ms-word.document.macroEnabled.12") {
     return parseDocx(buffer, name, filePath);
   }
 
