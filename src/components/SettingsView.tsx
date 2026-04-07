@@ -6,7 +6,7 @@ import ProfileTemplateModal from "./ProfileTemplateModal";
 import DocumentTemplateModal from "./DocumentTemplateModal";
 import CaseTemplateEditor from "./CaseTemplateEditor";
 
-type SettingsSection = "basepath" | "common" | "case-templates" | "profile-items" | "doc-templates";
+type SettingsSection = "basepath" | "templatepath" | "common" | "case-templates" | "profile-items" | "doc-templates";
 
 interface BrowseDir {
   name: string;
@@ -32,6 +32,7 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
 
   const sections: { id: SettingsSection; label: string }[] = [
     { id: "basepath", label: "ベースフォルダ" },
+    { id: "templatepath", label: "書類テンプレート" },
     { id: "common", label: "共通パターン" },
     { id: "case-templates", label: "案件整理テンプレート" },
     { id: "profile-items", label: "基本情報 抽出項目" },
@@ -259,6 +260,70 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {section === "templatepath" && (
+          <div className="flex flex-col h-full">
+            <div className="px-6 pt-6 pb-3">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">書類テンプレートフォルダ</h2>
+              <p className="text-xs text-gray-500">
+                書類の雛形フォルダを選択してください。各サブフォルダが書類テンプレートになります。
+              </p>
+              {config?.templateBasePath && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs text-gray-500">現在:</span>
+                  <span className="text-xs font-medium text-blue-600 truncate">{config.templateBasePath}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1 border-y border-gray-100 px-6 py-2 bg-gray-50">
+              <button onClick={() => { navigateBreadcrumb(-1); }} className="text-xs text-blue-600 hover:text-blue-800">PC</button>
+              {breadcrumbs.map((bc, i) => (
+                <span key={bc.path} className="flex items-center gap-1">
+                  <span className="text-gray-300 text-xs">/</span>
+                  <button onClick={() => navigateBreadcrumb(i)} className="text-xs text-blue-600 hover:text-blue-800 truncate max-w-[120px]">{bc.name}</button>
+                </span>
+              ))}
+              {browseCurrent && (
+                <button
+                  onClick={async () => {
+                    setSaving(true);
+                    await fetch("/api/workspace", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "setTemplateBasePath", templateBasePath: browseCurrent }),
+                    });
+                    onUpdateConfig();
+                    setSaving(false);
+                  }}
+                  disabled={saving}
+                  className="ml-auto rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300"
+                >
+                  {saving ? "設定中..." : "このフォルダに設定"}
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-2">
+              {browseLoading ? (
+                <p className="py-4 text-center text-sm text-gray-400">読み込み中...</p>
+              ) : (
+                <ul>
+                  {browseParent !== null && (
+                    <li><button onClick={navigateUp} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 w-full text-left">↑ 上の階層へ</button></li>
+                  )}
+                  {browseDirs.map(dir => (
+                    <li key={dir.path}>
+                      <button onClick={() => navigateTo(dir.path, dir.name)} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 w-full text-left">
+                        <span className="text-yellow-500 shrink-0">&#128193;</span><span className="truncate">{dir.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
 

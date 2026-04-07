@@ -1,34 +1,81 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { v4 as uuidv4 } from "uuid";
-import type { Company, DocumentTemplate, ChatMessage } from "@/types";
+import type { Company, ChatMessage, GeneratedDocument } from "@/types";
 import ChatInput from "./chat/ChatInput";
 import MessageBubble from "./chat/MessageBubble";
+import FilePreview from "./FilePreview";
 
-interface SuggestedDoc {
+interface TemplateFolder {
   name: string;
-  reason: string;
-  required: boolean;
+  path: string;
+  files: { name: string; path: string }[];
 }
 
 interface Props {
   company: Company | null;
+  onUpdate?: () => void;
 }
 
-export default function DocumentGenerator({ company }: Props) {
-  const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
-  const [selectedTemplateIds, setSelectedTemplateIds] = useState<Set<string>>(new Set());
+function downloadDocx(base64: string, fileName: string) {
+  const byteChars = atob(base64);
+  const byteArray = new Uint8Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);
+  const blob = new Blob([byteArray], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export default function DocumentGenerator({ company, onUpdate }: Props) {
+  const [templateFolders, setTemplateFolders] = useState<TemplateFolder[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<TemplateFolder | null>(null);
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
+  const [previewFileId, setPreviewFileId] = useState<string | null>(null);
+  const [templateBasePath, setTemplateBasePath] = useState<string>("");
 
-  // 書類提案
-  const [suggestedDocs, setSuggestedDocs] = useState<SuggestedDoc[]>([]);
-  const [selectedDocs, setSelectedDocs] = useState<Set<number>>(new Set());
-  const [suggesting, setSuggesting] = useState(false);
-  const [showSuggestion, setShowSuggestion] = useState(false);
+  // プレビュー中のドキュメント
+  const [viewingDoc, setViewingDoc] = useState<GeneratedDocument | null>(null);
+
+  useEffect(() => {
+    fetch("/api/workspace").then(r => r.json()).then(config => {
+      if (config.templateBasePath) {
+        setTemplateBasePath(config.templateBasePath);
+        loadTemplateFolders(config.templateBasePath);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const loadTemplateFolders = async (basePath: string) => {
+    try {
+      const res = await fetch("/api/workspace/list-files", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: basePath }),
+      });
+      const data = await res.json();
+      const folders: TemplateFolder[] = [];
+      for (const sf of data.subfolders || []) {
+        const subRes = await fetch("/api/workspace/list-files", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: sf.path }),
+        });
+        const subData = await subRes.json();
+        folders.push({ name: sf.name, path: sf.path, files: subData.files || [] });
+      }
+      setTemplateFolders(folders);
+    } catch { /* ignore */ }
+  };
 
   const handleChatSend = useCallback(async (content: string) => {
     const userMsg: ChatMessage = { id: uuidv4(), role: "user", content, timestamp: Date.now() };
@@ -71,16 +118,6 @@ export default function DocumentGenerator({ company }: Props) {
     finally { setChatLoading(false); }
   }, [chatMessages]);
 
-  const fetchTemplates = useCallback(async () => {
-    const res = await fetch("/api/document-templates");
-    if (res.ok) {
-      const data = await res.json();
-      setTemplates(data.templates);
-    }
-  }, []);
-
-  useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
-
   if (!company) {
     return (
       <div className="flex h-full items-center justify-center bg-gray-50">
@@ -89,73 +126,76 @@ export default function DocumentGenerator({ company }: Props) {
     );
   }
 
-  const hasMasterSheet = !!company.masterSheet?.structured;
-  const hasProfile = !!company.profile?.structured;
+  const hasMasterSheet = !!company.masterSheet;
+  const savedDocs = company.generatedDocuments || [];
 
-  // 必要書類の提案を取得
-  const handleSuggest = async () => {
-    setSuggesting(true);
-    setSuggestedDocs([]);
-    try {
-      const res = await fetch("/api/document-templates/suggest-documents", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id }),
-      });
-      if (res.ok) {
-        const { documents } = await res.json();
-        setSuggestedDocs(documents);
-        // 必須のものは自動選択
-        const required = new Set<number>();
-        documents.forEach((d: SuggestedDoc, i: number) => { if (d.required) required.add(i); });
-        setSelectedDocs(required);
-        setShowSuggestion(true);
-      }
-    } catch { /* ignore */ }
-    finally { setSuggesting(false); }
-  };
-
-
-  // 書類生成（雛形あり or なし）
-  const handleProduce = async () => {
+  const handleGenerate = async () => {
+    if (!selectedTemplate) return;
     setGenerating(true);
     setResult("");
+    setViewingDoc(null);
 
-    // 選択された書類名リスト
-    const docNames = Array.from(selectedDocs).map(i => suggestedDocs[i]?.name).filter(Boolean);
-    const templateIds = Array.from(selectedTemplateIds);
+    const hasDocx = selectedTemplate.files.some(f =>
+      (f.name.endsWith(".docx") || f.name.endsWith(".doc")) &&
+      !f.name.toLowerCase().includes("メモ") && !f.name.toLowerCase().includes("memo")
+    );
 
     try {
       const res = await fetch("/api/document-templates/produce", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyId: company.id,
-          templateIds,
-          documentNames: docNames,
-        }),
+        body: JSON.stringify({ companyId: company.id, templateFolderPath: selectedTemplate.path }),
       });
 
-      const reader = res.body?.getReader();
-      if (!reader) return;
+      const contentType = res.headers.get("Content-Type") || "";
 
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          const match = line.match(/^data: (.+)$/m);
-          if (!match) continue;
-          const data = JSON.parse(match[1]);
-          if (data.type === "text") {
-            setResult(prev => prev + data.text);
+      if (hasDocx && contentType.includes("application/json")) {
+        const data = await res.json();
+        if (data.documents && data.documents.length > 0) {
+          // 複数ドキュメントを保存
+          for (const d of data.documents) {
+            await fetch("/api/workspace", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "saveGeneratedDocument",
+                companyId: company.id,
+                templateName: d.name,
+                docxBase64: d.docxBase64,
+                previewHtml: d.previewHtml,
+                fileName: d.fileName,
+              }),
+            });
+          }
+          onUpdate?.();
+          // 最初のドキュメントをプレビュー
+          setViewingDoc({
+            templateName: data.documents[0].name,
+            docxBase64: data.documents[0].docxBase64,
+            previewHtml: data.documents[0].previewHtml,
+            fileName: data.documents[0].fileName,
+            createdAt: new Date().toISOString(),
+          });
+        } else if (data.error) {
+          setResult(`エラー: ${data.error}`);
+        }
+      } else {
+        // ストリーミングテキスト
+        const reader = res.body?.getReader();
+        if (!reader) return;
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const match = line.match(/^data: (.+)$/m);
+            if (!match) continue;
+            const data = JSON.parse(match[1]);
+            if (data.type === "text") setResult(prev => prev + data.text);
           }
         }
       }
@@ -163,145 +203,190 @@ export default function DocumentGenerator({ company }: Props) {
     finally { setGenerating(false); }
   };
 
-  return (
-    <div className="flex h-full">
-      {/* 左: 設定 */}
-      <div className="w-1/2 border-r border-gray-200 overflow-y-auto">
-        <div className="p-6 space-y-5">
-          {/* ステータス */}
-          <div>
-            <h2 className="text-lg font-bold text-gray-900 mb-2">{company.name}</h2>
-            <div className="flex gap-2">
-              <span className={`rounded px-2 py-0.5 text-xs ${hasProfile ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                基本情報 {hasProfile ? "✓" : "未生成"}
-              </span>
-              <span className={`rounded px-2 py-0.5 text-xs ${hasMasterSheet ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-                マスターシート {hasMasterSheet ? "✓" : "未生成"}
-              </span>
-            </div>
-          </div>
+  const handleDeleteDoc = async (index: number) => {
+    if (!confirm("この書類を削除しますか？")) return;
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "deleteGeneratedDocument", companyId: company.id, index }),
+    });
+    if (viewingDoc === savedDocs[index]) setViewingDoc(null);
+    onUpdate?.();
+  };
 
-          {/* 必要書類の提案 */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-semibold text-gray-700">作成する書類</h3>
-              <button
-                onClick={handleSuggest}
-                disabled={suggesting || (!hasProfile && !hasMasterSheet)}
-                className="text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400"
-              >
-                {suggesting ? "提案中..." : "AIで提案"}
-              </button>
-            </div>
-            {showSuggestion && suggestedDocs.length > 0 ? (
-              <div className="space-y-1">
-                {suggestedDocs.map((doc, i) => (
-                  <label key={i} className="flex items-start gap-2 rounded-lg bg-gray-50 px-3 py-2 cursor-pointer hover:bg-gray-100">
-                    <input
-                      type="checkbox"
-                      checked={selectedDocs.has(i)}
-                      onChange={() => {
-                        setSelectedDocs(prev => {
-                          const next = new Set(prev);
-                          if (next.has(i)) next.delete(i);
-                          else next.add(i);
-                          return next;
-                        });
-                      }}
-                      className="mt-0.5"
-                    />
-                    <div className="flex-1">
-                      <span className="text-sm text-gray-700">{doc.name}</span>
-                      {doc.required && <span className="ml-1 text-[10px] text-red-500">必須</span>}
-                      <p className="text-[10px] text-gray-400 mt-0.5">{doc.reason}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-gray-400 py-2">
-                {!hasProfile && !hasMasterSheet
-                  ? "基本情報またはマスターシートを先に生成してください"
-                  : "「AIで提案」をクリックすると必要書類が表示されます"}
-              </p>
-            )}
-          </div>
-
-          {/* 雛形一覧 */}
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700 mb-2">書類雛形（任意）</h3>
-            <p className="text-[10px] text-gray-400 mb-2">雛形がある場合はそれに沿って書類を生成します</p>
-            {templates.length === 0 ? (
-              <p className="text-xs text-gray-400 py-1">雛形なし — 「⚙ 雛形管理」から登録してください</p>
-            ) : (
-              <div className="space-y-1">
-                {templates.map(t => (
-                  <label key={t.id} className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-1.5 cursor-pointer hover:bg-gray-100">
-                    <input
-                      type="checkbox"
-                      checked={selectedTemplateIds.has(t.id)}
-                      onChange={() => {
-                        setSelectedTemplateIds(prev => {
-                          const next = new Set(prev);
-                          if (next.has(t.id)) next.delete(t.id);
-                          else next.add(t.id);
-                          return next;
-                        });
-                      }}
-                    />
-                    <span className="flex-1 text-sm text-gray-700">{t.name}</span>
-                    <span className="text-[10px] text-gray-400">{t.category}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* 書類生成ボタン */}
-          <button
-            onClick={handleProduce}
-            disabled={generating || (selectedDocs.size === 0 && selectedTemplateIds.size === 0)}
-            className="w-full rounded-lg bg-blue-600 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
-          >
-            {generating ? "書類生成中..." : "書類を生成"}
-          </button>
+  if (!templateBasePath) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="text-center text-gray-400">
+          <p className="text-3xl mb-2">📝</p>
+          <p className="text-sm">設定で書類テンプレートフォルダを指定してください</p>
         </div>
       </div>
+    );
+  }
 
-      {/* 右: 生成結果 + チャット */}
-      <div className="w-1/2 flex flex-col bg-white">
-        <div className="flex-1 overflow-y-auto">
-          {result ? (
-            <pre className="p-6 text-sm text-gray-800 whitespace-pre-wrap leading-relaxed font-mono">
-              {result}
-            </pre>
+  return (
+    <div className="flex h-full overflow-hidden">
+      <div className={`flex flex-col overflow-hidden ${previewFileId ? "w-1/2" : "w-full"} transition-all`}>
+        <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
+            <span className={`rounded px-2 py-0.5 text-[10px] ${hasMasterSheet ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+              案件整理 {hasMasterSheet ? "✓" : "未生成"}
+            </span>
+          </div>
+          {viewingDoc && (
+            <button
+              onClick={() => setViewingDoc(null)}
+              className="text-xs text-blue-500 hover:text-blue-700"
+            >
+              一覧に戻る
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 flex justify-center">
+          <div className="w-full max-w-4xl">
+
+          {/* ドキュメントプレビュー（右側に表示するため空） */}
+          {viewingDoc ? (
+            <div className="flex h-full items-center justify-center text-gray-400">
+              <p className="text-sm">← 右側にプレビュー表示中</p>
+            </div>
+          ) : result ? (
+            <>
+              {generating ? (
+                <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                  {result}<span className="animate-pulse">▍</span>
+                </div>
+              ) : (
+                <div className="prose prose-sm max-w-none text-gray-800
+                                prose-headings:text-gray-900 prose-headings:font-semibold
+                                prose-h2:text-base prose-h2:mt-3 prose-h2:mb-1">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
+                </div>
+              )}
+            </>
           ) : (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center text-gray-400">
-                <p className="text-3xl mb-2">📝</p>
-                <p className="text-sm">「AIで提案」→ 書類を選択 → 生成</p>
+            <div>
+              <h2 className="text-lg font-bold text-gray-800 mb-4">書類を生成する</h2>
+
+              {/* 保存済みドキュメント */}
+              {savedDocs.length > 0 && (
+                <div className="mb-6">
+                  <h3 className="text-xs font-semibold text-gray-500 mb-2">生成済み書類</h3>
+                  <div className="space-y-1">
+                    {savedDocs.map((doc, i) => (
+                      <div key={i} className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-2">
+                        <button
+                          onClick={() => setViewingDoc(doc)}
+                          className="flex-1 text-left"
+                        >
+                          <span className="text-sm text-gray-800 font-medium">{doc.templateName}</span>
+                          <span className="text-[10px] text-gray-400 ml-2">{new Date(doc.createdAt).toLocaleString("ja-JP")}</span>
+                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
+                            className="text-[10px] text-blue-500 hover:text-blue-700"
+                          >
+                            DL
+                          </button>
+                          <button
+                            onClick={() => handleDeleteDoc(i)}
+                            className="text-[10px] text-red-400 hover:text-red-600"
+                          >
+                            削除
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* テンプレート選択 */}
+              {!hasMasterSheet && (
+                <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-4">
+                  案件整理を先に実行してください。
+                </p>
+              )}
+              <h3 className="text-xs font-semibold text-gray-500 mb-2">テンプレートから生成</h3>
+              <div className="grid grid-cols-1 gap-3">
+                {templateFolders.map(tf => {
+                  const isSelected = selectedTemplate?.path === tf.path;
+                  return (
+                    <div
+                      key={tf.path}
+                      className={`rounded-xl border-2 cursor-pointer transition-all ${
+                        isSelected ? "border-blue-500 bg-blue-50 shadow-sm" : "border-gray-200 hover:border-blue-300"
+                      }`}
+                      onClick={() => setSelectedTemplate(isSelected ? null : tf)}
+                    >
+                      <div className="px-5 py-4 flex items-center justify-between">
+                        <h3 className={`text-base font-bold ${isSelected ? "text-blue-700" : "text-gray-800"}`}>{tf.name}</h3>
+                        <span className="text-[10px] text-gray-400">{tf.files.length}ファイル</span>
+                      </div>
+                      {isSelected && (
+                        <>
+                          <div className="border-t border-blue-200 px-5 py-3">
+                            {tf.files.map(f => (
+                              <button key={f.path}
+                                onClick={(e) => { e.stopPropagation(); setPreviewFileId(f.path); }}
+                                className="block text-xs text-blue-600 hover:text-blue-800 hover:underline py-0.5"
+                              >📄 {f.name}</button>
+                            ))}
+                          </div>
+                          <div className="px-5 py-4">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleGenerate(); }}
+                              disabled={generating || !hasMasterSheet}
+                              className="w-full rounded-lg bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:bg-gray-300"
+                            >
+                              {generating ? "生成中..." : "この書式で書類を生成"}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {templateFolders.length === 0 && (
+                  <p className="text-sm text-gray-400 py-4 text-center">テンプレートフォルダにフォルダがありません</p>
+                )}
               </div>
             </div>
           )}
 
-          {/* チャットメッセージ */}
           {chatMessages.length > 0 && (
-            <div className="border-t border-gray-200 pt-4 px-6">
+            <div className="mt-4 border-t border-gray-200 pt-4">
               {chatMessages.map((msg, i) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"}
-                />
+                <MessageBubble key={msg.id} message={msg}
+                  streaming={chatLoading && i === chatMessages.length - 1 && msg.role === "assistant"} />
               ))}
             </div>
           )}
+
+          </div>
         </div>
 
-        {/* チャット入力欄 */}
         <ChatInput onSend={handleChatSend} disabled={chatLoading || generating} />
       </div>
 
+      {viewingDoc && (
+        <FilePreview
+          docxBase64={viewingDoc.docxBase64}
+          fileName={viewingDoc.fileName}
+          onClose={() => setViewingDoc(null)}
+        />
+      )}
+      {!viewingDoc && previewFileId && (
+        <FilePreview
+          filePath={previewFileId}
+          fileName={previewFileId.split(/[\\/]/).pop() || ""}
+          onClose={() => setPreviewFileId(null)}
+        />
+      )}
     </div>
   );
 }

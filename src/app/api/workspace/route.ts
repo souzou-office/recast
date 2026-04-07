@@ -173,6 +173,11 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "setTemplateBasePath": {
+      config.templateBasePath = body.templateBasePath || "";
+      break;
+    }
+
     case "setDefaultCommonPatterns": {
       config.defaultCommonPatterns = body.patterns;
       break;
@@ -228,6 +233,29 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "saveGeneratedDocument": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        if (!company.generatedDocuments) company.generatedDocuments = [];
+        company.generatedDocuments.push({
+          templateName: body.templateName,
+          docxBase64: body.docxBase64,
+          previewHtml: body.previewHtml,
+          fileName: body.fileName,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      break;
+    }
+
+    case "deleteGeneratedDocument": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company && company.generatedDocuments) {
+        company.generatedDocuments.splice(body.index, 1);
+      }
+      break;
+    }
+
     case "deleteMasterSheet": {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company) {
@@ -248,6 +276,7 @@ export async function PATCH(request: NextRequest) {
 export async function DELETE() {
   const config = {
     basePath: "",
+    templateBasePath: "",
     defaultCommonPatterns: [],
     companies: [],
     selectedCompanyId: null,

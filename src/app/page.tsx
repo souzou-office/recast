@@ -222,7 +222,7 @@ export default function Home() {
           />
         )}
         {tab === "search" && <ChatWindow key="search" companyId="__search__" companies={config?.companies.map(c => ({ id: c.id, name: c.name })) || []} onLoadingChange={setChatLoading} onNavigateToCompany={handleNavigateToCompany} />}
-        {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} />}
+        {tab === "documents" && <DocumentGenerator key={config?.selectedCompanyId || "none"} company={selectedCompany || null} onUpdate={fetchConfig} />}
         {tab === "settings" && <SettingsView config={config} onUpdateConfig={fetchConfig} />}
         </div>
       </div>

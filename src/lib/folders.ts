@@ -6,6 +6,7 @@ const DATA_PATH = path.join(process.cwd(), "data", "folders.json");
 
 const DEFAULT_CONFIG: WorkspaceConfig = {
   basePath: "",
+  templateBasePath: "",
   defaultCommonPatterns: [],
   companies: [],
   selectedCompanyId: null,
@@ -19,6 +20,7 @@ export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
     // 旧形式からの移行: baseFolders/globalCommon は無視
     const config: WorkspaceConfig = {
       basePath: data.basePath || "",
+      templateBasePath: data.templateBasePath || "",
       defaultCommonPatterns: data.defaultCommonPatterns || [],
       companies: data.companies || [],
       selectedCompanyId: data.selectedCompanyId || null,

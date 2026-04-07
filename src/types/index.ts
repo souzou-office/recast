@@ -88,16 +88,26 @@ export interface MasterSheet {
   createdAt: string;
 }
 
+export interface GeneratedDocument {
+  templateName: string;
+  docxBase64: string;       // docxバイナリ（base64）
+  previewHtml: string;      // HTMLプレビュー
+  fileName: string;
+  createdAt: string;
+}
+
 export interface Company {
   id: string;              // ローカルパス（会社フォルダ）
   name: string;
   subfolders: Subfolder[];
   profile?: CompanyProfile;
   masterSheet?: MasterSheet;
+  generatedDocuments?: GeneratedDocument[];
 }
 
 export interface WorkspaceConfig {
   basePath: string;        // 顧問先フォルダのローカルパス
+  templateBasePath: string; // 書類テンプレートフォルダのローカルパス
   defaultCommonPatterns: string[];
   companies: Company[];
   selectedCompanyId: string | null;

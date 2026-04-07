@@ -1,19 +1,36 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
+import { readAllFilesInFolder, readFileContent } from "@/lib/files";
 import fs from "fs/promises";
 import path from "path";
-import type { DocumentTemplate } from "@/types";
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const Docxtemplater = require("docxtemplater");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const PizZip = require("pizzip");
 
 const client = new Anthropic();
-const TEMPLATES_PATH = path.join(process.cwd(), "data", "document-templates.json");
 
-// マスターシート + 書類雛形 → 書類一式を生成（ストリーミング）
+// テンプレートdocxからプレースホルダー【】を抽出
+function extractPlaceholders(text: string): string[] {
+  const matches = text.match(/【[^】]+】/g);
+  return matches ? [...new Set(matches)] : [];
+}
+
+// 半角英数字→全角変換
+function toFullWidth(str: string): string {
+  return str.replace(/[A-Za-z0-9]/g, (c) => {
+    return String.fromCharCode(c.charCodeAt(0) + 0xFEE0);
+  });
+}
+
+// テンプレートフォルダ + マスターシート → 書類生成
 export async function POST(request: NextRequest) {
-  const { companyId, templateIds, documentNames } = await request.json() as {
+  const { companyId, templateFolderPath, mode } = await request.json() as {
     companyId: string;
-    templateIds: string[];
-    documentNames?: string[];
+    templateFolderPath: string;
+    mode?: "fill" | "generate"; // fill=プレースホルダー置換, generate=AI全文生成
   };
 
   const config = await getWorkspaceConfig();
@@ -24,50 +41,159 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // 雛形を読み込み
-  let allTemplates: DocumentTemplate[] = [];
-  try {
-    const raw = await fs.readFile(TEMPLATES_PATH, "utf-8");
-    allTemplates = JSON.parse(raw);
-  } catch { /* ignore */ }
-
-  const selectedTemplates = allTemplates.filter(t => templateIds.includes(t.id));
-  if (selectedTemplates.length === 0 && (!documentNames || documentNames.length === 0)) {
-    return new Response(JSON.stringify({ error: "書類または雛形を選択してください" }), {
+  // テンプレートフォルダ内のファイルを読み込み
+  const templateFiles = await readAllFilesInFolder(templateFolderPath);
+  if (templateFiles.length === 0) {
+    return new Response(JSON.stringify({ error: "テンプレートフォルダにファイルがありません" }), {
       status: 400, headers: { "Content-Type": "application/json" },
     });
   }
 
-  // マスターシートとプロファイルを取得
-  const masterSheet = company.masterSheet?.structured;
-  const profile = company.profile?.structured;
+  // マスターシートとプロファイル
+  const masterSheet = company.masterSheet;
+  const profile = company.profile;
 
   const dataContext = JSON.stringify({
-    基本情報: profile || {},
-    案件情報: masterSheet || {},
+    基本情報: profile?.structured || {},
+    案件情報: masterSheet?.structured || {},
   }, null, 2);
 
-  const templatesText = selectedTemplates.map(t =>
-    `=== ${t.name}（${t.category}）===\n${t.content}`
-  ).join("\n\n");
+  // docxテンプレートを全部探す
+  const docxFiles = templateFiles.filter(f =>
+    (f.name.endsWith(".docx") || f.name.endsWith(".doc")) &&
+    !f.name.toLowerCase().includes("メモ") &&
+    !f.name.toLowerCase().includes("memo")
+  );
 
-  const docNamesList = documentNames && documentNames.length > 0
-    ? `\n## 作成する書類\n${documentNames.map((n, i) => `${i + 1}. ${n}`).join("\n")}\n`
-    : "";
+  // メモファイル
+  const memoFiles = templateFiles.filter(f =>
+    f.name.toLowerCase().includes("メモ") ||
+    f.name.toLowerCase().includes("memo") ||
+    f.name.toLowerCase().includes("注意")
+  );
+  const memoText = memoFiles.map(f => f.content).join("\n\n");
 
-  const prompt = `以下の会社データを使って、書類一式を生成してください。
+  // docxテンプレートがある場合 → プレースホルダー置換モード
+  if (docxFiles.length > 0 && mode !== "generate") {
+    // 全docxからプレースホルダーを抽出
+    const allPlaceholders = new Set<string>();
+    for (const df of docxFiles) {
+      for (const p of extractPlaceholders(df.content)) allPlaceholders.add(p);
+    }
+
+    if (allPlaceholders.size === 0) {
+      return new Response(JSON.stringify({ error: "テンプレートに【プレースホルダー】が見つかりません" }), {
+        status: 400, headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // AIにプレースホルダーの値を一括生成させる
+    const placeholderList = Array.from(allPlaceholders).map(p => `- ${p}`).join("\n");
+    const prompt = `以下の会社データから、テンプレートのプレースホルダーに入る値をJSON形式で返してください。
 
 ## 会社データ
 ${dataContext}
-${docNamesList}
-${templatesText ? `## 書類雛形（これに沿って生成）\n${templatesText}` : ""}
+${masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
+${memoText ? `\n## 注意事項\n${memoText}\n` : ""}
+
+## プレースホルダー一覧
+${placeholderList}
+
+回答はJSONのみ返してください。キーは【】を含むプレースホルダーそのまま、値は埋める文字列です。
+データにない情報は "（要確認）" としてください。`;
+
+    try {
+      const response = await client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 4096,
+        messages: [{ role: "user", content: prompt }],
+      });
+
+      const text = response.content[0].type === "text" ? response.content[0].text : "";
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return new Response(JSON.stringify({ error: "AIの応答をパースできませんでした" }), {
+          status: 500, headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      const values: Record<string, string> = JSON.parse(jsonMatch[0]);
+
+      // 全角変換 + キー整理
+      const templateData: Record<string, string> = {};
+      for (const [key, value] of Object.entries(values)) {
+        const cleanKey = key.replace(/^【/, "").replace(/】$/, "");
+        templateData[cleanKey] = toFullWidth(value);
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mammoth = require("mammoth");
+
+      // 各docxを処理
+      const documents: { name: string; docxBase64: string; previewHtml: string; fileName: string }[] = [];
+
+      for (const df of docxFiles) {
+        try {
+          const rawBuffer = await fs.readFile(df.path);
+          const zip = new PizZip(rawBuffer);
+          const doc = new Docxtemplater(zip, {
+            delimiters: { start: "【", end: "】" },
+            paragraphLoop: true,
+            linebreaks: true,
+            nullGetter: () => "（要確認）",
+          });
+          doc.render(templateData);
+
+          const outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
+          const baseName = df.name.replace(/\.(docx?|doc)$/i, "");
+          const outputName = `${company.name}_${baseName}.docx`;
+
+          let previewHtml = "";
+          try {
+            const result = await mammoth.convertToHtml({ buffer: outputBuffer });
+            previewHtml = result.value;
+          } catch { /* ignore */ }
+
+          documents.push({
+            name: baseName,
+            docxBase64: outputBuffer.toString("base64"),
+            previewHtml,
+            fileName: outputName,
+          });
+        } catch { /* skip failed template */ }
+      }
+
+      return new Response(JSON.stringify({ documents }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "生成に失敗しました" }), {
+        status: 500, headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
+  // docxテンプレートがない or generate mode → AI全文生成（ストリーミング）
+  const templates: string[] = [];
+  for (const f of templateFiles) {
+    if (f.base64) continue;
+    const isNote = f.name.toLowerCase().includes("メモ") || f.name.toLowerCase().includes("memo");
+    if (!isNote) templates.push(`【テンプレート: ${f.name}】\n${f.content}`);
+  }
+
+  const prompt = `以下の会社データとテンプレートを使って、書類を生成してください。
+
+## 会社データ
+${dataContext}
+${masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
+## テンプレート
+${templates.join("\n\n")}
+${memoText ? `\n## 注意事項\n${memoText}` : ""}
 
 ルール:
-- 雛形の{{プレースホルダー}}を会社データで埋めてください
-- データにない情報は{{要確認: 項目名}}としてください
-- 配列データ（役員が複数人など）の場合、必要な通数分の書類を生成してください
-- 各書類は「=== [書類名] ===」で区切ってください
-- 書式・文言は雛形を忠実に再現してください`;
+- テンプレートの【プレースホルダー】を会社データで埋めてください
+- データにない情報は【要確認: 項目名】としてください
+- 書式・文言はテンプレートを忠実に再現してください`;
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -78,13 +204,11 @@ ${templatesText ? `## 書類雛形（これに沿って生成）\n${templatesTex
           max_tokens: 8192,
           messages: [{ role: "user", content: prompt }],
         });
-
         for await (const event of aiStream) {
           if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "text", text: event.delta.text })}\n\n`));
           }
         }
-
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
       } catch (e) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: e instanceof Error ? e.message : "生成に失敗" })}\n\n`));
@@ -95,10 +219,6 @@ ${templatesText ? `## 書類雛形（これに沿って生成）\n${templatesTex
   });
 
   return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
+    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
   });
 }
