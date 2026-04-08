@@ -3,15 +3,42 @@ import { listFiles } from "./files";
 
 // 新規スレッド作成時の初期メッセージ（フォルダ選択カード）
 export async function createInitialMessage(companyId: string, subfolders: { id: string; name: string; role: string }[]): Promise<ThreadMessage> {
-  // 案件フォルダ一覧を構築
+  // 案件フォルダの中のサブフォルダを表示（実際の案件はその中にある）
   const jobFolders = subfolders.filter(s => s.role === "job");
   const folders: FolderSelectCard["folders"] = [];
 
   for (const sub of jobFolders) {
+    // 案件フォルダの中のサブフォルダを取得
     const entries = await listFiles(sub.id);
-    const fileCount = entries.filter(e => !e.isDirectory).length;
-    const subCount = entries.filter(e => e.isDirectory).length;
-    folders.push({ name: sub.name, path: sub.id, fileCount: fileCount + subCount });
+    const subDirs = entries.filter(e => e.isDirectory);
+
+    if (subDirs.length > 0) {
+      // サブフォルダがある場合、それぞれを選択肢に
+      for (const dir of subDirs) {
+        const innerEntries = await listFiles(dir.path);
+        const fileCount = innerEntries.filter(e => !e.isDirectory).length;
+        folders.push({ name: `${sub.name} / ${dir.name}`, path: dir.path, fileCount });
+      }
+    } else {
+      // サブフォルダがなければ、案件フォルダ自体を選択肢に
+      const fileCount = entries.filter(e => !e.isDirectory).length;
+      folders.push({ name: sub.name, path: sub.id, fileCount });
+    }
+  }
+
+  // 共通フォルダも含める（参照用）
+  const commonFolders = subfolders.filter(s => s.role === "common");
+  for (const sub of commonFolders) {
+    const entries = await listFiles(sub.id);
+    const subDirs = entries.filter(e => e.isDirectory);
+    if (subDirs.length > 0) {
+      for (const dir of subDirs) {
+        const innerEntries = await listFiles(dir.path);
+        folders.push({ name: `${sub.name} / ${dir.name}（共通）`, path: dir.path, fileCount: innerEntries.filter(e => !e.isDirectory).length });
+      }
+    } else {
+      folders.push({ name: `${sub.name}（共通）`, path: sub.id, fileCount: entries.filter(e => !e.isDirectory).length });
+    }
   }
 
   return {
@@ -26,20 +53,27 @@ export async function createInitialMessage(companyId: string, subfolders: { id: 
   };
 }
 
-// フォルダ選択後→ファイル選択カードを生成
+// フォルダ選択後→ファイル選択カードを生成（フォルダ構造付き）
 export async function onFolderSelected(folderPath: string): Promise<ThreadMessage> {
-  const entries = await listFiles(folderPath);
   const files: FileSelectCard["files"] = [];
 
-  // 再帰的にファイルを収集
+  // 再帰的にファイルを収集（フォルダ区切り付き）
   async function collect(dirPath: string, prefix: string) {
     const items = await listFiles(dirPath);
+    // まずサブフォルダ
     for (const item of items) {
       if (item.isDirectory) {
-        await collect(item.path, prefix ? `${prefix}/${item.name}` : item.name);
-      } else {
+        // フォルダ自体もエントリとして追加（表示用、enabled=true）
+        const folderLabel = prefix ? `${prefix}/${item.name}` : item.name;
+        files.push({ name: `📁 ${folderLabel}`, path: item.path, enabled: true });
+        await collect(item.path, folderLabel);
+      }
+    }
+    // 次にファイル
+    for (const item of items) {
+      if (!item.isDirectory) {
         files.push({
-          name: prefix ? `${prefix}/${item.name}` : item.name,
+          name: prefix ? `  ${item.name}` : item.name,
           path: item.path,
           enabled: true,
         });
@@ -48,10 +82,12 @@ export async function onFolderSelected(folderPath: string): Promise<ThreadMessag
   }
   await collect(folderPath, "");
 
+  const fileCount = files.filter(f => !f.name.startsWith("📁")).length;
+
   return {
     id: `msg_${Date.now()}`,
     role: "assistant",
-    content: `${files.length}件のファイルが見つかりました。使用するファイルを確認してください`,
+    content: `${fileCount}件のファイルが見つかりました。外すものがあればチェックを外してください`,
     cards: [{
       type: "file-select",
       folderPath,

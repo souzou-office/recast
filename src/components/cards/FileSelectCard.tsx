@@ -26,19 +26,29 @@ export default function FileSelectCardUI({ card, onAction }: Props) {
   return (
     <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
       <p className="text-xs font-medium text-gray-600 mb-2">使用するファイルを確認してください</p>
-      <div className="space-y-0.5 max-h-48 overflow-y-auto mb-2">
-        {files.map((f, i) => (
-          <label key={f.path} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-white cursor-pointer">
-            <input
-              type="checkbox"
-              checked={f.enabled}
-              onChange={() => toggle(i)}
-              disabled={isLocked}
-              className="w-3.5 h-3.5"
-            />
-            <span className={`text-xs ${f.enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{f.name}</span>
-          </label>
-        ))}
+      <div className="space-y-0.5 max-h-64 overflow-y-auto mb-2">
+        {files.map((f, i) => {
+          const isFolder = f.name.startsWith("📁");
+          if (isFolder) {
+            return (
+              <div key={f.path} className="text-xs font-medium text-gray-600 mt-2 first:mt-0 px-1">
+                {f.name}
+              </div>
+            );
+          }
+          return (
+            <label key={f.path} className="flex items-center gap-2 rounded px-2 py-0.5 hover:bg-white cursor-pointer">
+              <input
+                type="checkbox"
+                checked={f.enabled}
+                onChange={() => toggle(i)}
+                disabled={isLocked}
+                className="w-3.5 h-3.5"
+              />
+              <span className={`text-xs ${f.enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{f.name.trimStart()}</span>
+            </label>
+          );
+        })}
       </div>
       {!isLocked && (
         <button
