@@ -118,28 +118,211 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     finally { setLoading(false); }
   };
 
-  // カード操作ハンドラ
+  // カード操作ハンドラ→action API→次のカード表示
   const handleCardAction = useCallback(async (messageId: string, cardIndex: number, cardData: Partial<ActionCard>) => {
     if (!thread || !company) return;
-    await fetch(`/api/chat-threads/${thread.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        companyId: company.id,
-        updateCard: { messageId, cardIndex, cardData },
-      }),
-    });
-    // ローカル更新
-    setThread(prev => {
-      if (!prev) return prev;
-      const msgs = [...prev.messages];
-      const msg = msgs.find(m => m.id === messageId);
-      if (msg?.cards?.[cardIndex]) {
-        msg.cards[cardIndex] = { ...msg.cards[cardIndex], ...cardData } as ActionCard;
+
+    // カードタイプに応じたアクション名を決定
+    const msg = thread.messages.find(m => m.id === messageId);
+    const card = msg?.cards?.[cardIndex];
+    let action = "";
+    if (card?.type === "folder-select") action = "folder-selected";
+    else if (card?.type === "file-select") action = "files-confirmed";
+    else if (card?.type === "template-select") action = "template-selected";
+    else if (card?.type === "check-prompt") action = "check-accepted";
+
+    if (action) {
+      const res = await fetch(`/api/chat-threads/${thread.id}/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          action,
+          messageId,
+          cardIndex,
+          data: cardData,
+        }),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        setThread(result.thread);
+
+        // テンプレート選択後→案件整理+書類生成をSSEで実行
+        if (action === "template-selected" && "selectedPath" in cardData && cardData.selectedPath) {
+          await runWorkflow(result.thread, cardData.selectedPath as string);
+        }
+        // チェック実行
+        if (action === "check-accepted") {
+          await runCheck(result.thread);
+        }
       }
-      return { ...prev, messages: msgs };
-    });
+    } else {
+      // 通常のカード更新
+      await fetch(`/api/chat-threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, updateCard: { messageId, cardIndex, cardData } }),
+      });
+      setThread(prev => {
+        if (!prev) return prev;
+        const msgs = [...prev.messages];
+        const m = msgs.find(m => m.id === messageId);
+        if (m?.cards?.[cardIndex]) m.cards[cardIndex] = { ...m.cards[cardIndex], ...cardData } as ActionCard;
+        return { ...prev, messages: msgs };
+      });
+    }
   }, [thread, company]);
+
+  // 案件整理+書類生成を実行
+  const runWorkflow = async (currentThread: ChatThread, templatePath: string) => {
+    if (!company) return;
+    setLoading(true);
+
+    // 1. 案件整理（SSE）
+    const organizeMsg: ThreadMessage = {
+      id: `msg_${Date.now()}`,
+      role: "assistant",
+      content: "",
+      timestamp: new Date().toISOString(),
+    };
+    setThread(prev => prev ? { ...prev, messages: [...prev.messages, organizeMsg] } : prev);
+
+    try {
+      const res = await fetch("/api/templates/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id }),
+      });
+      const reader = res.body?.getReader();
+      if (reader) {
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const match = line.match(/^data: (.+)$/m);
+            if (!match) continue;
+            const data = JSON.parse(match[1]);
+            if (data.type === "text") {
+              fullText += data.text;
+              setThread(prev => {
+                if (!prev) return prev;
+                const msgs = [...prev.messages];
+                const last = msgs[msgs.length - 1];
+                if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: fullText };
+                return { ...prev, messages: msgs };
+              });
+            }
+          }
+        }
+
+        // 案件整理結果を保存
+        organizeMsg.content = fullText;
+        await fetch(`/api/chat-threads/${currentThread.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id, message: organizeMsg }),
+        });
+      }
+
+      // 2. 書類生成
+      const produceRes = await fetch("/api/document-templates/produce", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath }),
+      });
+      const produceData = await produceRes.json();
+
+      if (produceData.documents && produceData.documents.length > 0) {
+        const resultMsg: ThreadMessage = {
+          id: `msg_${Date.now() + 2}`,
+          role: "assistant",
+          content: "書類を生成しました",
+          cards: [{
+            type: "document-result",
+            documents: produceData.documents,
+          }, {
+            type: "check-prompt",
+          }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, resultMsg] } : prev);
+        await fetch(`/api/chat-threads/${currentThread.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: produceData.documents }),
+        });
+      }
+    } catch { /* ignore */ }
+    finally { setLoading(false); onThreadUpdate(); }
+  };
+
+  // チェック実行
+  const runCheck = async (currentThread: ChatThread) => {
+    if (!company) return;
+    setLoading(true);
+
+    const checkMsg: ThreadMessage = {
+      id: `msg_${Date.now()}`,
+      role: "assistant",
+      content: "",
+      timestamp: new Date().toISOString(),
+    };
+    setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
+
+    try {
+      const res = await fetch("/api/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id }),
+      });
+      const reader = res.body?.getReader();
+      if (reader) {
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const match = line.match(/^data: (.+)$/m);
+            if (!match) continue;
+            const data = JSON.parse(match[1]);
+            if (data.type === "text") {
+              fullText += data.text;
+              setThread(prev => {
+                if (!prev) return prev;
+                const msgs = [...prev.messages];
+                const last = msgs[msgs.length - 1];
+                if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: fullText };
+                return { ...prev, messages: msgs };
+              });
+            }
+          }
+        }
+
+        // チェック結果を保存
+        checkMsg.content = fullText;
+        checkMsg.cards = [{ type: "check-result", content: fullText }];
+        await fetch(`/api/chat-threads/${currentThread.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id, message: checkMsg, checkResult: fullText }),
+        });
+      }
+    } catch { /* ignore */ }
+    finally { setLoading(false); onThreadUpdate(); }
+  };
 
   if (!company) {
     return (

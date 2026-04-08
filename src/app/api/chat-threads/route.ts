@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import type { ChatThread } from "@/types";
+import { getWorkspaceConfig } from "@/lib/folders";
+import { createInitialMessage } from "@/lib/workflow-engine";
 
 const DATA_DIR = path.join(process.cwd(), "data", "chat-threads");
 
@@ -65,11 +67,19 @@ export async function POST(request: NextRequest) {
   }
 
   const now = new Date().toISOString();
+  const config = await getWorkspaceConfig();
+  const company = config.companies.find(c => c.id === companyId);
+
+  // 初期メッセージ（フォルダ選択カード）を生成
+  const initialMsg = company
+    ? await createInitialMessage(companyId, company.subfolders)
+    : null;
+
   const thread: ChatThread = {
     id: `thread_${Date.now()}`,
     companyId,
     displayName: displayName || "新規チャット",
-    messages: [],
+    messages: initialMsg ? [initialMsg] : [],
     createdAt: now,
     updatedAt: now,
   };
