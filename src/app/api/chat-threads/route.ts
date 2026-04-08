@@ -8,13 +8,13 @@ import { createInitialMessage } from "@/lib/workflow-engine";
 const DATA_DIR = path.join(process.cwd(), "data", "chat-threads");
 
 async function ensureDir(companyId: string) {
-  const dir = path.join(DATA_DIR, Buffer.from(companyId).toString("base64url"));
+  const dir = path.join(DATA_DIR, require("crypto").createHash("md5").update(companyId).digest("hex"));
   await fs.mkdir(dir, { recursive: true });
   return dir;
 }
 
 function threadPath(companyId: string, threadId: string) {
-  const dir = path.join(DATA_DIR, Buffer.from(companyId).toString("base64url"));
+  const dir = path.join(DATA_DIR, require("crypto").createHash("md5").update(companyId).digest("hex"));
   return path.join(dir, `${threadId}.json`);
 }
 

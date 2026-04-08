@@ -6,7 +6,7 @@ import type { ChatThread } from "@/types";
 const DATA_DIR = path.join(process.cwd(), "data", "chat-threads");
 
 function threadPath(companyId: string, threadId: string) {
-  const dir = path.join(DATA_DIR, Buffer.from(companyId).toString("base64url"));
+  const dir = path.join(DATA_DIR, require("crypto").createHash("md5").update(companyId).digest("hex"));
   return path.join(dir, `${threadId}.json`);
 }
 
@@ -20,7 +20,7 @@ async function loadThread(companyId: string, threadId: string): Promise<ChatThre
 }
 
 async function saveThread(thread: ChatThread): Promise<void> {
-  const dir = path.join(DATA_DIR, Buffer.from(thread.companyId).toString("base64url"));
+  const dir = path.join(DATA_DIR, require("crypto").createHash("md5").update(thread.companyId).digest("hex"));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(threadPath(thread.companyId, thread.id), JSON.stringify(thread, null, 2), "utf-8");
 }
