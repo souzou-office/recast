@@ -149,6 +149,7 @@ export interface CheckTemplate {
   items: string[];
 }
 
+// === 旧ChatMessage（後方互換） ===
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -161,4 +162,110 @@ export interface ChatMessage {
   };
   sourceFiles?: { id: string; name: string; mimeType: string }[];
   sourceLinks?: Record<string, { id: string; name: string }[]>;
+}
+
+// === チャットワークフロー ===
+
+// アクションカード（チャット内UIパーツ）
+export interface FolderSelectCard {
+  type: "folder-select";
+  folders: { name: string; path: string; fileCount: number }[];
+  selectedPath?: string;
+}
+
+export interface FileSelectCard {
+  type: "file-select";
+  folderPath: string;
+  files: { name: string; path: string; enabled: boolean }[];
+  confirmed?: boolean;
+}
+
+export interface TemplateSelectCard {
+  type: "template-select";
+  templates: { name: string; path: string; fileCount: number }[];
+  selectedPath?: string;
+}
+
+export interface ClarificationQuestion {
+  id: string;
+  placeholder: string;
+  question: string;
+  options: {
+    id: string;
+    label: string;
+    source: string;
+  }[];
+  selectedOptionId?: string;
+  manualInput?: string;
+}
+
+export interface ClarificationCard {
+  type: "clarification";
+  questions: ClarificationQuestion[];
+  answered?: boolean;
+}
+
+export interface DocumentResultCard {
+  type: "document-result";
+  documents: {
+    name: string;
+    fileName: string;
+    docxBase64: string;
+    previewHtml: string;
+  }[];
+}
+
+export interface CheckPromptCard {
+  type: "check-prompt";
+  accepted?: boolean;
+}
+
+export interface CheckResultCard {
+  type: "check-result";
+  content: string;
+}
+
+export type ActionCard =
+  | FolderSelectCard
+  | FileSelectCard
+  | TemplateSelectCard
+  | ClarificationCard
+  | DocumentResultCard
+  | CheckPromptCard
+  | CheckResultCard;
+
+// チャットスレッドメッセージ
+export interface ThreadMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  cards?: ActionCard[];
+  timestamp: string;
+}
+
+// チャットスレッド（CaseRoom + chat-history 統合）
+export interface ChatThread {
+  id: string;
+  companyId: string;
+  displayName: string;
+  messages: ThreadMessage[];
+  // ワークフロー成果物
+  folderPath?: string;
+  disabledFiles?: string[];
+  masterSheet?: MasterSheet;
+  generatedDocuments?: GeneratedDocument[];
+  checkResult?: string;
+  // メタ
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 右パネル
+export interface PreviewFile {
+  id: string;
+  name: string;
+  type: "source" | "generated";
+  filePath?: string;
+  docxBase64?: string;
+  previewHtml?: string;
 }
