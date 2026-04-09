@@ -57,27 +57,26 @@ export async function createInitialMessage(companyId: string, subfolders: { id: 
 export async function onFolderSelected(folderPath: string): Promise<ThreadMessage> {
   const files: FileSelectCard["files"] = [];
 
-  // 再帰的にファイルを収集（フォルダ区切り付き）
+  // 再帰的にファイルを収集（フォルダの直下ファイルはフォルダ行の直後に配置）
   async function collect(dirPath: string, prefix: string) {
     const items = await listFiles(dirPath);
-    // まずサブフォルダ
-    for (const item of items) {
-      if (item.isDirectory) {
-        // フォルダ自体もエントリとして追加（表示用、enabled=true）
-        const folderLabel = prefix ? `${prefix}/${item.name}` : item.name;
-        files.push({ name: `📁 ${folderLabel}`, path: item.path, enabled: true });
-        await collect(item.path, folderLabel);
-      }
+    const dirs = items.filter(e => e.isDirectory);
+    const fileItems = items.filter(e => !e.isDirectory);
+
+    // このフォルダ直下のファイルを先に追加
+    for (const f of fileItems) {
+      files.push({
+        name: prefix ? `  ${f.name}` : f.name,
+        path: f.path,
+        enabled: true,
+      });
     }
-    // 次にファイル
-    for (const item of items) {
-      if (!item.isDirectory) {
-        files.push({
-          name: prefix ? `  ${item.name}` : item.name,
-          path: item.path,
-          enabled: true,
-        });
-      }
+
+    // サブフォルダを順番に処理
+    for (const dir of dirs) {
+      const folderLabel = prefix ? `${prefix}/${dir.name}` : dir.name;
+      files.push({ name: `📁 ${folderLabel}`, path: dir.path, enabled: true });
+      await collect(dir.path, folderLabel);
     }
   }
   await collect(folderPath, "");

@@ -30,19 +30,21 @@ export default function FileSelectCardUI({ card, onAction }: Props) {
         {files.map((f, i) => {
           const isFolder = f.name.startsWith("📁");
           if (isFolder) {
-            // フォルダの配下ファイルを取得（次のフォルダまで）
-            const folderPath = f.path;
+            // このフォルダのパス配下にある全ファイル（フォルダ以外）を取得
             const childIndices: number[] = [];
             for (let j = i + 1; j < files.length; j++) {
-              if (files[j].name.startsWith("📁")) break;
-              childIndices.push(j);
+              if (files[j].name.startsWith("📁") && !files[j].path.startsWith(f.path)) break;
+              if (!files[j].name.startsWith("📁")) childIndices.push(j);
             }
-            const allEnabled = childIndices.every(j => files[j].enabled);
+            const hasChildren = childIndices.length > 0;
+            const allEnabled = hasChildren && childIndices.every(j => files[j].enabled);
+            const noneEnabled = hasChildren && childIndices.every(j => !files[j].enabled);
             return (
               <label key={f.path} className="flex items-center gap-2 mt-2 first:mt-0 px-1 cursor-pointer hover:bg-white rounded">
                 <input
                   type="checkbox"
                   checked={allEnabled}
+                  ref={el => { if (el) el.indeterminate = hasChildren && !allEnabled && !noneEnabled; }}
                   onChange={() => {
                     if (isLocked) return;
                     const newEnabled = !allEnabled;
@@ -50,7 +52,7 @@ export default function FileSelectCardUI({ card, onAction }: Props) {
                     for (const j of childIndices) updated[j] = { ...updated[j], enabled: newEnabled };
                     setFiles(updated);
                   }}
-                  disabled={isLocked}
+                  disabled={isLocked || !hasChildren}
                   className="w-3.5 h-3.5"
                 />
                 <span className="text-xs font-medium text-gray-600">{f.name}</span>

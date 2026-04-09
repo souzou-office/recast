@@ -12,7 +12,17 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
 
   return (
     <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
-      <p className="text-xs font-medium text-gray-600 mb-2">案件フォルダを選んでください</p>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-medium text-gray-600">案件フォルダを選んでください</p>
+        {isLocked && (
+          <button
+            onClick={() => onAction({ selectedPath: undefined } as Partial<ActionCard>)}
+            className="text-[10px] text-blue-500 hover:text-blue-700"
+          >
+            ← 選び直す
+          </button>
+        )}
+      </div>
       <div className="space-y-1">
         {card.folders.map(f => (
           <button

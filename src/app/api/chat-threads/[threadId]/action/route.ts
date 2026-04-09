@@ -60,6 +60,16 @@ export async function POST(
   switch (action) {
     case "folder-selected": {
       const folderPath = data.selectedPath;
+      if (!folderPath) {
+        // 選び直し: フォルダ選択カード以降のメッセージを削除
+        const folderMsgIdx = thread.messages.findIndex(m => m.id === messageId);
+        if (folderMsgIdx >= 0) {
+          thread.messages = thread.messages.slice(0, folderMsgIdx + 1);
+        }
+        thread.folderPath = undefined;
+        thread.disabledFiles = undefined;
+        break;
+      }
       thread.folderPath = folderPath;
       nextMessage = await onFolderSelected(folderPath);
       break;
