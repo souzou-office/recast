@@ -1,5 +1,8 @@
+import Anthropic from "@anthropic-ai/sdk";
 import type { ChatThread, ThreadMessage, ActionCard, FolderSelectCard, FileSelectCard, TemplateSelectCard } from "@/types";
 import { listFiles } from "./files";
+
+const client = new Anthropic();
 
 // 新規スレッド作成時の初期メッセージ（フォルダ選択カード）
 export async function createInitialMessage(companyId: string, subfolders: { id: string; name: string; role: string }[]): Promise<ThreadMessage> {
@@ -97,7 +100,7 @@ export async function onFolderSelected(folderPath: string): Promise<ThreadMessag
 }
 
 // ファイル確定後→テンプレート選択カードを生成
-export async function onFilesConfirmed(templateBasePath: string): Promise<ThreadMessage> {
+export async function onFilesConfirmed(templateBasePath: string, folderName?: string): Promise<ThreadMessage> {
   if (!templateBasePath) {
     return {
       id: `msg_${Date.now()}`,
@@ -128,13 +131,30 @@ export async function onFilesConfirmed(templateBasePath: string): Promise<Thread
     };
   }
 
+  // Haikuでテンプレートを推奨
+  let suggestedPath: string | undefined;
+  if (folderName && templates.length > 1) {
+    try {
+      const templateList = templates.map(t => `${t.name}: ${t.path}`).join("\n");
+      const res = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 200,
+        messages: [{ role: "user", content: `案件フォルダ名「${folderName}」に最適なテンプレートのパスを1つ選んでください。\n\nテンプレート一覧:\n${templateList}\n\nパスのみ返してください。` }],
+      });
+      const text = res.content[0].type === "text" ? res.content[0].text.trim() : "";
+      const found = templates.find(t => text.includes(t.path) || text.includes(t.name));
+      if (found) suggestedPath = found.path;
+    } catch { /* ignore */ }
+  }
+
   return {
     id: `msg_${Date.now()}`,
     role: "assistant",
-    content: "書類テンプレートを選んでください",
+    content: suggestedPath ? "テンプレートを推奨しました。変更もできます" : "書類テンプレートを選んでください",
     cards: [{
       type: "template-select",
       templates,
+      selectedPath: suggestedPath,
     }],
     timestamp: new Date().toISOString(),
   };

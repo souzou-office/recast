@@ -211,37 +211,44 @@ ${placeholderList}
               fileName: outputName,
             });
           } else {
-            // Word: .docはLibreOfficeで.docxに変換してから処理
-            let wordBuffer = rawBuffer;
-            let wordPath = df.path;
+            // Word処理
             const isOldDoc = ext === "doc" || ext === "docm";
+            let wordBuffer = rawBuffer;
 
+            // .doc/.docm → Wordで.docxに変換
             if (isOldDoc) {
               try {
                 const os = require("os");
                 const nodePath = require("path");
                 const { execSync } = require("child_process");
-                const soffice = "C:/Program Files/LibreOffice/program/soffice.exe";
-                const tmpDir = nodePath.join(os.tmpdir(), "recast-doc-convert");
                 const fsSync = require("fs");
+                const tmpDir = nodePath.join(os.tmpdir(), "recast-doc-convert");
                 fsSync.mkdirSync(tmpDir, { recursive: true });
                 const tmpFile = nodePath.join(tmpDir, `tmp_${Date.now()}_${df.name}`);
                 fsSync.writeFileSync(tmpFile, rawBuffer);
-                execSync(`"${soffice}" --headless --convert-to docx --outdir "${tmpDir}" "${tmpFile}"`, { timeout: 30000 });
-                const convertedName = nodePath.basename(tmpFile, nodePath.extname(tmpFile)) + ".docx";
-                const convertedPath = nodePath.join(tmpDir, convertedName);
+                const convertedPath = tmpFile.replace(/\.[^.]+$/, ".docx");
+                const psScript = nodePath.join(tmpDir, `convert_${Date.now()}.ps1`);
+                fsSync.writeFileSync(psScript, `
+$word = New-Object -ComObject Word.Application
+$word.Visible = $false
+$doc = $word.Documents.Open("${tmpFile.replace(/\\/g, "\\\\")}")
+$doc.SaveAs2("${convertedPath.replace(/\\/g, "\\\\")}", 16)
+$doc.Close()
+$word.Quit()
+`, "utf-8");
+                execSync(`powershell -ExecutionPolicy Bypass -File "${psScript}"`, { timeout: 30000 });
                 if (fsSync.existsSync(convertedPath)) {
                   wordBuffer = fsSync.readFileSync(convertedPath);
-                  wordPath = convertedPath;
                   try { fsSync.unlinkSync(convertedPath); } catch { /* ignore */ }
                 }
                 try { fsSync.unlinkSync(tmpFile); } catch { /* ignore */ }
-              } catch { /* LibreOffice変換失敗→元ファイルで試行 */ }
+                try { fsSync.unlinkSync(psScript); } catch { /* ignore */ }
+              } catch { /* Word変換失敗 */ }
             }
 
+            // docxtemplaterで置換
             const filePlaceholders = extractPlaceholders(df.content);
             const delims = filePlaceholders.length > 0 ? filePlaceholders[0].delimiters : ["【", "】"];
-
             const zip = new PizZip(wordBuffer);
             const doc = new Docxtemplater(zip, {
               delimiters: { start: delims[0], end: delims[1] },
@@ -250,10 +257,9 @@ ${placeholderList}
               nullGetter: () => "（要確認）",
             });
             doc.render(templateData);
-
             const outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
-            const outputName = `${company.name}_${baseName}.docx`;
 
+            const outputName = `${company.name}_${baseName}.docx`;
             let previewHtml = "";
             try {
               const result = await mammoth.convertToHtml({ buffer: outputBuffer });

@@ -306,8 +306,6 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         cards: [{
           type: "document-result",
           documents: produceData.documents,
-        }, {
-          type: "check-prompt",
         }],
         timestamp: new Date().toISOString(),
       };
@@ -317,6 +315,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: produceData.documents }),
       });
+
+      // 自動でチェック実行
+      await runCheck(currentThread);
     } else if (produceData.error) {
       const errorMsg: ThreadMessage = {
         id: `msg_${Date.now() + 2}`,

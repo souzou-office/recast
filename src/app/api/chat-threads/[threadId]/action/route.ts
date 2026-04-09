@@ -80,7 +80,9 @@ export async function POST(
         .filter((f: { enabled: boolean }) => !f.enabled)
         .map((f: { path: string }) => f.path);
       thread.disabledFiles = disabledFiles;
-      nextMessage = await onFilesConfirmed(config.templateBasePath || "");
+      // フォルダ名からテンプレートを推奨
+      const folderName = thread.folderPath?.split(/[\\/]/).pop() || "";
+      nextMessage = await onFilesConfirmed(config.templateBasePath || "", folderName);
       break;
     }
 

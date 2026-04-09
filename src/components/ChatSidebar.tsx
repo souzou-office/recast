@@ -179,15 +179,15 @@ export default function ChatSidebar({
                     <div className="flex items-center gap-1" onClick={() => onSelectThread(t.id)}>
                       <span className="text-xs">💬</span>
                       <span className="flex-1 text-xs truncate">{t.displayName}</span>
-                      <div className="hidden group-hover:flex items-center gap-0.5">
+                      <div className="hidden group-hover:flex items-center gap-1">
                         <button
                           onClick={(e) => { e.stopPropagation(); setEditingId(t.id); setEditName(t.displayName); }}
-                          className="text-[9px] text-gray-400 hover:text-blue-600 px-0.5"
-                        >✏</button>
+                          className="text-[10px] text-gray-400 hover:text-blue-600 px-1 py-0.5 rounded hover:bg-blue-50"
+                        >編集</button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}
-                          className="text-[9px] text-gray-400 hover:text-red-600 px-0.5"
-                        >×</button>
+                          className="text-[10px] text-gray-400 hover:text-red-600 px-1 py-0.5 rounded hover:bg-red-50"
+                        >削除</button>
                       </div>
                     </div>
                   )}
