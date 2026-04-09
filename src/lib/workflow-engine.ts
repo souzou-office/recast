@@ -1,6 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChatThread, ThreadMessage, ActionCard, FolderSelectCard, FileSelectCard, TemplateSelectCard } from "@/types";
 import { listFiles } from "./files";
+import fs from "fs/promises";
+import path from "path";
 
 const client = new Anthropic();
 
@@ -60,17 +62,21 @@ export async function createInitialMessage(companyId: string, subfolders: { id: 
 export async function onFolderSelected(folderPath: string): Promise<ThreadMessage> {
   const files: FileSelectCard["files"] = [];
 
-  // 再帰的にファイルを収集（フォルダの直下ファイルはフォルダ行の直後に配置）
+  // 再帰的にファイルを収集（fs.readdirで全ファイル表示、拡張子フィルタなし）
   async function collect(dirPath: string, prefix: string) {
-    const items = await listFiles(dirPath);
-    const dirs = items.filter(e => e.isDirectory);
-    const fileItems = items.filter(e => !e.isDirectory);
+    let entries;
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true });
+    } catch { return; }
+
+    const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith("."));
+    const fileItems = entries.filter(e => !e.isDirectory() && !e.name.startsWith("."));
 
     // このフォルダ直下のファイルを先に追加
     for (const f of fileItems) {
       files.push({
         name: prefix ? `  ${f.name}` : f.name,
-        path: f.path,
+        path: path.join(dirPath, f.name),
         enabled: true,
       });
     }
@@ -78,8 +84,8 @@ export async function onFolderSelected(folderPath: string): Promise<ThreadMessag
     // サブフォルダを順番に処理
     for (const dir of dirs) {
       const folderLabel = prefix ? `${prefix}/${dir.name}` : dir.name;
-      files.push({ name: `📁 ${folderLabel}`, path: dir.path, enabled: true });
-      await collect(dir.path, folderLabel);
+      files.push({ name: `📁 ${folderLabel}`, path: path.join(dirPath, dir.name), enabled: true });
+      await collect(path.join(dirPath, dir.name), folderLabel);
     }
   }
   await collect(folderPath, "");

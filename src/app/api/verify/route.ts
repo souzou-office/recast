@@ -60,13 +60,17 @@ export async function POST(request: NextRequest) {
       }
     }
   } else {
-    // 指定なし → activeフォルダの全ファイル
+    // 共通フォルダ（基本情報）と案件フォルダ（手続き内容）を分けて収集
+    const commonTexts: string[] = [];
+    const caseTexts: string[] = [];
+
     for (const sub of company.subfolders) {
       const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
       if (!isActive) continue;
 
       const disabled = sub.disabledFiles ?? [];
       const files = await readAllFilesInFolder(sub.id);
+      const isCommon = sub.role === "common";
 
       for (const fc of files) {
         if (isPathDisabled(fc.path, disabled)) continue;
@@ -76,12 +80,23 @@ export async function POST(request: NextRequest) {
           contentBlocks.push({
             type: "document",
             source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
-            title: fc.name,
+            title: `${isCommon ? "[基本情報]" : "[案件]"} ${fc.name}`,
           });
         } else {
-          textParts.push(`【${fc.name}】\n${fc.content}`);
+          if (isCommon) {
+            commonTexts.push(`【${fc.name}】\n${fc.content}`);
+          } else {
+            caseTexts.push(`【${fc.name}】\n${fc.content}`);
+          }
         }
       }
+    }
+    // textPartsに統合（区別付き）
+    if (commonTexts.length > 0) {
+      textParts.push("=== 共通フォルダ（基本情報: 定款・登記簿・株主名簿等の会社基本情報）===\n" + commonTexts.join("\n\n"));
+    }
+    if (caseTexts.length > 0) {
+      textParts.push("=== 案件フォルダ（今回の手続き内容: 議事録・指示書・スケジュール等）===\n" + caseTexts.join("\n\n"));
     }
   }
 
@@ -91,12 +106,16 @@ export async function POST(request: NextRequest) {
   if (masterSheet?.structured) referenceData["案件整理結果"] = masterSheet.structured;
   if (masterSheet?.content) referenceData["案件整理テキスト"] = masterSheet.content;
 
-  const prompt = `以下の「案件資料（元データ）」と「生成書類」を突合せチェックしてください。
+  const prompt = `以下の資料と生成書類を突合せチェックしてください。
 
-## 案件資料（元データ）
+資料は2種類あります:
+- **共通フォルダ（基本情報）**: 定款・登記簿・株主名簿など、会社の基本的な情報
+- **案件フォルダ（手続き内容）**: 今回の手続きに関する議事録・指示書・スケジュール等
+
+## 案件整理結果
 ${JSON.stringify(referenceData, null, 2)}
 
-## 生成書類
+## 資料・生成書類
 ${textParts.join("\n\n")}
 
 ## チェック観点（重要度順）

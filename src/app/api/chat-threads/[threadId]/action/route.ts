@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import type { ChatThread, ThreadMessage } from "@/types";
 import { onFolderSelected, onFilesConfirmed } from "@/lib/workflow-engine";
 import { getWorkspaceConfig } from "@/lib/folders";
+
+const client = new Anthropic();
 
 const DATA_DIR = path.join(process.cwd(), "data", "chat-threads");
 
@@ -71,6 +74,20 @@ export async function POST(
         break;
       }
       thread.folderPath = folderPath;
+
+      // フォルダ名からチャットタイトルを自動生成
+      const folderName = folderPath.split(/[\\/]/).pop() || "";
+      const company = config.companies.find(c => c.id === thread.companyId);
+      try {
+        const res = await client.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 50,
+          messages: [{ role: "user", content: `会社「${company?.name || ""}」の案件フォルダ「${folderName}」から、チャットタイトルを1行で生成。日付(YYYY/MM)+内容の形式で簡潔に。名前のみ返してください。` }],
+        });
+        const title = res.content[0].type === "text" ? res.content[0].text.trim() : "";
+        if (title) thread.displayName = title;
+      } catch { /* ignore */ }
+
       nextMessage = await onFolderSelected(folderPath);
       break;
     }

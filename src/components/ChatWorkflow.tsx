@@ -142,8 +142,21 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return { ...prev, messages: msgs };
       });
       // 書類生成を実行
-      if (pendingTemplatePath.current && thread) {
-        await generateDocuments(thread, pendingTemplatePath.current, cardData as Partial<ActionCard>);
+      // pendingTemplatePathがない場合、テンプレート選択カードから取得
+      let templatePath = pendingTemplatePath.current;
+      if (!templatePath && thread) {
+        for (const m of thread.messages) {
+          if (m.cards) {
+            for (const c of m.cards) {
+              if (c.type === "template-select" && c.selectedPath) {
+                templatePath = c.selectedPath;
+              }
+            }
+          }
+        }
+      }
+      if (templatePath && thread) {
+        await generateDocuments(thread, templatePath, cardData as Partial<ActionCard>);
         pendingTemplatePath.current = null;
       }
       return;
@@ -310,6 +323,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         });
         // templatePathを保存して後でcontinue
         pendingTemplatePath.current = templatePath;
+        console.log("[ChatWorkflow] pendingTemplatePath SET:", templatePath);
         setLoading(false);
         return;
       }
@@ -324,6 +338,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   const generateDocuments = async (currentThread: ChatThread, templatePath: string, clarificationData?: Partial<ActionCard>) => {
     if (!company) return;
     setLoading(true);
+    console.log("[ChatWorkflow] generateDocuments called, templatePath:", templatePath);
 
     const produceRes = await fetch("/api/document-templates/produce", {
       method: "POST",
@@ -331,6 +346,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath }),
     });
     const produceData = await produceRes.json();
+    console.log("[ChatWorkflow] produce response:", produceData.error || `${produceData.documents?.length || 0} docs`);
 
     if (produceData.documents && produceData.documents.length > 0) {
       const resultMsg: ThreadMessage = {
@@ -485,6 +501,21 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               </div>
             </div>
           ))}
+          {/* 考え中表示 */}
+          {loading && (
+            <div className="flex justify-start">
+              <div className="rounded-2xl px-4 py-3 bg-white border border-gray-200">
+                <div className="flex items-center gap-2">
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.15s]" />
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.3s]" />
+                  </div>
+                  <span className="text-xs text-gray-400">処理中...</span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

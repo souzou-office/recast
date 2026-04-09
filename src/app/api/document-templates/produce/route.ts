@@ -95,19 +95,15 @@ export async function POST(request: NextRequest) {
   // テンプレートファイルを全部探す（docx/docm/xlsx/xls）
   const templateExts = [".docx", ".doc", ".docm", ".xlsx", ".xls"];
   const docxFiles = templateFiles.filter(f => {
-    const ext = f.name.toLowerCase().split(".").pop() || "";
-    return templateExts.some(e => f.name.toLowerCase().endsWith(e)) &&
-      !f.name.toLowerCase().includes("メモ") &&
-      !f.name.toLowerCase().includes("memo");
+    return templateExts.some(e => f.name.toLowerCase().endsWith(e));
   });
 
-  // メモファイル
-  const memoFiles = templateFiles.filter(f =>
-    f.name.toLowerCase().includes("メモ") ||
-    f.name.toLowerCase().includes("memo") ||
-    f.name.toLowerCase().includes("注意")
-  );
-  const memoText = memoFiles.map(f => f.content).join("\n\n");
+  // テキストファイルは全てメモ（ルール・注意事項）として扱う
+  const memoFiles = templateFiles.filter(f => {
+    const ext = f.name.toLowerCase().split(".").pop() || "";
+    return (ext === "txt" || ext === "md") && !f.base64;
+  });
+  const memoText = memoFiles.map(f => `【${f.name}】\n${f.content}`).join("\n\n");
 
   // docxテンプレートがある場合 → プレースホルダー置換モード
   if (docxFiles.length > 0 && mode !== "generate") {
@@ -128,19 +124,44 @@ export async function POST(request: NextRequest) {
     // AIにプレースホルダーの値を一括生成させる
     const placeholderEntries = Array.from(allPlaceholders.values());
     const placeholderList = placeholderEntries.map(p => `- ${p.name}`).join("\n");
+    // テンプレートファイル名一覧（どの書類に対するプレースホルダーかAIが判断するため）
+    const templateFileNames = docxFiles.map(f => f.name).join(", ");
+
     const prompt = `以下の会社データから、テンプレートのプレースホルダーに入る値をJSON形式で返してください。
 
 ## 会社データ
 ${dataContext}
 ${masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
-${memoText ? `\n## 注意事項\n${memoText}\n` : ""}
+${globalMemo ? `\n## 共通ルール\n${globalMemo}\n` : ""}
+${memoText ? `\n## テンプレート注意事項\n${memoText}\n` : ""}
+
+## テンプレートファイル
+${templateFileNames}
 
 ## プレースホルダー一覧
 ${placeholderList}
 
-回答はJSONのみ返してください。キーはプレースホルダー名（括弧なし）、値は埋める文字列です。
-データにない情報は "（要確認）" としてください。
-例: {"会社名": "株式会社ABC", "代表取締役": "山田太郎"}`;
+## 回答形式
+JSONで返してください。
+
+### 通常の書類（1通のみ）
+キーはプレースホルダー名、値は文字列。
+例: {"会社名": "株式会社ABC", "代表取締役": "山田太郎"}
+
+### 人数分作成する書類がある場合
+注意事項やルールに「各株主に1通ずつ」「役員1人につき1通」等の指示がある場合、該当するテンプレートファイルのプレースホルダーは配列で値を返してください。配列の各要素が1通分の値セットです。
+
+例:
+{
+  "会社名": "株式会社ABC",
+  "株主の氏名": ["山田太郎", "鈴木花子"],
+  "株主の住所": ["東京都...", "大阪府..."],
+  "株主の持株数": ["100株", "50株"]
+}
+
+配列の長さは全て同じにしてください（人数分）。
+配列でないプレースホルダーは全通共通の値です。
+データにない情報は "（要確認）" としてください。`;
 
     try {
       const response = await client.messages.create({
@@ -157,12 +178,26 @@ ${placeholderList}
         });
       }
 
-      const values: Record<string, string> = JSON.parse(jsonMatch[0]);
+      const values: Record<string, string | string[]> = JSON.parse(jsonMatch[0]);
 
-      // 全角変換
-      const templateData: Record<string, string> = {};
-      for (const [key, value] of Object.entries(values)) {
-        templateData[key] = toFullWidth(value);
+      // 配列の値があるか検出（人数分作成）
+      let copies = 1;
+      for (const value of Object.values(values)) {
+        if (Array.isArray(value) && value.length > copies) copies = value.length;
+      }
+
+      // 通数分の値セットを作成
+      const templateDataSets: Record<string, string>[] = [];
+      for (let c = 0; c < copies; c++) {
+        const data: Record<string, string> = {};
+        for (const [key, value] of Object.entries(values)) {
+          if (Array.isArray(value)) {
+            data[key] = toFullWidth(value[c] || "（要確認）");
+          } else {
+            data[key] = toFullWidth(value);
+          }
+        }
+        templateDataSets.push(data);
       }
 
       // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -170,6 +205,7 @@ ${placeholderList}
 
       // 各docxを処理
       const documents: { name: string; docxBase64: string; previewHtml: string; fileName: string }[] = [];
+      let docNumber = 1; // 通し番号
 
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const XLSX = require("xlsx");
@@ -188,7 +224,7 @@ ${placeholderList}
                 let content = zip.file(fileName)?.asText();
                 if (content) {
                   let changed = false;
-                  for (const [key, replacement] of Object.entries(templateData)) {
+                  for (const [key, replacement] of Object.entries(templateDataSets[0])) {
                     const patterns = [`【${key}】`, `{{${key}}}`, `｛｛${key}｝｝`];
                     for (const pat of patterns) {
                       if (content.includes(pat)) {
@@ -202,76 +238,64 @@ ${placeholderList}
               }
             }
             const outputBuffer = zip.generate({ type: "nodebuffer" });
-            const outputName = `${company.name}_${baseName}.xlsx`;
+            const outputName = `${docNumber}.${company.name}_${baseName}.xlsx`;
 
             documents.push({
-              name: baseName,
+              name: `${docNumber}. ${baseName}`,
               docxBase64: outputBuffer.toString("base64"),
               previewHtml: "",
               fileName: outputName,
             });
+            docNumber++;
           } else {
             // Word処理
-            const isOldDoc = ext === "doc" || ext === "docm";
             let wordBuffer = rawBuffer;
+            const isOldDoc = ext === "doc" || ext === "docm";
 
-            // .doc/.docm → Wordで.docxに変換
             if (isOldDoc) {
-              try {
-                const os = require("os");
-                const nodePath = require("path");
-                const { execSync } = require("child_process");
-                const fsSync = require("fs");
-                const tmpDir = nodePath.join(os.tmpdir(), "recast-doc-convert");
-                fsSync.mkdirSync(tmpDir, { recursive: true });
-                const tmpFile = nodePath.join(tmpDir, `tmp_${Date.now()}_${df.name}`);
-                fsSync.writeFileSync(tmpFile, rawBuffer);
-                const convertedPath = tmpFile.replace(/\.[^.]+$/, ".docx");
-                const psScript = nodePath.join(tmpDir, `convert_${Date.now()}.ps1`);
-                fsSync.writeFileSync(psScript, `
-$word = New-Object -ComObject Word.Application
-$word.Visible = $false
-$doc = $word.Documents.Open("${tmpFile.replace(/\\/g, "\\\\")}")
-$doc.SaveAs2("${convertedPath.replace(/\\/g, "\\\\")}", 16)
-$doc.Close()
-$word.Quit()
-`, "utf-8");
-                execSync(`powershell -ExecutionPolicy Bypass -File "${psScript}"`, { timeout: 30000 });
-                if (fsSync.existsSync(convertedPath)) {
-                  wordBuffer = fsSync.readFileSync(convertedPath);
-                  try { fsSync.unlinkSync(convertedPath); } catch { /* ignore */ }
-                }
-                try { fsSync.unlinkSync(tmpFile); } catch { /* ignore */ }
-                try { fsSync.unlinkSync(psScript); } catch { /* ignore */ }
-              } catch { /* Word変換失敗 */ }
+              const docxPath = df.path.replace(/\.(doc|docm)$/i, ".docx");
+              const fsSync = require("fs");
+              if (fsSync.existsSync(docxPath)) {
+                wordBuffer = fsSync.readFileSync(docxPath);
+              } else {
+                continue;
+              }
             }
 
-            // docxtemplaterで置換
             const filePlaceholders = extractPlaceholders(df.content);
             const delims = filePlaceholders.length > 0 ? filePlaceholders[0].delimiters : ["【", "】"];
-            const zip = new PizZip(wordBuffer);
-            const doc = new Docxtemplater(zip, {
-              delimiters: { start: delims[0], end: delims[1] },
-              paragraphLoop: true,
-              linebreaks: true,
-              nullGetter: () => "（要確認）",
-            });
-            doc.render(templateData);
-            const outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
 
-            const outputName = `${company.name}_${baseName}.docx`;
-            let previewHtml = "";
-            try {
-              const result = await mammoth.convertToHtml({ buffer: outputBuffer });
-              previewHtml = result.value;
-            } catch { /* ignore */ }
+            // 人数分のdocxを個別生成
+            for (let c = 0; c < templateDataSets.length; c++) {
+              const templateData = templateDataSets[c];
+              const zip = new PizZip(wordBuffer);
+              const doc = new Docxtemplater(zip, {
+                delimiters: { start: delims[0], end: delims[1] },
+                paragraphLoop: true,
+                linebreaks: true,
+                nullGetter: () => "（要確認）",
+              });
+              doc.render(templateData);
+              const outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
 
-            documents.push({
-              name: baseName,
-              docxBase64: outputBuffer.toString("base64"),
-              previewHtml,
-              fileName: outputName,
-            });
+              // ファイル名に通し番号+枝番（複数通の場合）
+              const numStr = templateDataSets.length > 1 ? `${docNumber}-${c + 1}` : `${docNumber}`;
+              const outputName = `${numStr}.${company.name}_${baseName}.docx`;
+
+              let previewHtml = "";
+              try {
+                const result = await mammoth.convertToHtml({ buffer: outputBuffer });
+                previewHtml = result.value;
+              } catch { /* ignore */ }
+
+              documents.push({
+                name: templateDataSets.length > 1 ? `${numStr}. ${baseName}` : `${docNumber}. ${baseName}`,
+                docxBase64: outputBuffer.toString("base64"),
+                previewHtml,
+                fileName: outputName,
+              });
+            }
+            docNumber++;
           }
         } catch { /* skip failed template */ }
       }

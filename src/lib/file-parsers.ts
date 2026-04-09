@@ -65,6 +65,13 @@ const EXT_TO_MIME: Record<string, string> = {
   ".xml": "text/xml",
   ".tsv": "text/tab-separated-values",
   ".log": "text/plain",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".tiff": "image/tiff",
 };
 
 export function mimeFromExtension(ext: string): string {
@@ -196,6 +203,20 @@ export async function parseBuffer(buffer: Buffer, name: string, filePath: string
       return { name, path: filePath, content: `[ファイルサイズが大きすぎます]` };
     }
     return { name, path: filePath, content: buffer.toString("utf-8") };
+  }
+
+  // 画像
+  if (mimeType.startsWith("image/")) {
+    if (buffer.length > MAX_BINARY_SIZE) {
+      return { name, path: filePath, content: `[画像サイズが大きすぎます: ${(buffer.length / 1024 / 1024).toFixed(1)}MB]` };
+    }
+    return {
+      name,
+      path: filePath,
+      content: `[画像: ${name}]`,
+      mimeType,
+      base64: buffer.toString("base64"),
+    };
   }
 
   return null;

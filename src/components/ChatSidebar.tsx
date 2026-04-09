@@ -94,7 +94,7 @@ export default function ChatSidebar({
   }
 
   return (
-    <aside className="shrink-0 border-r border-gray-200 bg-gray-50 flex flex-col overflow-hidden" style={{ width: "100%" }}>
+    <aside className="flex-1 min-w-0 border-r border-gray-200 bg-gray-50 flex flex-col overflow-hidden">
       {/* 会社セレクター */}
       <div className="border-b border-gray-200 p-2">
         <button

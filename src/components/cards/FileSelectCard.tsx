@@ -8,6 +8,48 @@ interface Props {
   onAction: (data: Partial<ActionCard>) => void;
 }
 
+interface TreeNode {
+  name: string;
+  path: string;
+  isFolder: boolean;
+  children: TreeNode[];
+  fileIndex: number; // filesの中のindex（フォルダは-1）
+}
+
+function buildTree(files: FileSelectCard["files"]): TreeNode[] {
+  const roots: TreeNode[] = [];
+  let currentFolder: TreeNode | null = null;
+  let currentSubFolder: TreeNode | null = null;
+
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (f.name.startsWith("📁 ")) {
+      const label = f.name.replace("📁 ", "");
+      const depth = (label.match(/\//g) || []).length;
+      const node: TreeNode = { name: label.split("/").pop() || label, path: f.path, isFolder: true, children: [], fileIndex: i };
+
+      if (depth === 0) {
+        roots.push(node);
+        currentFolder = node;
+        currentSubFolder = null;
+      } else if (currentFolder) {
+        currentFolder.children.push(node);
+        currentSubFolder = node;
+      }
+    } else {
+      const node: TreeNode = { name: f.name.trimStart(), path: f.path, isFolder: false, children: [], fileIndex: i };
+      if (currentSubFolder) {
+        currentSubFolder.children.push(node);
+      } else if (currentFolder) {
+        currentFolder.children.push(node);
+      } else {
+        roots.push(node);
+      }
+    }
+  }
+  return roots;
+}
+
 export default function FileSelectCardUI({ card, onAction }: Props) {
   const [files, setFiles] = useState(card.files);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -29,104 +71,93 @@ export default function FileSelectCardUI({ card, onAction }: Props) {
     });
   };
 
-  // フォルダの配下ファイルインデックスを取得
-  const getChildIndices = (folderIndex: number) => {
-    const f = files[folderIndex];
+  // フォルダ内の全ファイルインデックスを再帰で取得
+  const getAllFileIndices = (node: TreeNode): number[] => {
     const indices: number[] = [];
-    for (let j = folderIndex + 1; j < files.length; j++) {
-      if (files[j].name.startsWith("📁") && !files[j].path.startsWith(f.path)) break;
-      if (!files[j].name.startsWith("📁")) indices.push(j);
+    for (const child of node.children) {
+      if (child.isFolder) {
+        indices.push(...getAllFileIndices(child));
+      } else {
+        indices.push(child.fileIndex);
+      }
     }
     return indices;
+  };
+
+  const toggleFolderFiles = (node: TreeNode) => {
+    if (isLocked) return;
+    const indices = getAllFileIndices(node);
+    if (indices.length === 0) return;
+    const allEnabled = indices.every(i => files[i].enabled);
+    const updated = [...files];
+    for (const i of indices) updated[i] = { ...updated[i], enabled: !allEnabled };
+    setFiles(updated);
   };
 
   const confirm = () => {
     onAction({ files, confirmed: true } as Partial<ActionCard>);
   };
 
-  // フォルダ行が展開されているかチェック（そのフォルダのパスがexpandedに含まれるか）
-  const isFileVisible = (fileIndex: number) => {
-    // ファイルの親フォルダを逆順で探す
-    for (let j = fileIndex - 1; j >= 0; j--) {
-      if (files[j].name.startsWith("📁")) {
-        return expandedFolders.has(files[j].path);
-      }
-    }
-    return true; // トップレベルのファイル
-  };
+  const tree = buildTree(files);
 
-  // サブフォルダが展開されているか
-  const isSubFolderVisible = (folderIndex: number) => {
-    // 親フォルダを探す
-    const f = files[folderIndex];
-    for (let j = folderIndex - 1; j >= 0; j--) {
-      if (files[j].name.startsWith("📁") && f.path.startsWith(files[j].path) && f.path !== files[j].path) {
-        return expandedFolders.has(files[j].path);
-      }
+  const renderNode = (node: TreeNode, depth: number = 0): React.ReactNode => {
+    if (node.isFolder) {
+      const isOpen = expandedFolders.has(node.path);
+      const childFileIndices = getAllFileIndices(node);
+      const hasFiles = childFileIndices.length > 0;
+      const allEnabled = hasFiles && childFileIndices.every(i => files[i].enabled);
+      const noneEnabled = hasFiles && childFileIndices.every(i => !files[i].enabled);
+
+      return (
+        <div key={node.path} style={{ marginLeft: depth * 16 }}>
+          <div className="flex items-center gap-1 rounded hover:bg-white px-1 py-0.5">
+            <input
+              type="checkbox"
+              checked={allEnabled}
+              ref={el => { if (el) el.indeterminate = hasFiles && !allEnabled && !noneEnabled; }}
+              onChange={() => toggleFolderFiles(node)}
+              disabled={isLocked || !hasFiles}
+              className="w-3.5 h-3.5 shrink-0"
+            />
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFolder(node.path); }}
+              type="button"
+              className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:text-blue-600 cursor-pointer"
+            >
+              <span className="text-[10px]">{isOpen ? "▼" : "▶"}</span>
+              <span>📁 {node.name}</span>
+              <span className="text-[9px] text-gray-400">({childFileIndices.length})</span>
+            </button>
+          </div>
+          {isOpen && (
+            <div>
+              {node.children.map(child => renderNode(child, depth + 1))}
+            </div>
+          )}
+        </div>
+      );
     }
-    return true; // トップレベルのフォルダ
+
+    // ファイル
+    return (
+      <label key={node.path} className="flex items-center gap-2 rounded px-2 py-0.5 hover:bg-white cursor-pointer" style={{ marginLeft: depth * 16 }}>
+        <input
+          type="checkbox"
+          checked={files[node.fileIndex].enabled}
+          onChange={() => toggle(node.fileIndex)}
+          disabled={isLocked}
+          className="w-3.5 h-3.5"
+        />
+        <span className={`text-xs ${files[node.fileIndex].enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{node.name}</span>
+      </label>
+    );
   };
 
   return (
     <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
       <p className="text-xs font-medium text-gray-600 mb-2">使用するファイルを確認してください</p>
-      <div className="space-y-0 max-h-72 overflow-y-auto mb-2">
-        {files.map((f, i) => {
-          const isFolder = f.name.startsWith("📁");
-
-          if (isFolder) {
-            if (!isSubFolderVisible(i)) return null;
-            const isOpen = expandedFolders.has(f.path);
-            const childIndices = getChildIndices(i);
-            const hasChildren = childIndices.length > 0;
-            const allEnabled = hasChildren && childIndices.every(j => files[j].enabled);
-            const noneEnabled = hasChildren && childIndices.every(j => !files[j].enabled);
-
-            return (
-              <div key={f.path} className="flex items-center gap-1 mt-1 first:mt-0 rounded hover:bg-white px-1 py-0.5">
-                <input
-                  type="checkbox"
-                  checked={allEnabled}
-                  ref={el => { if (el) el.indeterminate = hasChildren && !allEnabled && !noneEnabled; }}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    if (isLocked) return;
-                    const newEnabled = !allEnabled;
-                    const updated = [...files];
-                    for (const j of childIndices) updated[j] = { ...updated[j], enabled: newEnabled };
-                    setFiles(updated);
-                  }}
-                  disabled={isLocked || !hasChildren}
-                  className="w-3.5 h-3.5 shrink-0"
-                />
-                <button
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFolder(f.path); }}
-                  className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:text-blue-600 cursor-pointer"
-                  type="button"
-                >
-                  <span className="text-[10px]">{isOpen ? "▼" : "▶"}</span>
-                  <span>📁 {f.name.replace("📁 ", "")}</span>
-                </button>
-              </div>
-            );
-          }
-
-          // ファイル：親フォルダが展開されていなければ非表示
-          if (!isFileVisible(i)) return null;
-
-          return (
-            <label key={f.path} className="flex items-center gap-2 rounded px-4 py-0.5 hover:bg-white cursor-pointer">
-              <input
-                type="checkbox"
-                checked={f.enabled}
-                onChange={() => toggle(i)}
-                disabled={isLocked}
-                className="w-3.5 h-3.5"
-              />
-              <span className={`text-xs ${f.enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{f.name.trimStart()}</span>
-            </label>
-          );
-        })}
+      <div className="max-h-72 overflow-y-auto mb-2">
+        {tree.map(node => renderNode(node, 0))}
       </div>
       {!isLocked && (
         <button

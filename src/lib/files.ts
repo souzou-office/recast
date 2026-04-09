@@ -15,6 +15,7 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".txt", ".csv", ".json", ".md", ".xml",
   ".html", ".htm", ".log", ".tsv",
   ".doc", ".docx", ".docm", ".xls", ".xlsx", ".pdf",
+  ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff",
 ]);
 
 /** ローカルフォルダのファイル一覧 */

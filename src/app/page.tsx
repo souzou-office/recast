@@ -138,7 +138,7 @@ export default function Home() {
             />
             <div
               onMouseDown={handleMouseDown}
-              className="w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors"
+              className="w-1.5 cursor-col-resize bg-gray-200 hover:bg-blue-400 active:bg-blue-500 transition-colors"
             />
           </div>
         )}

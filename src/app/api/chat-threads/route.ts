@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import type { ChatThread } from "@/types";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { createInitialMessage } from "@/lib/workflow-engine";
-
-const client = new Anthropic();
 
 const DATA_DIR = path.join(process.cwd(), "data", "chat-threads");
 
@@ -78,25 +75,10 @@ export async function POST(request: NextRequest) {
     ? await createInitialMessage(companyId, company.subfolders)
     : null;
 
-  // Haikuでスレッド名を自動生成
-  let autoName = displayName || "新規チャット";
-  if (!displayName && company) {
-    try {
-      const folders = company.subfolders.filter(s => s.role === "job").map(s => s.name);
-      const res = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 50,
-        messages: [{ role: "user", content: `会社名「${company.name}」のフォルダ「${folders.join(", ")}」から、案件のチャット名を1行で生成してください。日付(YYYY/MM)+内容の形式で簡潔に。名前のみ返してください。` }],
-      });
-      const text = res.content[0].type === "text" ? res.content[0].text.trim() : "";
-      if (text) autoName = text;
-    } catch { /* ignore */ }
-  }
-
   const thread: ChatThread = {
     id: `thread_${Date.now()}`,
     companyId,
-    displayName: autoName,
+    displayName: displayName || "新規チャット",
     messages: initialMsg ? [initialMsg] : [],
     createdAt: now,
     updatedAt: now,
