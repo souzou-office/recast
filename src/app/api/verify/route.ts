@@ -60,13 +60,17 @@ export async function POST(request: NextRequest) {
       }
     }
   } else {
-    // 指定なし → activeフォルダの全ファイル
+    // 共通フォルダ（基本情報）と案件フォルダ（手続き内容）を分けて収集
+    const commonTexts: string[] = [];
+    const caseTexts: string[] = [];
+
     for (const sub of company.subfolders) {
       const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
       if (!isActive) continue;
 
       const disabled = sub.disabledFiles ?? [];
       const files = await readAllFilesInFolder(sub.id);
+      const isCommon = sub.role === "common";
 
       for (const fc of files) {
         if (isPathDisabled(fc.path, disabled)) continue;
@@ -76,12 +80,23 @@ export async function POST(request: NextRequest) {
           contentBlocks.push({
             type: "document",
             source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
-            title: fc.name,
+            title: `${isCommon ? "[基本情報]" : "[案件]"} ${fc.name}`,
           });
         } else {
-          textParts.push(`【${fc.name}】\n${fc.content}`);
+          if (isCommon) {
+            commonTexts.push(`【${fc.name}】\n${fc.content}`);
+          } else {
+            caseTexts.push(`【${fc.name}】\n${fc.content}`);
+          }
         }
       }
+    }
+    // textPartsに統合（区別付き）
+    if (commonTexts.length > 0) {
+      textParts.push("=== 共通フォルダ（基本情報: 定款・登記簿・株主名簿等の会社基本情報）===\n" + commonTexts.join("\n\n"));
+    }
+    if (caseTexts.length > 0) {
+      textParts.push("=== 案件フォルダ（今回の手続き内容: 議事録・指示書・スケジュール等）===\n" + caseTexts.join("\n\n"));
     }
   }
 
@@ -91,33 +106,47 @@ export async function POST(request: NextRequest) {
   if (masterSheet?.structured) referenceData["案件整理結果"] = masterSheet.structured;
   if (masterSheet?.content) referenceData["案件整理テキスト"] = masterSheet.content;
 
-  const prompt = `以下の「参照データ（案件整理で抽出した情報）」と「書類（原本）」を突合せして、相違点・記載漏れ・矛盾をレポートしてください。
+  const prompt = `以下の資料と生成書類を突合せチェックしてください。
 
-## 参照データ
+資料は2種類あります:
+- **共通フォルダ（基本情報）**: 定款・登記簿・株主名簿など、会社の基本的な情報
+- **案件フォルダ（手続き内容）**: 今回の手続きに関する議事録・指示書・スケジュール等
+
+## 案件整理結果
 ${JSON.stringify(referenceData, null, 2)}
 
-## 書類内容
+## 資料・生成書類
 ${textParts.join("\n\n")}
 
-出力フォーマット:
-1. まず総合判定を1行で記載（✅ 問題なし or ❌ 要確認あり）
-2. 次に以下の列を持つマークダウン表を出力:
+## チェック観点（重要度順）
 
-| 項目 | 参照データ | 書類 | 結果 | 備考 |
-|------|-----------|------|------|------|
+### 1. 案件資料と生成書類の整合性
+- 案件フォルダの資料に記載されている情報と、生成された書類の記載が一致しているか
+- 日付、金額、人名、住所などの転記ミスがないか
 
-結果の列は以下のいずれか:
-- ✅ 一致
-- ❌ 相違
-- ⚠ 記載なし
-- ℹ️ 書類のみ
+### 2. 生成書類間の整合性
+- 複数の書類間で、同じ情報（日付、人名、会社名等）が一致しているか
+- ある書類で記載した内容が、別の書類と矛盾していないか
 
-3. 相違がある項目は表の後に詳細説明を箇条書きで
+### 3. 記載漏れ
+- 「（要確認）」が残っている箇所
+
+## 出力フォーマット
+1. 総合判定（✅ 問題なし or ❌ 要確認あり）
+
+2. 問題がある場合のみ、表で報告:
+
+| チェック観点 | 書類 | 問題内容 | 重要度 |
+|------------|------|---------|--------|
+
+重要度: 🔴重大 / 🟡注意 / 🔵軽微
+
+3. 問題なしの場合は「全書類間で整合性が取れています」と簡潔に
 
 ルール:
-- 表は可能な限り網羅的に（役員・株主なども1行ずつ）
-- 一致項目も省略せず全て記載
-- 簡潔に。冗長な説明は不要`;
+- 問題のない項目は一切記載しない（登記簿の内容を羅列しない）
+- 問題がある箇所だけ報告
+- 簡潔に`;
 
   contentBlocks.push({ type: "text", text: prompt });
 

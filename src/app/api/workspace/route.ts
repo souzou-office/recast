@@ -200,6 +200,44 @@ export async function PATCH(request: NextRequest) {
 
     case "setTemplateBasePath": {
       config.templateBasePath = body.templateBasePath || "";
+      // テンプレートフォルダ内の.doc/.docmをWordで.docxに変換
+      if (config.templateBasePath) {
+        try {
+          const { execSync } = require("child_process");
+          const fsSync = require("fs");
+          const nodePath = require("path");
+          const os = require("os");
+
+          function convertDocsInDir(dir: string) {
+            const items = fsSync.readdirSync(dir);
+            for (const item of items) {
+              const fullPath = nodePath.join(dir, item);
+              if (fsSync.statSync(fullPath).isDirectory()) {
+                convertDocsInDir(fullPath);
+              } else if (item.endsWith(".doc") || item.endsWith(".docm")) {
+                const docxPath = fullPath.replace(/\.(doc|docm)$/i, ".docx");
+                if (fsSync.existsSync(docxPath)) continue; // 既にdocxがあればスキップ
+                try {
+                  const tmpDir = nodePath.join(os.tmpdir(), "recast-doc-convert");
+                  fsSync.mkdirSync(tmpDir, { recursive: true });
+                  const psScript = nodePath.join(tmpDir, `convert_${Date.now()}.ps1`);
+                  fsSync.writeFileSync(psScript, [
+                    "$word = New-Object -ComObject Word.Application",
+                    "$word.Visible = $false",
+                    `$doc = $word.Documents.Open("${fullPath.replace(/\\/g, "\\\\")}")`,
+                    `$doc.SaveAs2("${docxPath.replace(/\\/g, "\\\\")}", 16)`,
+                    "$doc.Close()",
+                    "$word.Quit()",
+                  ].join("\n"), "utf-8");
+                  execSync(`powershell -ExecutionPolicy Bypass -File "${psScript}"`, { timeout: 30000 });
+                  try { fsSync.unlinkSync(psScript); } catch { /* ignore */ }
+                } catch { /* 変換失敗はスキップ */ }
+              }
+            }
+          }
+          convertDocsInDir(config.templateBasePath);
+        } catch { /* ignore */ }
+      }
       break;
     }
 
