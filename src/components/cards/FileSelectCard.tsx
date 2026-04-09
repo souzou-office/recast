@@ -30,14 +30,35 @@ export default function FileSelectCardUI({ card, onAction }: Props) {
         {files.map((f, i) => {
           const isFolder = f.name.startsWith("📁");
           if (isFolder) {
+            // フォルダの配下ファイルを取得（次のフォルダまで）
+            const folderPath = f.path;
+            const childIndices: number[] = [];
+            for (let j = i + 1; j < files.length; j++) {
+              if (files[j].name.startsWith("📁")) break;
+              childIndices.push(j);
+            }
+            const allEnabled = childIndices.every(j => files[j].enabled);
             return (
-              <div key={f.path} className="text-xs font-medium text-gray-600 mt-2 first:mt-0 px-1">
-                {f.name}
-              </div>
+              <label key={f.path} className="flex items-center gap-2 mt-2 first:mt-0 px-1 cursor-pointer hover:bg-white rounded">
+                <input
+                  type="checkbox"
+                  checked={allEnabled}
+                  onChange={() => {
+                    if (isLocked) return;
+                    const newEnabled = !allEnabled;
+                    const updated = [...files];
+                    for (const j of childIndices) updated[j] = { ...updated[j], enabled: newEnabled };
+                    setFiles(updated);
+                  }}
+                  disabled={isLocked}
+                  className="w-3.5 h-3.5"
+                />
+                <span className="text-xs font-medium text-gray-600">{f.name}</span>
+              </label>
             );
           }
           return (
-            <label key={f.path} className="flex items-center gap-2 rounded px-2 py-0.5 hover:bg-white cursor-pointer">
+            <label key={f.path} className="flex items-center gap-2 rounded px-4 py-0.5 hover:bg-white cursor-pointer">
               <input
                 type="checkbox"
                 checked={f.enabled}
@@ -51,12 +72,14 @@ export default function FileSelectCardUI({ card, onAction }: Props) {
         })}
       </div>
       {!isLocked && (
-        <button
-          onClick={confirm}
-          className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-        >
-          これで進める
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={confirm}
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          >
+            これで進める
+          </button>
+        </div>
       )}
     </div>
   );
