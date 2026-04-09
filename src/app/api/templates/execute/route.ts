@@ -25,10 +25,7 @@ export async function POST(request: NextRequest) {
   const pdfFiles: { name: string; base64: string; mimeType: string }[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
-  if (company.profile) {
-    allTexts.push(`--- 基本情報サマリー ---\n${company.profile.summary}`);
-  }
-
+  // 共通+案件フォルダのファイルを読む
   for (const sub of company.subfolders) {
     const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
     if (!isActive) continue;
@@ -56,10 +53,11 @@ export async function POST(request: NextRequest) {
   const promptText = `以下の資料を全て確認し、内容を抽出・整理してください。
 
 ルール:
-- 資料の種類（定款、登記簿、株主名簿、議事録、契約書等）を自動判別し、それぞれの重要情報を抽出
+- 案件固有の情報を抽出・整理する（スケジュール、手続内容、指示事項、議案など）
+- 登記簿・定款・株主名簿など基本資料の内容はそのまま書き出さない（参照用として使うが出力しない）
 - 各カテゴリは ## 見出しで区切る
 - 結論を簡潔に記載。冗長な説明は不要
-- 一覧系（役員・株主など）は表形式で簡潔に
+- 一覧系は表形式で簡潔に
 - 日付・金額・人名は正確に転記
 - 矛盾や不整合があれば「⚠ 要確認」として指摘
 - 根拠となるファイル名を各項目に記載

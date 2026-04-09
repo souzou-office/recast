@@ -122,6 +122,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   // カード操作ハンドラ→action API→次のカード表示
   const handleCardAction = useCallback(async (messageId: string, cardIndex: number, cardData: Partial<ActionCard>) => {
     if (!thread || !company) return;
+    setLoading(true);
 
     // カードタイプに応じたアクション名を決定
     const msg = thread.messages.find(m => m.id === messageId);
@@ -163,6 +164,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       if (res.ok) {
         const result = await res.json();
         setThread(result.thread);
+        setLoading(false);
 
         // テンプレート選択後→案件整理+書類生成をSSEで実行
         if (action === "template-selected" && "selectedPath" in cardData && cardData.selectedPath) {
@@ -172,6 +174,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         if (action === "check-accepted") {
           await runCheck(result.thread);
         }
+      } else {
+        setLoading(false);
       }
     } else {
       // 通常のカード更新
@@ -187,6 +191,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         if (m?.cards?.[cardIndex]) m.cards[cardIndex] = { ...m.cards[cardIndex], ...cardData } as ActionCard;
         return { ...prev, messages: msgs };
       });
+      setLoading(false);
     }
   }, [thread, company]);
 
@@ -215,6 +220,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         const decoder = new TextDecoder();
         let buffer = "";
         let fullText = "";
+        let metaSourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
         while (true) {
           const { done, value } = await reader.read();
@@ -226,7 +232,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const match = line.match(/^data: (.+)$/m);
             if (!match) continue;
             const data = JSON.parse(match[1]);
-            if (data.type === "text") {
+            if (data.type === "meta" && data.sourceFiles) {
+              metaSourceFiles = data.sourceFiles;
+            } else if (data.type === "text") {
               fullText += data.text;
               setThread(prev => {
                 if (!prev) return prev;
@@ -237,6 +245,32 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               });
             }
           }
+        }
+
+        // 出典リンクを生成
+        if (metaSourceFiles.length > 0 && fullText) {
+          try {
+            const linkRes = await fetch("/api/templates/link-sources", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ content: fullText, sourceFiles: metaSourceFiles }),
+            });
+            if (linkRes.ok) {
+              const { links } = await linkRes.json();
+              // 出典情報をメッセージに含める（見出し横にファイル名）
+              let enrichedText = fullText;
+              for (const [heading, files] of Object.entries(links)) {
+                const fileLinks = (files as { id: string; name: string }[]).map(f => `📄${f.name}`).join(" ");
+                if (fileLinks) {
+                  enrichedText = enrichedText.replace(
+                    new RegExp(`(## ${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`),
+                    `$1 ${fileLinks}`
+                  );
+                }
+              }
+              fullText = enrichedText;
+            }
+          } catch { /* ignore */ }
         }
 
         // 案件整理結果を保存
@@ -428,7 +462,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                   <div className="prose prose-sm max-w-none">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                     {loading && i === thread.messages.length - 1 && !msg.content && (
-                      <span className="animate-pulse">●●●</span>
+                      <div className="flex items-center gap-2 text-gray-400">
+                        <span className="animate-spin text-sm">⏳</span>
+                        <span className="text-xs animate-pulse">考え中...</span>
+                      </div>
                     )}
                   </div>
                 ) : (
