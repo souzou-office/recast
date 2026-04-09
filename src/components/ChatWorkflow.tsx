@@ -18,6 +18,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingTemplatePath = useRef<string | null>(null);
 
   // スレッド読み込み
   useEffect(() => {
@@ -130,6 +131,22 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     else if (card?.type === "file-select") action = "files-confirmed";
     else if (card?.type === "template-select") action = "template-selected";
     else if (card?.type === "check-prompt") action = "check-accepted";
+    else if (card?.type === "clarification") {
+      // 確認質問に回答→書類生成を続行
+      setThread(prev => {
+        if (!prev) return prev;
+        const msgs = [...prev.messages];
+        const m = msgs.find(m => m.id === messageId);
+        if (m?.cards?.[cardIndex]) m.cards[cardIndex] = { ...m.cards[cardIndex], ...cardData } as ActionCard;
+        return { ...prev, messages: msgs };
+      });
+      // 書類生成を実行
+      if (pendingTemplatePath.current && thread) {
+        await generateDocuments(thread, pendingTemplatePath.current, cardData as Partial<ActionCard>);
+        pendingTemplatePath.current = null;
+      }
+      return;
+    }
 
     if (action) {
       const res = await fetch(`/api/chat-threads/${thread.id}/action`, {
@@ -231,36 +248,87 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         });
       }
 
-      // 2. 書類生成
-      const produceRes = await fetch("/api/document-templates/produce", {
+      // 2. 確認質問（clarify）
+      const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath }),
       });
-      const produceData = await produceRes.json();
+      const clarifyData = await clarifyRes.json();
 
-      if (produceData.documents && produceData.documents.length > 0) {
-        const resultMsg: ThreadMessage = {
-          id: `msg_${Date.now() + 2}`,
+      if (clarifyData.questions && clarifyData.questions.length > 0) {
+        // 質問がある→カード表示して一旦停止（回答後にcontinueWorkflowで再開）
+        const clarifyMsg: ThreadMessage = {
+          id: `msg_${Date.now() + 1}`,
           role: "assistant",
-          content: "書類を生成しました",
+          content: `${clarifyData.questions.length}点確認があります`,
           cards: [{
-            type: "document-result",
-            documents: produceData.documents,
-          }, {
-            type: "check-prompt",
+            type: "clarification",
+            questions: clarifyData.questions,
           }],
           timestamp: new Date().toISOString(),
         };
-        setThread(prev => prev ? { ...prev, messages: [...prev.messages, resultMsg] } : prev);
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, clarifyMsg] } : prev);
         await fetch(`/api/chat-threads/${currentThread.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: produceData.documents }),
+          body: JSON.stringify({ companyId: company.id, message: clarifyMsg }),
         });
+        // templatePathを保存して後でcontinue
+        pendingTemplatePath.current = templatePath;
+        setLoading(false);
+        return;
       }
+
+      // 3. 質問なし→直接書類生成
+      await generateDocuments(currentThread, templatePath);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
+  };
+
+  // 書類生成
+  const generateDocuments = async (currentThread: ChatThread, templatePath: string, clarificationData?: Partial<ActionCard>) => {
+    if (!company) return;
+    setLoading(true);
+
+    const produceRes = await fetch("/api/document-templates/produce", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath }),
+    });
+    const produceData = await produceRes.json();
+
+    if (produceData.documents && produceData.documents.length > 0) {
+      const resultMsg: ThreadMessage = {
+        id: `msg_${Date.now() + 2}`,
+        role: "assistant",
+        content: "書類を生成しました",
+        cards: [{
+          type: "document-result",
+          documents: produceData.documents,
+        }, {
+          type: "check-prompt",
+        }],
+        timestamp: new Date().toISOString(),
+      };
+      setThread(prev => prev ? { ...prev, messages: [...prev.messages, resultMsg] } : prev);
+      await fetch(`/api/chat-threads/${currentThread.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: produceData.documents }),
+      });
+    } else if (produceData.error) {
+      const errorMsg: ThreadMessage = {
+        id: `msg_${Date.now() + 2}`,
+        role: "assistant",
+        content: `書類生成エラー: ${produceData.error}`,
+        timestamp: new Date().toISOString(),
+      };
+      setThread(prev => prev ? { ...prev, messages: [...prev.messages, errorMsg] } : prev);
+    }
+
+    setLoading(false);
+    onThreadUpdate();
   };
 
   // チェック実行
