@@ -268,6 +268,37 @@ JSONで返してください。基本は全て文字列値です。
               rawData[key] = Array.isArray(value) ? value[0] || "（要確認）" : value;
             }
             const zip = new PizZip(rawBuffer);
+
+            // 1) 置換前にプレースホルダーを含む共有文字列<si>のインデックスを記録
+            //    （数値判定で「もとから数字に見えただけ」のセルを書き換えないため）
+            const placeholderSiIndexes = new Set<number>();
+            const ssPath = "xl/sharedStrings.xml";
+            let ssXml = zip.file(ssPath)?.asText();
+            const extractSiText = (siInner: string): string => {
+              const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+              let text = "";
+              let tm: RegExpExecArray | null;
+              while ((tm = tRegex.exec(siInner)) !== null) text += tm[1];
+              return text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+            };
+            if (ssXml) {
+              const siRegex = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
+              let m: RegExpExecArray | null;
+              let i = 0;
+              while ((m = siRegex.exec(ssXml)) !== null) {
+                const decoded = extractSiText(m[1]);
+                for (const key of Object.keys(rawData)) {
+                  if (decoded.includes(`【${key}】`) || decoded.includes(`{{${key}}}`) || decoded.includes(`｛｛${key}｝｝`)) {
+                    placeholderSiIndexes.add(i);
+                    break;
+                  }
+                }
+                i++;
+              }
+            }
+
+            // 2) 既存の文字列置換（XMLエスケープ付き）
+            const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
             for (const fileName of Object.keys(zip.files)) {
               if (fileName.endsWith(".xml") || fileName.endsWith(".xml.rels")) {
                 let content = zip.file(fileName)?.asText();
@@ -275,9 +306,10 @@ JSONで返してください。基本は全て文字列値です。
                   let changed = false;
                   for (const [key, replacement] of Object.entries(rawData)) {
                     const patterns = [`【${key}】`, `{{${key}}}`, `｛｛${key}｝｝`];
+                    const escaped = xmlEscape(replacement);
                     for (const pat of patterns) {
                       if (content.includes(pat)) {
-                        content = content.split(pat).join(replacement);
+                        content = content.split(pat).join(escaped);
                         changed = true;
                       }
                     }
@@ -286,6 +318,47 @@ JSONで返してください。基本は全て文字列値です。
                 }
               }
             }
+
+            // 3) 置換後のsharedStringsから数値化された<si>を検出
+            const numericSiIndexes = new Map<number, string>(); // si index → 数値文字列
+            ssXml = zip.file(ssPath)?.asText();
+            if (ssXml && placeholderSiIndexes.size > 0) {
+              const siRegex = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
+              let m: RegExpExecArray | null;
+              let i = 0;
+              while ((m = siRegex.exec(ssXml)) !== null) {
+                if (placeholderSiIndexes.has(i)) {
+                  const decoded = extractSiText(m[1]);
+                  const cleaned = decoded.replace(/,/g, "").trim();
+                  if (cleaned !== "" && /^-?\d+(\.\d+)?$/.test(cleaned)) {
+                    numericSiIndexes.set(i, cleaned);
+                  }
+                }
+                i++;
+              }
+            }
+
+            // 4) 数値化したsiを参照するt="s"セルを数値型セルへ書き換え
+            if (numericSiIndexes.size > 0) {
+              for (const fileName of Object.keys(zip.files)) {
+                if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
+                let sheetXml = zip.file(fileName)?.asText();
+                if (!sheetXml) continue;
+                let sheetChanged = false;
+                sheetXml = sheetXml.replace(
+                  /<c\b([^>]*\bt="s"[^>]*)>\s*<v>(\d+)<\/v>\s*<\/c>/g,
+                  (whole: string, attrs: string, idxStr: string) => {
+                    const num = numericSiIndexes.get(parseInt(idxStr, 10));
+                    if (num === undefined) return whole;
+                    sheetChanged = true;
+                    const newAttrs = attrs.replace(/\s*\bt="s"/, "");
+                    return `<c${newAttrs}><v>${num}</v></c>`;
+                  }
+                );
+                if (sheetChanged) zip.file(fileName, sheetXml);
+              }
+            }
+
             const outputBuffer = zip.generate({ type: "nodebuffer" });
             const outputName = `${company.name}_${baseName}.xlsx`;
 
