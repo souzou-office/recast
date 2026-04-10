@@ -41,6 +41,31 @@ function toFullWidth(str: string): string {
   });
 }
 
+// プレースホルダー直後にある単位（テンプレ側に既に書かれている単位）を検出して、値末尾の重複を除去
+const TRAILING_UNIT_RE = /[個日月年円様殿株名通時分秒歳枚件回点本冊行]/;
+function stripDuplicatedUnit(value: string, key: string, templateContent: string): string {
+  if (!value) return value;
+  const placeholders = [`【${key}】`, `{{${key}}}`, `｛｛${key}｝｝`];
+  let trailingUnit: string | null = null;
+  let consistent = true;
+  for (const ph of placeholders) {
+    let pos = templateContent.indexOf(ph);
+    while (pos !== -1) {
+      const next = templateContent[pos + ph.length];
+      if (next && TRAILING_UNIT_RE.test(next)) {
+        if (trailingUnit === null) trailingUnit = next;
+        else if (trailingUnit !== next) { consistent = false; break; }
+      }
+      pos = templateContent.indexOf(ph, pos + 1);
+    }
+    if (!consistent) break;
+  }
+  if (consistent && trailingUnit && value.endsWith(trailingUnit)) {
+    return value.slice(0, -trailingUnit.length);
+  }
+  return value;
+}
+
 // テンプレートフォルダ + マスターシート → 書類生成
 export async function POST(request: NextRequest) {
   const { companyId, templateFolderPath, mode, caseRoomId, masterContent: directMasterContent } = await request.json() as {
@@ -149,7 +174,12 @@ ${placeholderList}
 JSONで返してください。基本は全て文字列値です。
 
 重要:
-- テンプレート内のプレースホルダー前後の文脈（「○○個」「○○日」等）を見て、適切な形式で値を返す
+- **プレースホルダーの直前・直後にある単位や接尾辞は、テンプレート側に既に書かれている文字なので、絶対に値に含めない**
+  - 例: テンプレに「【株数】個」とある → 値は \`"100"\` を返す（\`"100個"\` は二重になるのでNG）
+  - 例: テンプレに「【月】月【日】日」とある → \`{"月":"4","日":"1"}\` を返す（\`"4月"\`, \`"1日"\` はNG）
+  - 例: テンプレに「【代表者】様」とある → \`"山田太郎"\` を返す（\`"山田太郎様"\` はNG）
+  - 例: テンプレに「金【金額】円」とある → \`"1000000"\` を返す（\`"1000000円"\` はNG）
+- プレースホルダー前後に単位がない場合は、必要な単位込みで返してよい（例: 「届出日: 【届出日】」→ \`"令和６年４月１日"\`）
 - 共通ルールやテンプレート注意事項の書式指示に必ず従う
 - 例: {"会社名": "株式会社ABC", "代表取締役": "山田太郎", "届出日": "（要確認）"}
 
@@ -265,7 +295,8 @@ JSONで返してください。基本は全て文字列値です。
             // Excel: 全角変換しない（数式・数値はそのまま半角で）
             const rawData: Record<string, string> = {};
             for (const [key, value] of Object.entries(values)) {
-              rawData[key] = Array.isArray(value) ? value[0] || "（要確認）" : value;
+              const v = Array.isArray(value) ? value[0] || "（要確認）" : value;
+              rawData[key] = stripDuplicatedUnit(v, key, df.content);
             }
             const zip = new PizZip(rawBuffer);
 
@@ -389,7 +420,11 @@ JSONで返してください。基本は全て文字列値です。
             // ファイルごとに通数を判断して個別生成
             const fileSets = getDataSetsForFile(df.content);
             for (let c = 0; c < fileSets.length; c++) {
-              const templateData = fileSets[c];
+              // テンプレ側に既にある単位をAI値が重複させていたら除去
+              const templateData: Record<string, string> = {};
+              for (const [key, val] of Object.entries(fileSets[c])) {
+                templateData[key] = stripDuplicatedUnit(val, key, df.content);
+              }
               const zip = new PizZip(wordBuffer);
               const doc = new Docxtemplater(zip, {
                 delimiters: { start: delims[0], end: delims[1] },
