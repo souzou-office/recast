@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatThread, ThreadMessage, ActionCard, Company } from "@/types";
 import ActionCardRenderer from "./cards/ActionCardRenderer";
+import FilePreview from "./FilePreview";
 
 interface Props {
   company: Company | null;
@@ -16,6 +17,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [previewFile, setPreviewFile] = useState<{ filePath?: string; docxBase64?: string; fileName: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingTemplatePath = useRef<string | null>(null);
@@ -340,10 +342,13 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     setLoading(true);
     console.log("[ChatWorkflow] generateDocuments called, templatePath:", templatePath);
 
+    // スレッド内の案件整理結果を探す
+    const organizeContent = currentThread.messages.find(m => m.role === "assistant" && m.content.length > 200)?.content || "";
+
     const produceRes = await fetch("/api/document-templates/produce", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath }),
+      body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath, masterContent: organizeContent }),
     });
     const produceData = await produceRes.json();
     console.log("[ChatWorkflow] produce response:", produceData.error || `${produceData.documents?.length || 0} docs`);
@@ -463,7 +468,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full">
+      {/* 左: チャット */}
+      <div className={`flex flex-col ${previewFile ? "flex-1 min-w-0" : "w-full"}`}>
       {/* メッセージ一覧 */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
         <div className="max-w-3xl mx-auto space-y-4">
@@ -495,6 +502,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                       onAction={(data) => handleCardAction(msg.id, ci, data)}
                       company={company}
                       thread={thread}
+                      onPreview={setPreviewFile}
                     />
                   </div>
                 ))}
@@ -541,6 +549,17 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           </button>
         </div>
       </div>
+      </div>
+
+      {/* 右: プレビュー */}
+      {previewFile && (
+        <FilePreview
+          filePath={previewFile.filePath}
+          docxBase64={previewFile.docxBase64}
+          fileName={previewFile.fileName}
+          onClose={() => setPreviewFile(null)}
+        />
+      )}
     </div>
   );
 }

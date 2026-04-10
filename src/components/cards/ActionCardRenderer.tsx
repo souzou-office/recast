@@ -13,20 +13,21 @@ interface Props {
   onAction: (data: Partial<ActionCard>) => void;
   company: Company;
   thread: ChatThread;
+  onPreview?: (file: { filePath?: string; docxBase64?: string; fileName: string }) => void;
 }
 
-export default function ActionCardRenderer({ card, onAction, company, thread }: Props) {
+export default function ActionCardRenderer({ card, onAction, company, thread, onPreview }: Props) {
   switch (card.type) {
     case "folder-select":
       return <FolderSelectCardUI card={card} onAction={onAction} />;
     case "file-select":
-      return <FileSelectCardUI card={card} onAction={onAction} />;
+      return <FileSelectCardUI card={card} onAction={onAction} onPreview={onPreview} />;
     case "template-select":
       return <TemplateSelectCardUI card={card} onAction={onAction} />;
     case "clarification":
       return <ClarificationCardUI card={card} onAction={onAction} />;
     case "document-result":
-      return <DocumentResultCardUI card={card} />;
+      return <DocumentResultCardUI card={card} onPreview={onPreview} />;
     case "check-prompt":
       return (
         <button

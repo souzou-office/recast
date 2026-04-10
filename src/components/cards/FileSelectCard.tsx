@@ -6,6 +6,7 @@ import type { FileSelectCard, ActionCard } from "@/types";
 interface Props {
   card: FileSelectCard;
   onAction: (data: Partial<ActionCard>) => void;
+  onPreview?: (file: { filePath?: string; fileName: string }) => void;
 }
 
 interface TreeNode {
@@ -50,7 +51,7 @@ function buildTree(files: FileSelectCard["files"]): TreeNode[] {
   return roots;
 }
 
-export default function FileSelectCardUI({ card, onAction }: Props) {
+export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
   const [files, setFiles] = useState(card.files);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const isLocked = !!card.confirmed;
@@ -148,7 +149,13 @@ export default function FileSelectCardUI({ card, onAction }: Props) {
           disabled={isLocked}
           className="w-3.5 h-3.5"
         />
-        <span className={`text-xs ${files[node.fileIndex].enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{node.name}</span>
+        <span className={`text-xs flex-1 ${files[node.fileIndex].enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{node.name}</span>
+      {onPreview && (
+        <button
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPreview({ filePath: node.path, fileName: node.name }); }}
+          className="text-[9px] text-blue-400 hover:text-blue-600 shrink-0 ml-1"
+        >👁</button>
+      )}
       </label>
     );
   };
