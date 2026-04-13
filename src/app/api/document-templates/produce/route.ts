@@ -41,6 +41,20 @@ function toFullWidth(str: string): string {
   });
 }
 
+// 全角英数字・記号→半角変換（Excel用: 数値・数式が壊れないように）
+function toHalfWidth(str: string): string {
+  let result = str
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/．/g, ".").replace(/，/g, ",").replace(/－/g, "-").replace(/＋/g, "+")
+    .replace(/（/g, "(").replace(/）/g, ")").replace(/％/g, "%").replace(/＆/g, "&")
+    .replace(/　/g, " ");
+  // 日付文字列（年・月日を含む）は数字を全角に戻す
+  if (/年/.test(result) || (/月/.test(result) && /日/.test(result))) {
+    result = result.replace(/[0-9]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
+  }
+  return result;
+}
+
 // プレースホルダー直後にある単位（テンプレ側に既に書かれている単位）を検出して、値末尾の重複を除去
 const TRAILING_UNIT_RE = /[個日月年円様殿株名通時分秒歳枚件回点本冊行]/;
 function stripDuplicatedUnit(value: string, key: string, templateContent: string): string {
@@ -292,11 +306,11 @@ JSONで返してください。基本は全て文字列値です。
           const baseName = df.name.replace(/\.[^.]+$/, "");
 
           if (ext === "xlsx" || ext === "xls") {
-            // Excel: 全角変換しない（数式・数値はそのまま半角で）
+            // Excel: 全角→半角統一（数値・数式が正しく動くように）
             const rawData: Record<string, string> = {};
             for (const [key, value] of Object.entries(values)) {
               const v = Array.isArray(value) ? value[0] || "（要確認）" : value;
-              rawData[key] = stripDuplicatedUnit(v, key, df.content);
+              rawData[key] = toHalfWidth(stripDuplicatedUnit(v, key, df.content));
             }
             const zip = new PizZip(rawBuffer);
 
