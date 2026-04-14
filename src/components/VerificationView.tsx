@@ -195,7 +195,7 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
       const res = await fetch("/api/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, fileIds: selectedFiles.map(f => f.id) }),
+        body: JSON.stringify({ companyId: company.id, fileIds: selectedFiles.map(f => f.id), caseRoomId: caseRoom?.id }),
       });
 
       const reader = res.body?.getReader();

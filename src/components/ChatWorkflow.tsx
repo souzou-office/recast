@@ -404,7 +404,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const res = await fetch("/api/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id }),
+        body: JSON.stringify({ companyId: company.id, threadId: currentThread.id }),
       });
       const reader = res.body?.getReader();
       if (reader) {

@@ -6,12 +6,30 @@ import { isPathDisabled } from "@/lib/disabled-filter";
 import { mimeFromExtension } from "@/lib/file-parsers";
 import path from "path";
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const mammoth = require("mammoth");
+
 const client = new Anthropic();
 
-// 案件整理の結果と書類を突合せ
+// 生成済みdocxのbase64からテキストを抽出
+async function extractDocxText(base64: string): Promise<string> {
+  try {
+    const buffer = Buffer.from(base64, "base64");
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+// 案件整理の結果と生成書類を突合せ
 export async function POST(request: NextRequest) {
-  const { companyId, fileIds } = await request.json() as { companyId: string; fileIds?: string[] };
-  const fileIdSet = fileIds ? new Set(fileIds) : null;
+  const { companyId, fileIds, caseRoomId, threadId } = await request.json() as {
+    companyId: string;
+    fileIds?: string[];
+    caseRoomId?: string;
+    threadId?: string;
+  };
 
   const config = await getWorkspaceConfig();
   const company = config.companies.find(c => c.id === companyId);
@@ -21,16 +39,43 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const masterSheet = company.masterSheet;
-  const profile = company.profile;
+  // スレッドから生成書類を取得（ChatWorkflow経由）
+  let threadDocs: { templateName: string; docxBase64: string; previewHtml: string; fileName: string }[] = [];
+  if (threadId) {
+    try {
+      const fs = await import("fs/promises");
+      const nodePath = await import("path");
+      const dataDir = nodePath.default.join(process.cwd(), "data", "chat-threads", companyId);
+      const threadFile = nodePath.default.join(dataDir, `${threadId}.json`);
+      const raw = await fs.default.readFile(threadFile, "utf-8");
+      const thread = JSON.parse(raw);
+      if (thread.generatedDocuments) threadDocs = thread.generatedDocuments;
+    } catch { /* ignore */ }
+  }
 
-  if (!masterSheet && !profile) {
-    return new Response(JSON.stringify({ error: "案件整理または基本情報を先に生成してください" }), {
+  const caseRoom = caseRoomId ? company.caseRooms?.find(r => r.id === caseRoomId) : null;
+  const masterSheet = caseRoom?.masterSheet || company.masterSheet;
+  const profile = company.profile;
+  const generatedDocuments = threadDocs.length > 0
+    ? threadDocs
+    : (caseRoom?.generatedDocuments || company.generatedDocuments || []);
+
+  if (generatedDocuments.length === 0) {
+    return new Response(JSON.stringify({ error: "生成済み書類がありません。先に書類を生成してください。" }), {
       status: 400, headers: { "Content-Type": "application/json" },
     });
   }
 
-  // 指定されたファイルを直接読み込み
+  // --- 1. 生成済み書類のテキスト抽出 ---
+  const generatedTexts: string[] = [];
+  for (const doc of generatedDocuments) {
+    const text = await extractDocxText(doc.docxBase64);
+    if (text) {
+      generatedTexts.push(`【生成書類: ${doc.fileName}】\n${text}`);
+    }
+  }
+
+  // --- 2. 原本ファイルの読み込み ---
   type ContentBlock =
     | { type: "text"; text: string }
     | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
@@ -53,10 +98,10 @@ export async function POST(request: NextRequest) {
         contentBlocks.push({
           type: "document",
           source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
-          title: fc.name,
+          title: `[原本] ${fc.name}`,
         });
       } else {
-        textParts.push(`【${fc.name}】\n${fc.content}`);
+        textParts.push(`【原本: ${fc.name}】\n${fc.content}`);
       }
     }
   } else {
@@ -80,7 +125,7 @@ export async function POST(request: NextRequest) {
           contentBlocks.push({
             type: "document",
             source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
-            title: `${isCommon ? "[基本情報]" : "[案件]"} ${fc.name}`,
+            title: `${isCommon ? "[原本/基本情報]" : "[原本/案件]"} ${fc.name}`,
           });
         } else {
           if (isCommon) {
@@ -91,64 +136,70 @@ export async function POST(request: NextRequest) {
         }
       }
     }
-    // textPartsに統合（区別付き）
     if (commonTexts.length > 0) {
-      textParts.push("=== 共通フォルダ（基本情報: 定款・登記簿・株主名簿等の会社基本情報）===\n" + commonTexts.join("\n\n"));
+      textParts.push("=== 原本: 共通フォルダ（定款・登記簿・株主名簿等の会社基本情報）===\n" + commonTexts.join("\n\n"));
     }
     if (caseTexts.length > 0) {
-      textParts.push("=== 案件フォルダ（今回の手続き内容: 議事録・指示書・スケジュール等）===\n" + caseTexts.join("\n\n"));
+      textParts.push("=== 原本: 案件フォルダ（今回の手続き内容: 議事録・指示書・スケジュール等）===\n" + caseTexts.join("\n\n"));
     }
   }
 
-  // マスターシートと基本情報をまとめる
+  // --- 3. 案件整理結果 ---
   const referenceData: Record<string, unknown> = {};
   if (profile?.structured) referenceData["基本情報"] = profile.structured;
   if (masterSheet?.structured) referenceData["案件整理結果"] = masterSheet.structured;
   if (masterSheet?.content) referenceData["案件整理テキスト"] = masterSheet.content;
 
-  const prompt = `以下の資料と生成書類を突合せチェックしてください。
-
-資料は2種類あります:
-- **共通フォルダ（基本情報）**: 定款・登記簿・株主名簿など、会社の基本的な情報
-- **案件フォルダ（手続き内容）**: 今回の手続きに関する議事録・指示書・スケジュール等
+  // --- 4. プロンプト構築 ---
+  const prompt = `以下の「原本（元資料）」と「生成済み書類（recastが作成した書類）」を突合せチェックしてください。
 
 ## 案件整理結果
 ${JSON.stringify(referenceData, null, 2)}
 
-## 資料・生成書類
+## 原本（元資料）
 ${textParts.join("\n\n")}
+
+## 生成済み書類（チェック対象）
+${generatedTexts.join("\n\n")}
 
 ## チェック観点（重要度順）
 
-### 1. 案件資料と生成書類の整合性
-- 案件フォルダの資料に記載されている情報と、生成された書類の記載が一致しているか
-- 日付、金額、人名、住所などの転記ミスがないか
+### 1. 原本と生成書類の整合性
+- 原本（定款・登記簿・株主名簿・議事録・指示書等）に記載されている情報と、生成書類の記載が一致しているか
+- 日付、金額、人名、住所、株数、持分比率などの転記ミスがないか
+- 原本に基づいて正しく計算されているか（株数の合計、議決権数など）
 
 ### 2. 生成書類間の整合性
-- 複数の書類間で、同じ情報（日付、人名、会社名等）が一致しているか
+- 複数の生成書類間で、同じ情報（日付、人名、会社名等）が一致しているか
 - ある書類で記載した内容が、別の書類と矛盾していないか
 
-### 3. 記載漏れ
+### 3. 記載漏れ・形式
 - 「（要確認）」が残っている箇所
+- 必要な情報が空欄や未記入のまま
 
 ## 出力フォーマット
 1. 総合判定（✅ 問題なし or ❌ 要確認あり）
 
 2. 問題がある場合のみ、表で報告:
 
-| チェック観点 | 書類 | 問題内容 | 重要度 |
-|------------|------|---------|--------|
+| チェック観点 | 生成書類 | 問題内容 | 原本の正しい値 | 重要度 |
+|------------|---------|---------|--------------|--------|
 
 重要度: 🔴重大 / 🟡注意 / 🔵軽微
 
-3. 問題なしの場合は「全書類間で整合性が取れています」と簡潔に
+3. 問題なしの場合は「全書類の記載内容が原本と一致しています」と簡潔に
 
 ルール:
-- 問題のない項目は一切記載しない（登記簿の内容を羅列しない）
-- 問題がある箇所だけ報告
+- 問題のない項目は一切記載しない
+- 問題がある箇所だけ、原本の正しい値と合わせて報告
 - 簡潔に`;
 
   contentBlocks.push({ type: "text", text: prompt });
+
+  // 生成書類のファイル名もsourceFilesに追加（リンク用）
+  for (const doc of generatedDocuments) {
+    sourceFiles.push({ id: `generated:${doc.fileName}`, name: `[生成] ${doc.fileName}`, mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
