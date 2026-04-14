@@ -313,12 +313,9 @@ JSONで返してください。基本は全て文字列値です。
               rawData[key] = toHalfWidth(stripDuplicatedUnit(v, key, df.content));
             }
             const zip = new PizZip(rawBuffer);
-
-            // 1) 置換前にプレースホルダーを含む共有文字列<si>のインデックスを記録
-            //    （数値判定で「もとから数字に見えただけ」のセルを書き換えないため）
-            const placeholderSiIndexes = new Set<number>();
             const ssPath = "xl/sharedStrings.xml";
-            let ssXml = zip.file(ssPath)?.asText();
+
+            // <si>内の全<t>テキストを結合して返すヘルパー
             const extractSiText = (siInner: string): string => {
               const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
               let text = "";
@@ -326,23 +323,8 @@ JSONで返してください。基本は全て文字列値です。
               while ((tm = tRegex.exec(siInner)) !== null) text += tm[1];
               return text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
             };
-            if (ssXml) {
-              const siRegex = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
-              let m: RegExpExecArray | null;
-              let i = 0;
-              while ((m = siRegex.exec(ssXml)) !== null) {
-                const decoded = extractSiText(m[1]);
-                for (const key of Object.keys(rawData)) {
-                  if (decoded.includes(`【${key}】`) || decoded.includes(`{{${key}}}`) || decoded.includes(`｛｛${key}｝｝`)) {
-                    placeholderSiIndexes.add(i);
-                    break;
-                  }
-                }
-                i++;
-              }
-            }
 
-            // 2) 既存の文字列置換（XMLエスケープ付き）
+            // 1) 文字列置換（XMLエスケープ付き）
             const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
             for (const fileName of Object.keys(zip.files)) {
               if (fileName.endsWith(".xml") || fileName.endsWith(".xml.rels")) {
@@ -364,26 +346,24 @@ JSONで返してください。基本は全て文字列値です。
               }
             }
 
-            // 3) 置換後のsharedStringsから数値化された<si>を検出
-            const numericSiIndexes = new Map<number, string>(); // si index → 数値文字列
-            ssXml = zip.file(ssPath)?.asText();
-            if (ssXml && placeholderSiIndexes.size > 0) {
+            // 2) 全共有文字列をスキャンし、純数値のものを検出（プレースホルダー有無を問わない）
+            const numericSiIndexes = new Map<number, string>();
+            const ssXml = zip.file(ssPath)?.asText();
+            if (ssXml) {
               const siRegex = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
               let m: RegExpExecArray | null;
               let i = 0;
               while ((m = siRegex.exec(ssXml)) !== null) {
-                if (placeholderSiIndexes.has(i)) {
-                  const decoded = extractSiText(m[1]);
-                  const cleaned = decoded.replace(/,/g, "").trim();
-                  if (cleaned !== "" && /^-?\d+(\.\d+)?$/.test(cleaned)) {
-                    numericSiIndexes.set(i, cleaned);
-                  }
+                const decoded = extractSiText(m[1]);
+                const cleaned = decoded.replace(/,/g, "").trim();
+                if (cleaned !== "" && /^-?\d+(\.\d+)?$/.test(cleaned)) {
+                  numericSiIndexes.set(i, cleaned);
                 }
                 i++;
               }
             }
 
-            // 4) 数値化したsiを参照するt="s"セルを数値型セルへ書き換え
+            // 3) 純数値の共有文字列を参照するt="s"セルを数値型セルへ書き換え
             if (numericSiIndexes.size > 0) {
               for (const fileName of Object.keys(zip.files)) {
                 if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
