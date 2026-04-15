@@ -315,12 +315,15 @@ JSONで返してください。基本は全て文字列値です。
             const zip = new PizZip(rawBuffer);
             const ssPath = "xl/sharedStrings.xml";
 
-            // <si>内の全<t>テキストを結合して返すヘルパー
+            // <si>内の本文<t>テキストを結合して返す（<rPh>=ふりがなと<phoneticPr>内の<t>は除外）
             const extractSiText = (siInner: string): string => {
+              const stripped = siInner
+                .replace(/<rPh\b[\s\S]*?<\/rPh>/g, "")
+                .replace(/<phoneticPr\b[^>]*\/>/g, "");
               const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
               let text = "";
               let tm: RegExpExecArray | null;
-              while ((tm = tRegex.exec(siInner)) !== null) text += tm[1];
+              while ((tm = tRegex.exec(stripped)) !== null) text += tm[1];
               return text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
             };
 
@@ -392,13 +395,23 @@ JSONで返してください。基本は全て文字列値です。
               }
             }
 
-            // 3) 純数値の共有文字列を参照するt="s"セルを数値型セルへ書き換え
-            if (numericSiIndexes.size > 0) {
-              for (const fileName of Object.keys(zip.files)) {
-                if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
-                let sheetXml = zip.file(fileName)?.asText();
-                if (!sheetXml) continue;
-                let sheetChanged = false;
+            // 3) 全シートを走査してセル型を正規化
+            //    - t="s" で純数値の共有文字列を参照 → 数値型
+            //    - t="inlineStr" で純数値 → 数値型
+            //    - t無し (デフォルト) で <v> が純数値 → そのまま（Excel的に既に数値）
+            const isNumericStr = (s: string): string | null => {
+              const cleaned = s.replace(/,/g, "").trim();
+              if (cleaned === "") return null;
+              return /^-?\d+(\.\d+)?$/.test(cleaned) ? cleaned : null;
+            };
+            for (const fileName of Object.keys(zip.files)) {
+              if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
+              let sheetXml = zip.file(fileName)?.asText();
+              if (!sheetXml) continue;
+              let sheetChanged = false;
+
+              // t="s" セル → 数値型へ
+              if (numericSiIndexes.size > 0) {
                 sheetXml = sheetXml.replace(
                   /<c\b([^>]*\bt="s"[^>]*)>\s*<v>(\d+)<\/v>\s*<\/c>/g,
                   (whole: string, attrs: string, idxStr: string) => {
@@ -409,7 +422,72 @@ JSONで返してください。基本は全て文字列値です。
                     return `<c${newAttrs}><v>${num}</v></c>`;
                   }
                 );
-                if (sheetChanged) zip.file(fileName, sheetXml);
+              }
+
+              // t="inlineStr" セル → 純数値なら数値型へ
+              sheetXml = sheetXml.replace(
+                /<c\b([^>]*\bt="inlineStr"[^>]*)>\s*<is>([\s\S]*?)<\/is>\s*<\/c>/g,
+                (whole: string, attrs: string, isInner: string) => {
+                  const text = extractSiText(isInner);
+                  const num = isNumericStr(text);
+                  if (num === null) return whole;
+                  sheetChanged = true;
+                  const newAttrs = attrs.replace(/\s*\bt="inlineStr"/, "");
+                  return `<c${newAttrs}><v>${num}</v></c>`;
+                }
+              );
+
+              // 数式キャッシュのクリア: <f>...</f> の直後にある <v>...</v> を削除し、
+              // セルが t="e" (エラーキャッシュ) なら t 属性も除去する。Excel が再計算する。
+              sheetXml = sheetXml.replace(
+                /<c\b([^>]*)>(\s*<f\b[^>]*>[\s\S]*?<\/f>)\s*<v>[^<]*<\/v>\s*<\/c>/g,
+                (_whole: string, attrs: string, fEl: string) => {
+                  sheetChanged = true;
+                  const newAttrs = attrs.replace(/\s*\bt="[^"]*"/, "");
+                  return `<c${newAttrs}>${fEl}</c>`;
+                }
+              );
+
+              if (sheetChanged) zip.file(fileName, sheetXml);
+            }
+
+            // 4) sharedStrings.xml の不整合な <rPh>（本文長を超えるオフセット）を除去。
+            //    置換によって本文が短くなり元のふりがなオフセットが範囲外になると Excel が
+            //    「修復が必要」警告を出し、再計算もスキップするため。
+            {
+              const ssNowPath = ssPath;
+              const ssNow = zip.file(ssNowPath)?.asText();
+              if (ssNow) {
+                const fixed = ssNow.replace(
+                  /<si\b[^>]*>([\s\S]*?)<\/si>/g,
+                  (whole: string, siInner: string) => {
+                    const stripped = siInner
+                      .replace(/<rPh\b[\s\S]*?<\/rPh>/g, "")
+                      .replace(/<phoneticPr\b[^>]*\/>/g, "");
+                    const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+                    let mainText = "";
+                    let tm: RegExpExecArray | null;
+                    while ((tm = tRegex.exec(stripped)) !== null) mainText += tm[1];
+                    const mainLen = mainText
+                      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+                      .replace(/&quot;/g, '"').replace(/&apos;/g, "'").length;
+                    // rPh のオフセットが範囲外なら除去
+                    const cleanedInner = siInner.replace(
+                      /<rPh\b([^>]*)>[\s\S]*?<\/rPh>/g,
+                      (rphWhole: string, rphAttrs: string) => {
+                        const sbMatch = rphAttrs.match(/\bsb="(\d+)"/);
+                        const ebMatch = rphAttrs.match(/\beb="(\d+)"/);
+                        if (!sbMatch || !ebMatch) return rphWhole;
+                        const sb = parseInt(sbMatch[1], 10);
+                        const eb = parseInt(ebMatch[1], 10);
+                        if (sb >= mainLen || eb > mainLen || sb >= eb) return "";
+                        return rphWhole;
+                      }
+                    );
+                    return whole.replace(siInner, cleanedInner);
+                  }
+                );
+                if (fixed !== ssNow) zip.file(ssNowPath, fixed);
               }
             }
 

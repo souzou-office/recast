@@ -45,7 +45,10 @@ export async function POST(request: NextRequest) {
     try {
       const fs = await import("fs/promises");
       const nodePath = await import("path");
-      const dataDir = nodePath.default.join(process.cwd(), "data", "chat-threads", companyId);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const crypto = require("crypto");
+      const companyHash = crypto.createHash("md5").update(companyId).digest("hex");
+      const dataDir = nodePath.default.join(process.cwd(), "data", "chat-threads", companyHash);
       const threadFile = nodePath.default.join(dataDir, `${threadId}.json`);
       const raw = await fs.default.readFile(threadFile, "utf-8");
       const thread = JSON.parse(raw);
