@@ -13,6 +13,7 @@ const PizZip = require("pizzip");
 const client = new Anthropic();
 
 // テンプレートからプレースホルダーを抽出（【】{{}} ＜＞ ［］ {} <> [] 全対応）
+// 条件分岐マーカー（#flag / /flag で始まるもの）は除外
 function extractPlaceholders(text: string): { raw: string; name: string; delimiters: [string, string] }[] {
   const patterns = [
     { regex: /【([^】]+)】/g, start: "【", end: "】" },
@@ -26,12 +27,32 @@ function extractPlaceholders(text: string): { raw: string; name: string; delimit
     let m;
     while ((m = p.regex.exec(text)) !== null) {
       const name = m[1].trim();
+      // 条件分岐マーカーは除外（例: #出資者は法人, /出資者は法人）
+      if (name.startsWith("#") || name.startsWith("/")) continue;
       if (!found.has(name)) {
         found.set(name, { raw: m[0], name, delimiters: [p.start, p.end] });
       }
     }
   }
   return Array.from(found.values());
+}
+
+// 条件分岐フラグを抽出（{{#flag}}...{{/flag}} のflag部分）
+function extractConditionFlags(text: string): string[] {
+  const flags = new Set<string>();
+  // {{}}, ｛｛｝｝ の両形式で #flag を検出
+  const patterns = [
+    /\{\{#([^}\/]+)\}\}/g,
+    /｛｛#([^｝\/]+)｝｝/g,
+    /【#([^】\/]+)】/g,
+  ];
+  for (const p of patterns) {
+    let m;
+    while ((m = p.exec(text)) !== null) {
+      flags.add(m[1].trim());
+    }
+  }
+  return Array.from(flags);
 }
 
 // 半角英数字→全角変換
@@ -42,15 +63,21 @@ function toFullWidth(str: string): string {
 }
 
 // 全角英数字・記号→半角変換（Excel用: 数値・数式が壊れないように）
+// 最終値が「純数値」「日付」でなければ、英数字を全角に戻して見た目を整える
 function toHalfWidth(str: string): string {
   let result = str
     .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
     .replace(/．/g, ".").replace(/，/g, ",").replace(/－/g, "-").replace(/＋/g, "+")
     .replace(/（/g, "(").replace(/）/g, ")").replace(/％/g, "%").replace(/＆/g, "&")
     .replace(/　/g, " ");
-  // 日付文字列（年・月日を含む）は数字を全角に戻す
-  if (/年/.test(result) || (/月/.test(result) && /日/.test(result))) {
+  const isPureNumber = /^-?[\d,]+(\.\d+)?$/.test(result.trim());
+  const isDate = /年/.test(result) || (/月/.test(result) && /日/.test(result));
+  if (isDate) {
+    // 日付は数字を全角に
     result = result.replace(/[0-9]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
+  } else if (!isPureNumber) {
+    // テキスト扱いの値（会社名・住所・氏名等）は英数字を全角に戻す
+    result = result.replace(/[A-Za-z0-9]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
   }
   return result;
 }
@@ -82,12 +109,13 @@ function stripDuplicatedUnit(value: string, key: string, templateContent: string
 
 // テンプレートフォルダ + マスターシート → 書類生成
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath, mode, caseRoomId, masterContent: directMasterContent } = await request.json() as {
+  const { companyId, templateFolderPath, mode, caseRoomId, masterContent: directMasterContent, confirmedAnswers } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
     mode?: "fill" | "generate";
     caseRoomId?: string;
     masterContent?: string;
+    confirmedAnswers?: Record<string, string>;
   };
 
   const config = await getWorkspaceConfig();
@@ -164,11 +192,25 @@ export async function POST(request: NextRequest) {
     // AIにプレースホルダーの値を一括生成させる
     const placeholderEntries = Array.from(allPlaceholders.values());
     const placeholderList = placeholderEntries.map(p => `- ${p.name}`).join("\n");
+
+    // 条件分岐フラグを全docxから収集
+    const allConditionFlags = new Set<string>();
+    for (const df of docxFiles) {
+      for (const f of extractConditionFlags(df.content)) allConditionFlags.add(f);
+    }
+    const conditionFlagList = Array.from(allConditionFlags);
+
     // テンプレートの内容を渡す（プレースホルダーの前後の文脈をAIが理解するため）
     const templateContents = docxFiles
       .filter(f => f.content && !f.base64)
       .map(f => `【${f.name}】\n${f.content}`)
       .join("\n\n");
+
+    // ユーザーが確定した値（clarifyで回答済み）
+    const confirmedBlock = confirmedAnswers && Object.keys(confirmedAnswers).length > 0
+      ? `\n## ユーザー確定済みの値（これらは絶対にこの値を使う。再解釈しない）\n` +
+        Object.entries(confirmedAnswers).map(([k, v]) => `- 【${k}】: ${v}`).join("\n") + "\n"
+      : "";
 
     const prompt = `以下の会社データから、テンプレートのプレースホルダーに入る値をJSON形式で返してください。
 
@@ -177,12 +219,13 @@ ${dataContext}
 ${directMasterContent ? `\n## 案件整理テキスト（最新）\n${directMasterContent}\n` : masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
 ${globalMemo ? `\n## 共通ルール\n${globalMemo}\n` : ""}
 ${memoText ? `\n## テンプレート注意事項\n${memoText}\n` : ""}
-
+${confirmedBlock}
 ## テンプレート内容（プレースホルダーの前後の文脈を参照してください）
 ${templateContents}
 
 ## プレースホルダー一覧
 ${placeholderList}
+${conditionFlagList.length > 0 ? `\n## 条件分岐フラグ一覧（真偽値 true/false で返すこと）\n${conditionFlagList.map(f => `- ${f}`).join("\n")}\n\n条件分岐: テンプレート内の {{#フラグ名}}...{{/フラグ名}} はフラグが true のときだけ中身が残る。文脈から判断して true/false を決めて返すこと。例: 出資者が法人なら \`"出資者は法人": true, "出資者は個人": false\`\n` : ""}
 
 ## 回答形式
 JSONで返してください。基本は全て文字列値です。
@@ -212,7 +255,7 @@ JSONで返してください。基本は全て文字列値です。
   "株主の住所": ["東京都...", "大阪府..."]
 }
 
-データにない情報は "（要確認）" としてください。`;
+データにない情報は "（要確認）" としてください。ただし上の「ユーザー確定済みの値」に該当するプレースホルダーは必ずその値を使うこと。`;
 
     try {
       const response = await client.messages.create({
@@ -229,7 +272,25 @@ JSONで返してください。基本は全て文字列値です。
         });
       }
 
-      const values: Record<string, string | string[]> = JSON.parse(jsonMatch[0]);
+      const values: Record<string, string | string[] | boolean> = JSON.parse(jsonMatch[0]);
+
+      // 文字列で "true"/"false" が返ってきた場合は boolean に変換
+      // ただし「conditionFlagList に含まれる名前」だけ対象（通常の値で "true" 等を持つ可能性を考慮）
+      const conditionFlagSet = new Set(conditionFlagList);
+      for (const [key, value] of Object.entries(values)) {
+        if (conditionFlagSet.has(key) && typeof value === "string") {
+          const v = value.toLowerCase().trim();
+          if (v === "true" || v === "1" || v === "はい" || v === "yes") values[key] = true;
+          else if (v === "false" || v === "0" || v === "いいえ" || v === "no") values[key] = false;
+        }
+      }
+
+      // 条件フラグ（boolean値）を分離
+      const conditionFlags: Record<string, boolean> = {};
+      for (const [key, value] of Object.entries(values)) {
+        if (typeof value === "boolean") conditionFlags[key] = value;
+      }
+      console.log("[produce] condition flags:", conditionFlags);
 
       // 配列のキーを特定
       const arrayKeys = new Set<string>();
@@ -241,14 +302,18 @@ JSONで返してください。基本は全て文字列値です。
         }
       }
 
-      // 1通分の共通データ（配列は最初の値を使用）
-      const singleData: Record<string, string> = {};
+      // 1通分の共通データ（配列は最初の値を使用、booleanはそのまま）
+      const singleData: Record<string, string | boolean> = {};
       for (const [key, value] of Object.entries(values)) {
-        singleData[key] = toFullWidth(Array.isArray(value) ? value[0] || "（要確認）" : value);
+        if (typeof value === "boolean") {
+          singleData[key] = value;
+        } else {
+          singleData[key] = toFullWidth(Array.isArray(value) ? value[0] || "（要確認）" : value);
+        }
       }
 
       // ファイルごとに通数を判断する関数
-      function getDataSetsForFile(fileContent: string): Record<string, string>[] {
+      function getDataSetsForFile(fileContent: string): Record<string, string | boolean>[] {
         if (arrayKeys.size === 0) return [singleData];
         // このファイルに配列キーのプレースホルダーが含まれるか
         let hasArrayPlaceholder = false;
@@ -262,11 +327,13 @@ JSONで返してください。基本は全て文字列値です。
         if (!hasArrayPlaceholder) return [singleData]; // 配列プレースホルダーなし→1通
 
         // 配列プレースホルダーあり→人数分
-        const sets: Record<string, string>[] = [];
+        const sets: Record<string, string | boolean>[] = [];
         for (let c = 0; c < maxCopies; c++) {
-          const data: Record<string, string> = {};
+          const data: Record<string, string | boolean> = {};
           for (const [key, value] of Object.entries(values)) {
-            if (Array.isArray(value)) {
+            if (typeof value === "boolean") {
+              data[key] = value;
+            } else if (Array.isArray(value)) {
               data[key] = toFullWidth(value[c] || "（要確認）");
             } else {
               data[key] = toFullWidth(value);
@@ -277,11 +344,12 @@ JSONで返してください。基本は全て文字列値です。
         return sets;
       }
 
-      // 後方互換用ダミー
+      // 後方互換用ダミー（条件フラグは含めない - Excel用）
       const templateDataSets = [singleData]; // デフォルト（Excel用等）
       for (let c = 0; c < 1; c++) {
         const data: Record<string, string> = {};
         for (const [key, value] of Object.entries(values)) {
+          if (typeof value === "boolean") continue;
           data[key] = toFullWidth(Array.isArray(value) ? value[0] || "（要確認）" : value);
         }
         templateDataSets.push(data);
@@ -309,6 +377,7 @@ JSONで返してください。基本は全て文字列値です。
             // Excel: 全角→半角統一（数値・数式が正しく動くように）
             const rawData: Record<string, string> = {};
             for (const [key, value] of Object.entries(values)) {
+              if (typeof value === "boolean") continue; // 条件フラグはExcelでは使わない
               const v = Array.isArray(value) ? value[0] || "（要確認）" : value;
               rawData[key] = toHalfWidth(stripDuplicatedUnit(v, key, df.content));
             }
@@ -351,30 +420,17 @@ JSONで返してください。基本は全て文字列値です。
               }
             }
 
-            // 1b) 置換された<si>要素からルビ（rPh/phoneticPr）を除去
-            //     置換後のテキスト長とルビのsb/eb範囲が不整合になり修復エラーの原因になるため
+            // 1b) sharedStrings.xml からルビ（rPh/phoneticPr）を全削除
+            //     置換によるオフセット不整合でExcelが修復警告を出すのを根絶するため、
+            //     条件判定せず無条件に潰す。ふりがなは出力書類で不要。
             {
-              let ssContent = zip.file(ssPath)?.asText();
+              const ssContent = zip.file(ssPath)?.asText();
               if (ssContent) {
-                let ssChanged = false;
-                ssContent = ssContent.replace(
-                  /<si\b[^>]*>([\s\S]*?)<\/si>/g,
-                  (siTag: string, inner: string) => {
-                    // この<si>に置換された値が含まれているかチェック
-                    const hasReplaced = Array.from(replacedKeys).some(v => inner.includes(v));
-                    if (!hasReplaced) return siTag;
-                    // rPhとphoneticPrを除去
-                    const cleaned = inner
-                      .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
-                      .replace(/<phoneticPr\b[^/]*\/>/g, "");
-                    if (cleaned !== inner) {
-                      ssChanged = true;
-                      return `<si>${cleaned}</si>`;
-                    }
-                    return siTag;
-                  }
-                );
-                if (ssChanged) zip.file(ssPath, ssContent);
+                const cleaned = ssContent
+                  .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
+                  .replace(/<phoneticPr\b[^>]*\/>/g, "")
+                  .replace(/<phoneticPr\b[^>]*>[\s\S]*?<\/phoneticPr>/g, "");
+                if (cleaned !== ssContent) zip.file(ssPath, cleaned);
               }
             }
 
@@ -437,10 +493,9 @@ JSONで返してください。基本は全て文字列値です。
                 }
               );
 
-              // 数式キャッシュのクリア: <f>...</f> の直後にある <v>...</v> を削除し、
-              // セルが t="e" (エラーキャッシュ) なら t 属性も除去する。Excel が再計算する。
+              // 数式キャッシュのクリア
               sheetXml = sheetXml.replace(
-                /<c\b([^>]*)>(\s*<f\b[^>]*>[\s\S]*?<\/f>)\s*<v>[^<]*<\/v>\s*<\/c>/g,
+                /<c\b([^>]*)>(\s*<f\b[^>]*(?:\/>|>[\s\S]*?<\/f>))\s*<v>[^<]*<\/v>\s*<\/c>/g,
                 (_whole: string, attrs: string, fEl: string) => {
                   sheetChanged = true;
                   const newAttrs = attrs.replace(/\s*\bt="[^"]*"/, "");
@@ -449,46 +504,6 @@ JSONで返してください。基本は全て文字列値です。
               );
 
               if (sheetChanged) zip.file(fileName, sheetXml);
-            }
-
-            // 4) sharedStrings.xml の不整合な <rPh>（本文長を超えるオフセット）を除去。
-            //    置換によって本文が短くなり元のふりがなオフセットが範囲外になると Excel が
-            //    「修復が必要」警告を出し、再計算もスキップするため。
-            {
-              const ssNowPath = ssPath;
-              const ssNow = zip.file(ssNowPath)?.asText();
-              if (ssNow) {
-                const fixed = ssNow.replace(
-                  /<si\b[^>]*>([\s\S]*?)<\/si>/g,
-                  (whole: string, siInner: string) => {
-                    const stripped = siInner
-                      .replace(/<rPh\b[\s\S]*?<\/rPh>/g, "")
-                      .replace(/<phoneticPr\b[^>]*\/>/g, "");
-                    const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
-                    let mainText = "";
-                    let tm: RegExpExecArray | null;
-                    while ((tm = tRegex.exec(stripped)) !== null) mainText += tm[1];
-                    const mainLen = mainText
-                      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-                      .replace(/&quot;/g, '"').replace(/&apos;/g, "'").length;
-                    // rPh のオフセットが範囲外なら除去
-                    const cleanedInner = siInner.replace(
-                      /<rPh\b([^>]*)>[\s\S]*?<\/rPh>/g,
-                      (rphWhole: string, rphAttrs: string) => {
-                        const sbMatch = rphAttrs.match(/\bsb="(\d+)"/);
-                        const ebMatch = rphAttrs.match(/\beb="(\d+)"/);
-                        if (!sbMatch || !ebMatch) return rphWhole;
-                        const sb = parseInt(sbMatch[1], 10);
-                        const eb = parseInt(ebMatch[1], 10);
-                        if (sb >= mainLen || eb > mainLen || sb >= eb) return "";
-                        return rphWhole;
-                      }
-                    );
-                    return whole.replace(siInner, cleanedInner);
-                  }
-                );
-                if (fixed !== ssNow) zip.file(ssNowPath, fixed);
-              }
             }
 
             // 4) sharedStrings.xmlのcount属性を実際のt="s"参照数に合わせて更新
@@ -509,6 +524,31 @@ JSONで返してください。基本は全て文字列値です。
               if (updatedSsXml !== currentSsXml) zip.file(ssPath, updatedSsXml);
             }
 
+            // 5) calcChain.xml を削除（式や参照を変更したため古い計算チェーンは不整合になる）
+            //    これが残っているとExcelが「修復が必要」警告を出す。削除すればExcelが開いたとき再生成する。
+            if (zip.file("xl/calcChain.xml")) {
+              zip.remove("xl/calcChain.xml");
+              // workbook.xml.rels から calcChain への参照も削除
+              const relsPath = "xl/_rels/workbook.xml.rels";
+              const relsXml = zip.file(relsPath)?.asText();
+              if (relsXml) {
+                const cleanedRels = relsXml.replace(
+                  /<Relationship\b[^>]*\bTarget="calcChain\.xml"[^>]*\/>/g,
+                  ""
+                );
+                if (cleanedRels !== relsXml) zip.file(relsPath, cleanedRels);
+              }
+              // [Content_Types].xml から calcChain の宣言も削除
+              const ctPath = "[Content_Types].xml";
+              const ctXml = zip.file(ctPath)?.asText();
+              if (ctXml) {
+                const cleanedCt = ctXml.replace(
+                  /<Override\b[^>]*\bPartName="\/xl\/calcChain\.xml"[^>]*\/>/g,
+                  ""
+                );
+                if (cleanedCt !== ctXml) zip.file(ctPath, cleanedCt);
+              }
+            }
 
             const outputBuffer = zip.generate({ type: "nodebuffer" });
             const outputName = `${company.name}_${baseName}.xlsx`;
@@ -535,17 +575,37 @@ JSONで返してください。基本は全て文字列値です。
             }
 
             const filePlaceholders = extractPlaceholders(df.content);
-            const delims = filePlaceholders.length > 0 ? filePlaceholders[0].delimiters : ["【", "】"];
+            // デリミタは自動で選ばず、常に {{ / }} に統一する（全角 ｛｛ ｝｝ は事前に正規化）
+            const delims: [string, string] = ["{{", "}}"];
+            // 後方互換: filePlaceholders は未使用だが型整合のために参照
+            void filePlaceholders;
 
             // ファイルごとに通数を判断して個別生成
             const fileSets = getDataSetsForFile(df.content);
             for (let c = 0; c < fileSets.length; c++) {
               // テンプレ側に既にある単位をAI値が重複させていたら除去
-              const templateData: Record<string, string> = {};
+              // 条件フラグ(boolean)はそのまま、文字列値はstripDuplicatedUnit適用
+              const templateData: Record<string, string | boolean> = {};
               for (const [key, val] of Object.entries(fileSets[c])) {
-                templateData[key] = stripDuplicatedUnit(val, key, df.content);
+                if (typeof val === "boolean") {
+                  templateData[key] = val;
+                } else {
+                  templateData[key] = stripDuplicatedUnit(val, key, df.content);
+                }
               }
               const zip = new PizZip(wordBuffer);
+              // 全角のデリミタ（｛｛ ｝｝ 【 】 ＜ ＞ ［ ］）を docxtemplater が理解できる半角 {{ }} に正規化
+              for (const fileName of Object.keys(zip.files)) {
+                if (!fileName.endsWith(".xml") && !fileName.endsWith(".xml.rels")) continue;
+                const content = zip.file(fileName)?.asText();
+                if (!content) continue;
+                const normalized = content
+                  .replace(/｛｛/g, "{{")
+                  .replace(/｝｝/g, "}}")
+                  .replace(/【/g, "{{")
+                  .replace(/】/g, "}}");
+                if (normalized !== content) zip.file(fileName, normalized);
+              }
               const doc = new Docxtemplater(zip, {
                 delimiters: { start: delims[0], end: delims[1] },
                 paragraphLoop: true,
@@ -573,7 +633,12 @@ JSONで返してください。基本は全て文字列値です。
               });
             }
           }
-        } catch { /* skip failed template */ }
+        } catch (err) {
+          console.error(`[produce] skipped template ${df.name}:`, err instanceof Error ? err.message : err);
+          if (err instanceof Error && "properties" in err) {
+            console.error(`[produce] docxtemplater properties:`, JSON.stringify((err as { properties: unknown }).properties, null, 2));
+          }
+        }
       }
 
       return new Response(JSON.stringify({ documents }), {

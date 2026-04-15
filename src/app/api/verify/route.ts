@@ -39,8 +39,10 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // スレッドから生成書類を取得（ChatWorkflow経由）
+  // スレッドから生成書類・Q&A・テンプレートパスを取得
   let threadDocs: { templateName: string; docxBase64: string; previewHtml: string; fileName: string }[] = [];
+  let threadQA: { question: string; answer: string }[] = [];
+  let threadTemplatePath: string | undefined;
   if (threadId) {
     try {
       const fs = await import("fs/promises");
@@ -53,6 +55,27 @@ export async function POST(request: NextRequest) {
       const raw = await fs.default.readFile(threadFile, "utf-8");
       const thread = JSON.parse(raw);
       if (thread.generatedDocuments) threadDocs = thread.generatedDocuments;
+      // clarification カードから Q&A を収集
+      type Q = { id: string; placeholder: string; question: string; selectedOptionId?: string; manualInput?: string; options: { id: string; label: string }[] };
+      type Card = { type: string; questions?: Q[]; selectedPath?: string };
+      for (const m of thread.messages || []) {
+        for (const c of (m.cards || []) as Card[]) {
+          if (c.type === "clarification" && c.questions) {
+            for (const q of c.questions) {
+              let ans = "";
+              if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+              else if (q.selectedOptionId) {
+                const opt = q.options.find(o => o.id === q.selectedOptionId);
+                ans = opt?.label || "";
+              }
+              if (ans) threadQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+            }
+          }
+          if (c.type === "template-select" && c.selectedPath) {
+            threadTemplatePath = c.selectedPath;
+          }
+        }
+      }
     } catch { /* ignore */ }
   }
 
@@ -81,14 +104,32 @@ export async function POST(request: NextRequest) {
   // --- 2. 原本ファイルの読み込み ---
   type ContentBlock =
     | { type: "text"; text: string }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
+    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
+  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
   const contentBlocks: ContentBlock[] = [];
   const textParts: string[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
+  const pushBase64File = (fc: { name: string; mimeType?: string; base64: string }, title: string) => {
+    const mime = fc.mimeType || "application/pdf";
+    if (mime === "application/pdf") {
+      contentBlocks.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: fc.base64 },
+        title,
+      });
+    } else if (IMAGE_MIMES.has(mime)) {
+      contentBlocks.push({
+        type: "image",
+        source: { type: "base64", media_type: mime, data: fc.base64 },
+      });
+    }
+  };
+
   if (fileIds && fileIds.length > 0) {
-    // ファイルパスが指定されている場合、直接読む
     for (const filePath of fileIds) {
       const fc = await readFileContent(filePath);
       if (!fc) continue;
@@ -98,11 +139,7 @@ export async function POST(request: NextRequest) {
       sourceFiles.push({ id: fc.path, name: fc.name, mimeType: mime });
 
       if (fc.base64) {
-        contentBlocks.push({
-          type: "document",
-          source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
-          title: `[原本] ${fc.name}`,
-        });
+        pushBase64File({ name: fc.name, mimeType: fc.mimeType, base64: fc.base64 }, `[原本] ${fc.name}`);
       } else {
         textParts.push(`【原本: ${fc.name}】\n${fc.content}`);
       }
@@ -125,11 +162,7 @@ export async function POST(request: NextRequest) {
         sourceFiles.push({ id: fc.path, name: fc.name, mimeType: fc.mimeType || "application/octet-stream" });
 
         if (fc.base64) {
-          contentBlocks.push({
-            type: "document",
-            source: { type: "base64", media_type: fc.mimeType || "application/pdf", data: fc.base64 },
-            title: `${isCommon ? "[原本/基本情報]" : "[原本/案件]"} ${fc.name}`,
-          });
+          pushBase64File({ name: fc.name, mimeType: fc.mimeType, base64: fc.base64 }, `${isCommon ? "[原本/基本情報]" : "[原本/案件]"} ${fc.name}`);
         } else {
           if (isCommon) {
             commonTexts.push(`【${fc.name}】\n${fc.content}`);
@@ -153,9 +186,43 @@ export async function POST(request: NextRequest) {
   if (masterSheet?.structured) referenceData["案件整理結果"] = masterSheet.structured;
   if (masterSheet?.content) referenceData["案件整理テキスト"] = masterSheet.content;
 
+  // --- 3b. テンプレート注意事項・共通ルール（メモ類） ---
+  let templateMemoBlock = "";
+  let globalMemoBlock = "";
+  if (threadTemplatePath) {
+    try {
+      const templateFiles = await readAllFilesInFolder(threadTemplatePath);
+      const templateMemo = templateFiles
+        .filter(f => !f.base64 && (f.name.endsWith(".txt") || f.name.endsWith(".md")))
+        .map(f => `【${f.name}】\n${f.content}`)
+        .join("\n\n");
+      if (templateMemo) templateMemoBlock = `\n## テンプレート注意事項（チェック観点の源泉）\n${templateMemo}\n`;
+    } catch { /* ignore */ }
+  }
+  if (config.templateBasePath) {
+    try {
+      const { listFiles: listLocalFiles, readFileContent: readLocal } = await import("@/lib/files");
+      const parentFiles = await listLocalFiles(config.templateBasePath);
+      let memo = "";
+      for (const f of parentFiles) {
+        if (!f.isDirectory && (f.name.endsWith(".txt") || f.name.endsWith(".md"))) {
+          const content = await readLocal(f.path);
+          if (content) memo += `【共通ルール: ${f.name}】\n${content.content}\n\n`;
+        }
+      }
+      if (memo) globalMemoBlock = `\n## 共通ルール（最優先）\n${memo}\n`;
+    } catch { /* ignore */ }
+  }
+
+  // --- 3c. これまでのQ&A（ユーザーが既に確定した内容） ---
+  const qaBlock = threadQA.length > 0
+    ? `\n## ユーザー確定済みの回答（チェック時の前提。これらの値は正しいものとして扱う）\n` +
+      threadQA.map(qa => `- Q: ${qa.question}\n  A: ${qa.answer}`).join("\n") + "\n"
+    : "";
+
   // --- 4. プロンプト構築 ---
   const prompt = `以下の「原本（元資料）」と「生成済み書類（recastが作成した書類）」を突合せチェックしてください。
-
+${globalMemoBlock}${templateMemoBlock}${qaBlock}
 ## 案件整理結果
 ${JSON.stringify(referenceData, null, 2)}
 
@@ -167,10 +234,15 @@ ${generatedTexts.join("\n\n")}
 
 ## チェック観点（重要度順）
 
+### 0. テンプレート注意事項・共通ルールの遵守（最優先）
+- 「テンプレート注意事項」「共通ルール」に書かれた指示を生成書類が守っているか
+- そこで「〜を確認すること」と書かれた項目が生成書類で正しく扱われているか
+
 ### 1. 原本と生成書類の整合性
 - 原本（定款・登記簿・株主名簿・議事録・指示書等）に記載されている情報と、生成書類の記載が一致しているか
 - 日付、金額、人名、住所、株数、持分比率などの転記ミスがないか
 - 原本に基づいて正しく計算されているか（株数の合計、議決権数など）
+- **ただし「ユーザー確定済みの回答」で明示的に確定した値は、それを正しいものとして扱う**（原本と一見違っても問題として挙げない）
 
 ### 2. 生成書類間の整合性
 - 複数の生成書類間で、同じ情報（日付、人名、会社名等）が一致しているか

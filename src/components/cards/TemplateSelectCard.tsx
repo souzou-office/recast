@@ -6,17 +6,28 @@ import type { TemplateSelectCard, ActionCard } from "@/types";
 interface Props {
   card: TemplateSelectCard;
   onAction: (data: Partial<ActionCard>) => void;
+  onGoBackToFolder?: () => void;
 }
 
-export default function TemplateSelectCardUI({ card, onAction }: Props) {
+export default function TemplateSelectCardUI({ card, onAction, onGoBackToFolder }: Props) {
   const [confirmed, setConfirmed] = useState(false);
   const [selected, setSelected] = useState<string | undefined>(card.selectedPath);
 
   return (
     <div className={`rounded-lg border p-3 ${confirmed ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
-      <p className="text-xs font-medium text-gray-600 mb-2">
-        {card.selectedPath && !confirmed ? "テンプレートを推奨しました。変更もできます" : "書類テンプレートを選んでください"}
-      </p>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-medium text-gray-600">
+          {card.selectedPath && !confirmed ? "テンプレートを推奨しました。変更もできます" : "書類テンプレートを選んでください"}
+        </p>
+        {!confirmed && onGoBackToFolder && (
+          <button
+            onClick={onGoBackToFolder}
+            className="text-[10px] text-blue-500 hover:text-blue-700"
+          >
+            ← フォルダを選び直す
+          </button>
+        )}
+      </div>
       <div className="flex flex-wrap gap-2 mb-2">
         {card.templates.map(t => (
           <button

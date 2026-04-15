@@ -14,6 +14,7 @@ export interface Subfolder {
 export interface SourceFile {
   name: string;
   id: string;              // ローカルパス
+  mtime?: string;          // 最終更新日時 (ISO8601)。profile鮮度判定に使用
 }
 
 export interface OfficerInfo {
@@ -112,6 +113,7 @@ export interface Company {
   name: string;
   subfolders: Subfolder[];
   profile?: CompanyProfile;
+  profileSources?: string[]; // 基本情報抽出に使うファイルパス一覧（未設定なら共通フォルダ全ファイル）
   caseRooms?: CaseRoom[];
   // 後方互換: 旧データ
   masterSheet?: MasterSheet;

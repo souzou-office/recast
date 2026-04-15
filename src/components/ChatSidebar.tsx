@@ -19,6 +19,7 @@ interface Props {
   selectedThreadId: string | null;
   onSelectThread: (threadId: string) => void;
   onNewThread: () => void;
+  refreshKey?: number;
 }
 
 function timeGroup(dateStr: string): string {
@@ -35,7 +36,7 @@ function timeGroup(dateStr: string): string {
 
 export default function ChatSidebar({
   companies, selectedCompanyId, onSelectCompany,
-  selectedThreadId, onSelectThread, onNewThread,
+  selectedThreadId, onSelectThread, onNewThread, refreshKey,
 }: Props) {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [companySearchOpen, setCompanySearchOpen] = useState(false);
@@ -57,7 +58,7 @@ export default function ChatSidebar({
     } catch { /* ignore */ }
   }, [selectedCompanyId]);
 
-  useEffect(() => { loadThreads(); }, [loadThreads]);
+  useEffect(() => { loadThreads(); }, [loadThreads, refreshKey]);
 
   // 名前変更
   const handleRename = async (threadId: string) => {

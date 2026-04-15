@@ -15,6 +15,7 @@ export default function Home() {
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [threadsRefreshKey, setThreadsRefreshKey] = useState(0);
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const resizing = useRef(false);
 
@@ -46,6 +47,28 @@ export default function Home() {
 
   const selectedCompany = config?.companies.find(c => c.id === config.selectedCompanyId);
 
+  // 共通フォルダ変更検知 → 基本情報を自動再生成（バックグラウンド）
+  const autoRefreshProfile = useCallback(async (companyId: string) => {
+    try {
+      const check = await fetch(`/api/workspace/profile?companyId=${encodeURIComponent(companyId)}`);
+      if (!check.ok) return;
+      const { isStale } = await check.json();
+      if (!isStale) return;
+      const gen = await fetch("/api/workspace/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId }),
+      });
+      if (gen.ok) fetchConfig();
+    } catch { /* ignore */ }
+  }, [fetchConfig]);
+
+  // 初期ロード後、選択中の会社について鮮度チェック
+  useEffect(() => {
+    const id = config?.selectedCompanyId;
+    if (id) autoRefreshProfile(id);
+  }, [config?.selectedCompanyId, autoRefreshProfile]);
+
   const handleSelectCompany = async (companyId: string) => {
     await fetch("/api/workspace", {
       method: "PATCH",
@@ -54,10 +77,13 @@ export default function Home() {
     });
     setSelectedThreadId(null);
     await fetchConfig();
+    // 鮮度チェックはselectedCompanyId変更のuseEffectで自動実行される
   };
 
   const handleNewThread = async () => {
     if (!config?.selectedCompanyId) return;
+    // 画面はすぐチャットビューに切り替える
+    setView("chat");
     const res = await fetch("/api/chat-threads", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -66,7 +92,7 @@ export default function Home() {
     if (res.ok) {
       const data = await res.json();
       setSelectedThreadId(data.thread.id);
-      setView("chat");
+      setThreadsRefreshKey(k => k + 1);
     }
   };
 
@@ -135,6 +161,7 @@ export default function Home() {
               selectedThreadId={selectedThreadId}
               onSelectThread={(id) => { setSelectedThreadId(id); setView("chat"); }}
               onNewThread={handleNewThread}
+              refreshKey={threadsRefreshKey}
             />
             <div
               onMouseDown={handleMouseDown}
@@ -149,7 +176,7 @@ export default function Home() {
             <ChatWorkflow
               company={selectedCompany || null}
               threadId={selectedThreadId}
-              onThreadUpdate={() => {}}
+              onThreadUpdate={() => setThreadsRefreshKey(k => k + 1)}
             />
           )}
           {view === "profile" && (
