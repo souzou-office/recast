@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ChatThread, ThreadMessage, ActionCard, Company } from "@/types";
+import type { ChatThread, ThreadMessage, ActionCard, Company, ClarificationCard } from "@/types";
 import ActionCardRenderer from "./cards/ActionCardRenderer";
 import FilePreview from "./FilePreview";
 
@@ -135,32 +135,90 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     else if (card?.type === "template-select") action = "template-selected";
     else if (card?.type === "check-prompt") action = "check-accepted";
     else if (card?.type === "clarification") {
-      // 確認質問に回答→書類生成を続行
+      // 確認質問に回答 → 回答を反映してもう一度 clarify を呼ぶ
+      // 新たな確認事項があれば次のカードを出す、無ければ書類生成に進む
+      const updatedCard = { ...card, ...cardData, answered: true } as ClarificationCard;
+      // スレッド状態を更新
+      let updatedThread = thread;
       setThread(prev => {
         if (!prev) return prev;
-        const msgs = [...prev.messages];
-        const m = msgs.find(m => m.id === messageId);
-        if (m?.cards?.[cardIndex]) m.cards[cardIndex] = { ...m.cards[cardIndex], ...cardData } as ActionCard;
-        return { ...prev, messages: msgs };
+        const msgs = prev.messages.map(m => {
+          if (m.id !== messageId) return m;
+          const newCards = (m.cards || []).map((c, i) => i === cardIndex ? (updatedCard as ActionCard) : c);
+          return { ...m, cards: newCards };
+        });
+        updatedThread = { ...prev, messages: msgs };
+        return updatedThread;
       });
-      // 書類生成を実行
-      // pendingTemplatePathがない場合、テンプレート選択カードから取得
+      // 永続化
+      await fetch(`/api/chat-threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, messages: updatedThread.messages }),
+      });
+
+      // templatePath を取得
       let templatePath = pendingTemplatePath.current;
-      if (!templatePath && thread) {
-        for (const m of thread.messages) {
-          if (m.cards) {
-            for (const c of m.cards) {
-              if (c.type === "template-select" && c.selectedPath) {
-                templatePath = c.selectedPath;
-              }
-            }
+      if (!templatePath) {
+        for (const m of updatedThread.messages) {
+          for (const c of m.cards || []) {
+            if (c.type === "template-select" && c.selectedPath) templatePath = c.selectedPath;
           }
         }
       }
-      if (templatePath && thread) {
-        await generateDocuments(thread, templatePath, cardData as Partial<ActionCard>);
-        pendingTemplatePath.current = null;
+      if (!templatePath) {
+        setLoading(false);
+        return;
       }
+
+      // 全ての clarification カードから Q&A を収集
+      const previousQA: { question: string; answer: string }[] = [];
+      for (const m of updatedThread.messages) {
+        for (const c of m.cards || []) {
+          if (c.type !== "clarification") continue;
+          for (const q of c.questions) {
+            let ans = "";
+            if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+            else if (q.selectedOptionId) {
+              const opt = q.options.find(o => o.id === q.selectedOptionId);
+              ans = opt?.label || "";
+            }
+            if (ans) previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+          }
+        }
+      }
+
+      // もう一度 clarify を呼ぶ
+      const clarifyRes = await fetch("/api/document-templates/clarify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath, previousQA }),
+      });
+      const clarifyData = await clarifyRes.json();
+
+      if (clarifyData.questions && clarifyData.questions.length > 0) {
+        // まだ確認事項がある → 次のカードを追加
+        const nextMsg: ThreadMessage = {
+          id: `msg_${Date.now()}`,
+          role: "assistant",
+          content: `さらに${clarifyData.questions.length}点確認があります`,
+          cards: [{ type: "clarification", questions: clarifyData.questions }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, nextMsg] } : prev);
+        await fetch(`/api/chat-threads/${thread.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id, message: nextMsg }),
+        });
+        pendingTemplatePath.current = templatePath;
+        setLoading(false);
+        return;
+      }
+
+      // 確認事項なし → 書類生成へ
+      await generateDocuments(updatedThread, templatePath, cardData as Partial<ActionCard>);
+      pendingTemplatePath.current = null;
       return;
     }
 

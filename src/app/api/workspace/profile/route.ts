@@ -66,6 +66,67 @@ ${jsonFields}
 - ブロック1とブロック2の内容は完全に一致させること`;
 }
 
+// 鮮度チェック: 共通フォルダのファイルが基本情報生成時より新しい/追加/削除されたかを判定
+export async function GET(request: NextRequest) {
+  const companyId = request.nextUrl.searchParams.get("companyId");
+  if (!companyId) {
+    return NextResponse.json({ error: "companyId は必須です" }, { status: 400 });
+  }
+
+  const config = await getWorkspaceConfig();
+  const company = config.companies.find(c => c.id === companyId);
+  if (!company) {
+    return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
+  }
+
+  if (!company.profile) {
+    return NextResponse.json({ isStale: true, reason: "not_generated" });
+  }
+
+  // 共通フォルダの現在のファイルmtimeを取得
+  const commonSubs = company.subfolders.filter(s => s.role === "common");
+  const currentFiles: { path: string; mtime: string }[] = [];
+  for (const sub of commonSubs) {
+    const allContents = await readAllFilesInFolder(sub.id);
+    const disabled = sub.disabledFiles || [];
+    for (const content of allContents) {
+      if (isPathDisabled(content.path, disabled)) continue;
+      try {
+        const st = await fs.stat(content.path);
+        currentFiles.push({ path: content.path, mtime: st.mtime.toISOString() });
+      } catch { /* ignore */ }
+    }
+  }
+
+  // profile.sourceFiles とのmtime比較
+  const recorded = new Map<string, string | undefined>();
+  for (const f of company.profile.sourceFiles || []) {
+    if (typeof f === "string") recorded.set(f, undefined);
+    else recorded.set(f.id, f.mtime);
+  }
+
+  // ファイル追加
+  for (const cur of currentFiles) {
+    if (!recorded.has(cur.path)) {
+      return NextResponse.json({ isStale: true, reason: "added", path: cur.path });
+    }
+    const prevMtime = recorded.get(cur.path);
+    // mtimeが記録されていない(旧データ)or 変更あり → stale
+    if (prevMtime === undefined || prevMtime !== cur.mtime) {
+      return NextResponse.json({ isStale: true, reason: "modified", path: cur.path });
+    }
+  }
+  // ファイル削除
+  const currentSet = new Set(currentFiles.map(f => f.path));
+  for (const [p] of recorded) {
+    if (!currentSet.has(p)) {
+      return NextResponse.json({ isStale: true, reason: "removed", path: p });
+    }
+  }
+
+  return NextResponse.json({ isStale: false });
+}
+
 // 基本情報を生成
 export async function POST(request: NextRequest) {
   const { companyId } = await request.json();
@@ -174,10 +235,18 @@ export async function POST(request: NextRequest) {
       .replace(/\*\*ブロック\s*2[\s\S]*/g, "")
       .trim();
 
-    const allFiles = [
-      ...textFiles.map(f => ({ name: f.name, id: f.path })),
-      ...pdfFiles.map(f => ({ name: f.name, id: f.path })),
+    const allPaths = [
+      ...textFiles.map(f => ({ name: f.name, path: f.path })),
+      ...pdfFiles.map(f => ({ name: f.name, path: f.path })),
     ];
+    const allFiles = await Promise.all(allPaths.map(async f => {
+      try {
+        const st = await fs.stat(f.path);
+        return { name: f.name, id: f.path, mtime: st.mtime.toISOString() };
+      } catch {
+        return { name: f.name, id: f.path };
+      }
+    }));
     const profile: CompanyProfile = {
       summary,
       structured,
@@ -280,9 +349,17 @@ ${newFilesText}`,
     }
 
     company.profile.updatedAt = new Date().toISOString();
+    const newSourceEntries = await Promise.all(newContents.map(async f => {
+      try {
+        const st = await fs.stat(f.path);
+        return { name: f.name, id: f.path, mtime: st.mtime.toISOString() };
+      } catch {
+        return { name: f.name, id: f.path };
+      }
+    }));
     company.profile.sourceFiles = [
       ...company.profile.sourceFiles,
-      ...newContents.map(f => ({ name: f.name, id: f.path })),
+      ...newSourceEntries,
     ];
 
     await saveWorkspaceConfig(config);

@@ -7,8 +7,13 @@ import type { ClarificationQuestion } from "@/types";
 const client = new Anthropic();
 
 // テンプレートのプレースホルダーに対する確認質問を生成
+// previousQA: これまでのQ&A履歴（ループで再質問する際に含める）
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath } = await request.json();
+  const { companyId, templateFolderPath, previousQA } = await request.json() as {
+    companyId: string;
+    templateFolderPath: string;
+    previousQA?: { question: string; answer: string }[];
+  };
 
   const config = await getWorkspaceConfig();
   const company = config.companies.find(c => c.id === companyId);
@@ -53,13 +58,19 @@ export async function POST(request: NextRequest) {
 
   const placeholderList = Array.from(allPlaceholders).join(", ");
 
+  // これまでのQ&Aを前提として追加
+  const qaBlock = previousQA && previousQA.length > 0
+    ? `\n## これまでの確認結果（既に確定済み。再質問しないこと）\n` +
+      previousQA.map(qa => `- Q: ${qa.question}\n  A: ${qa.answer}`).join("\n") + "\n"
+    : "";
+
   // AIにデータ矛盾・不明項目を検出させる
   const prompt = `以下の会社データとプレースホルダー一覧を比較して、確認が必要な項目だけをJSON配列で返してください。
 
 ## 会社データ
 ${dataContext}
 ${masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
-
+${qaBlock}
 ## プレースホルダー一覧
 ${placeholderList}
 
@@ -71,10 +82,12 @@ ${placeholderList}
 ## ルール
 - データから明確に値が1つに決まるものは質問不要（確信度が高い）
 - スケジュール表や議事録に記載された日付はそのまま使う（質問しない）
+- **これまでの確認結果で既に確定した値は再質問しない**（前提として扱う）
 - 以下の場合のみ質問を生成:
   1. 案件フォルダ内の複数資料間で値が矛盾している
   2. テンプレートのプレースホルダーに対応するデータがどこにもない
   3. 複数の解釈が可能（例: 役員が複数いてどの人か不明）
+  4. **既に回答された内容を受けて、新たに発生した確認事項**（例: ある役員を選んだことで、その役員の任期や住所を確認する必要が出た等）
 - 質問が0件なら空配列[]を返す
 
 ## 出力形式（JSONのみ）

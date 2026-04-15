@@ -14,6 +14,7 @@ export interface Subfolder {
 export interface SourceFile {
   name: string;
   id: string;              // ローカルパス
+  mtime?: string;          // 最終更新日時 (ISO8601)。profile鮮度判定に使用
 }
 
 export interface OfficerInfo {

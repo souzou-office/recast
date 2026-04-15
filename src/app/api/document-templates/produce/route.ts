@@ -42,15 +42,21 @@ function toFullWidth(str: string): string {
 }
 
 // 全角英数字・記号→半角変換（Excel用: 数値・数式が壊れないように）
+// 最終値が「純数値」「日付」でなければ、英数字を全角に戻して見た目を整える
 function toHalfWidth(str: string): string {
   let result = str
     .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
     .replace(/．/g, ".").replace(/，/g, ",").replace(/－/g, "-").replace(/＋/g, "+")
     .replace(/（/g, "(").replace(/）/g, ")").replace(/％/g, "%").replace(/＆/g, "&")
     .replace(/　/g, " ");
-  // 日付文字列（年・月日を含む）は数字を全角に戻す
-  if (/年/.test(result) || (/月/.test(result) && /日/.test(result))) {
+  const isPureNumber = /^-?[\d,]+(\.\d+)?$/.test(result.trim());
+  const isDate = /年/.test(result) || (/月/.test(result) && /日/.test(result));
+  if (isDate) {
+    // 日付は数字を全角に
     result = result.replace(/[0-9]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
+  } else if (!isPureNumber) {
+    // テキスト扱いの値（会社名・住所・氏名等）は英数字を全角に戻す
+    result = result.replace(/[A-Za-z0-9]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
   }
   return result;
 }
@@ -351,30 +357,17 @@ JSONで返してください。基本は全て文字列値です。
               }
             }
 
-            // 1b) 置換された<si>要素からルビ（rPh/phoneticPr）を除去
-            //     置換後のテキスト長とルビのsb/eb範囲が不整合になり修復エラーの原因になるため
+            // 1b) sharedStrings.xml からルビ（rPh/phoneticPr）を全削除
+            //     置換によるオフセット不整合でExcelが修復警告を出すのを根絶するため、
+            //     条件判定せず無条件に潰す。ふりがなは出力書類で不要。
             {
-              let ssContent = zip.file(ssPath)?.asText();
+              const ssContent = zip.file(ssPath)?.asText();
               if (ssContent) {
-                let ssChanged = false;
-                ssContent = ssContent.replace(
-                  /<si\b[^>]*>([\s\S]*?)<\/si>/g,
-                  (siTag: string, inner: string) => {
-                    // この<si>に置換された値が含まれているかチェック
-                    const hasReplaced = Array.from(replacedKeys).some(v => inner.includes(v));
-                    if (!hasReplaced) return siTag;
-                    // rPhとphoneticPrを除去
-                    const cleaned = inner
-                      .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
-                      .replace(/<phoneticPr\b[^/]*\/>/g, "");
-                    if (cleaned !== inner) {
-                      ssChanged = true;
-                      return `<si>${cleaned}</si>`;
-                    }
-                    return siTag;
-                  }
-                );
-                if (ssChanged) zip.file(ssPath, ssContent);
+                const cleaned = ssContent
+                  .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
+                  .replace(/<phoneticPr\b[^>]*\/>/g, "")
+                  .replace(/<phoneticPr\b[^>]*>[\s\S]*?<\/phoneticPr>/g, "");
+                if (cleaned !== ssContent) zip.file(ssPath, cleaned);
               }
             }
 
@@ -437,10 +430,9 @@ JSONで返してください。基本は全て文字列値です。
                 }
               );
 
-              // 数式キャッシュのクリア: <f>...</f> の直後にある <v>...</v> を削除し、
-              // セルが t="e" (エラーキャッシュ) なら t 属性も除去する。Excel が再計算する。
+              // 数式キャッシュのクリア
               sheetXml = sheetXml.replace(
-                /<c\b([^>]*)>(\s*<f\b[^>]*>[\s\S]*?<\/f>)\s*<v>[^<]*<\/v>\s*<\/c>/g,
+                /<c\b([^>]*)>(\s*<f\b[^>]*(?:\/>|>[\s\S]*?<\/f>))\s*<v>[^<]*<\/v>\s*<\/c>/g,
                 (_whole: string, attrs: string, fEl: string) => {
                   sheetChanged = true;
                   const newAttrs = attrs.replace(/\s*\bt="[^"]*"/, "");
@@ -449,46 +441,6 @@ JSONで返してください。基本は全て文字列値です。
               );
 
               if (sheetChanged) zip.file(fileName, sheetXml);
-            }
-
-            // 4) sharedStrings.xml の不整合な <rPh>（本文長を超えるオフセット）を除去。
-            //    置換によって本文が短くなり元のふりがなオフセットが範囲外になると Excel が
-            //    「修復が必要」警告を出し、再計算もスキップするため。
-            {
-              const ssNowPath = ssPath;
-              const ssNow = zip.file(ssNowPath)?.asText();
-              if (ssNow) {
-                const fixed = ssNow.replace(
-                  /<si\b[^>]*>([\s\S]*?)<\/si>/g,
-                  (whole: string, siInner: string) => {
-                    const stripped = siInner
-                      .replace(/<rPh\b[\s\S]*?<\/rPh>/g, "")
-                      .replace(/<phoneticPr\b[^>]*\/>/g, "");
-                    const tRegex = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
-                    let mainText = "";
-                    let tm: RegExpExecArray | null;
-                    while ((tm = tRegex.exec(stripped)) !== null) mainText += tm[1];
-                    const mainLen = mainText
-                      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-                      .replace(/&quot;/g, '"').replace(/&apos;/g, "'").length;
-                    // rPh のオフセットが範囲外なら除去
-                    const cleanedInner = siInner.replace(
-                      /<rPh\b([^>]*)>[\s\S]*?<\/rPh>/g,
-                      (rphWhole: string, rphAttrs: string) => {
-                        const sbMatch = rphAttrs.match(/\bsb="(\d+)"/);
-                        const ebMatch = rphAttrs.match(/\beb="(\d+)"/);
-                        if (!sbMatch || !ebMatch) return rphWhole;
-                        const sb = parseInt(sbMatch[1], 10);
-                        const eb = parseInt(ebMatch[1], 10);
-                        if (sb >= mainLen || eb > mainLen || sb >= eb) return "";
-                        return rphWhole;
-                      }
-                    );
-                    return whole.replace(siInner, cleanedInner);
-                  }
-                );
-                if (fixed !== ssNow) zip.file(ssNowPath, fixed);
-              }
             }
 
             // 4) sharedStrings.xmlのcount属性を実際のt="s"参照数に合わせて更新
@@ -509,6 +461,31 @@ JSONで返してください。基本は全て文字列値です。
               if (updatedSsXml !== currentSsXml) zip.file(ssPath, updatedSsXml);
             }
 
+            // 5) calcChain.xml を削除（式や参照を変更したため古い計算チェーンは不整合になる）
+            //    これが残っているとExcelが「修復が必要」警告を出す。削除すればExcelが開いたとき再生成する。
+            if (zip.file("xl/calcChain.xml")) {
+              zip.remove("xl/calcChain.xml");
+              // workbook.xml.rels から calcChain への参照も削除
+              const relsPath = "xl/_rels/workbook.xml.rels";
+              const relsXml = zip.file(relsPath)?.asText();
+              if (relsXml) {
+                const cleanedRels = relsXml.replace(
+                  /<Relationship\b[^>]*\bTarget="calcChain\.xml"[^>]*\/>/g,
+                  ""
+                );
+                if (cleanedRels !== relsXml) zip.file(relsPath, cleanedRels);
+              }
+              // [Content_Types].xml から calcChain の宣言も削除
+              const ctPath = "[Content_Types].xml";
+              const ctXml = zip.file(ctPath)?.asText();
+              if (ctXml) {
+                const cleanedCt = ctXml.replace(
+                  /<Override\b[^>]*\bPartName="\/xl\/calcChain\.xml"[^>]*\/>/g,
+                  ""
+                );
+                if (cleanedCt !== ctXml) zip.file(ctPath, cleanedCt);
+              }
+            }
 
             const outputBuffer = zip.generate({ type: "nodebuffer" });
             const outputName = `${company.name}_${baseName}.xlsx`;
