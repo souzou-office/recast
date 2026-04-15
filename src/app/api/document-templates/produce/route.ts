@@ -13,6 +13,7 @@ const PizZip = require("pizzip");
 const client = new Anthropic();
 
 // テンプレートからプレースホルダーを抽出（【】{{}} ＜＞ ［］ {} <> [] 全対応）
+// 条件分岐マーカー（#flag / /flag で始まるもの）は除外
 function extractPlaceholders(text: string): { raw: string; name: string; delimiters: [string, string] }[] {
   const patterns = [
     { regex: /【([^】]+)】/g, start: "【", end: "】" },
@@ -26,12 +27,32 @@ function extractPlaceholders(text: string): { raw: string; name: string; delimit
     let m;
     while ((m = p.regex.exec(text)) !== null) {
       const name = m[1].trim();
+      // 条件分岐マーカーは除外（例: #出資者は法人, /出資者は法人）
+      if (name.startsWith("#") || name.startsWith("/")) continue;
       if (!found.has(name)) {
         found.set(name, { raw: m[0], name, delimiters: [p.start, p.end] });
       }
     }
   }
   return Array.from(found.values());
+}
+
+// 条件分岐フラグを抽出（{{#flag}}...{{/flag}} のflag部分）
+function extractConditionFlags(text: string): string[] {
+  const flags = new Set<string>();
+  // {{}}, ｛｛｝｝ の両形式で #flag を検出
+  const patterns = [
+    /\{\{#([^}\/]+)\}\}/g,
+    /｛｛#([^｝\/]+)｝｝/g,
+    /【#([^】\/]+)】/g,
+  ];
+  for (const p of patterns) {
+    let m;
+    while ((m = p.exec(text)) !== null) {
+      flags.add(m[1].trim());
+    }
+  }
+  return Array.from(flags);
 }
 
 // 半角英数字→全角変換
@@ -88,12 +109,13 @@ function stripDuplicatedUnit(value: string, key: string, templateContent: string
 
 // テンプレートフォルダ + マスターシート → 書類生成
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath, mode, caseRoomId, masterContent: directMasterContent } = await request.json() as {
+  const { companyId, templateFolderPath, mode, caseRoomId, masterContent: directMasterContent, confirmedAnswers } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
     mode?: "fill" | "generate";
     caseRoomId?: string;
     masterContent?: string;
+    confirmedAnswers?: Record<string, string>;
   };
 
   const config = await getWorkspaceConfig();
@@ -170,11 +192,25 @@ export async function POST(request: NextRequest) {
     // AIにプレースホルダーの値を一括生成させる
     const placeholderEntries = Array.from(allPlaceholders.values());
     const placeholderList = placeholderEntries.map(p => `- ${p.name}`).join("\n");
+
+    // 条件分岐フラグを全docxから収集
+    const allConditionFlags = new Set<string>();
+    for (const df of docxFiles) {
+      for (const f of extractConditionFlags(df.content)) allConditionFlags.add(f);
+    }
+    const conditionFlagList = Array.from(allConditionFlags);
+
     // テンプレートの内容を渡す（プレースホルダーの前後の文脈をAIが理解するため）
     const templateContents = docxFiles
       .filter(f => f.content && !f.base64)
       .map(f => `【${f.name}】\n${f.content}`)
       .join("\n\n");
+
+    // ユーザーが確定した値（clarifyで回答済み）
+    const confirmedBlock = confirmedAnswers && Object.keys(confirmedAnswers).length > 0
+      ? `\n## ユーザー確定済みの値（これらは絶対にこの値を使う。再解釈しない）\n` +
+        Object.entries(confirmedAnswers).map(([k, v]) => `- 【${k}】: ${v}`).join("\n") + "\n"
+      : "";
 
     const prompt = `以下の会社データから、テンプレートのプレースホルダーに入る値をJSON形式で返してください。
 
@@ -183,12 +219,13 @@ ${dataContext}
 ${directMasterContent ? `\n## 案件整理テキスト（最新）\n${directMasterContent}\n` : masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
 ${globalMemo ? `\n## 共通ルール\n${globalMemo}\n` : ""}
 ${memoText ? `\n## テンプレート注意事項\n${memoText}\n` : ""}
-
+${confirmedBlock}
 ## テンプレート内容（プレースホルダーの前後の文脈を参照してください）
 ${templateContents}
 
 ## プレースホルダー一覧
 ${placeholderList}
+${conditionFlagList.length > 0 ? `\n## 条件分岐フラグ一覧（真偽値 true/false で返すこと）\n${conditionFlagList.map(f => `- ${f}`).join("\n")}\n\n条件分岐: テンプレート内の {{#フラグ名}}...{{/フラグ名}} はフラグが true のときだけ中身が残る。文脈から判断して true/false を決めて返すこと。例: 出資者が法人なら \`"出資者は法人": true, "出資者は個人": false\`\n` : ""}
 
 ## 回答形式
 JSONで返してください。基本は全て文字列値です。
@@ -218,7 +255,7 @@ JSONで返してください。基本は全て文字列値です。
   "株主の住所": ["東京都...", "大阪府..."]
 }
 
-データにない情報は "（要確認）" としてください。`;
+データにない情報は "（要確認）" としてください。ただし上の「ユーザー確定済みの値」に該当するプレースホルダーは必ずその値を使うこと。`;
 
     try {
       const response = await client.messages.create({
@@ -235,7 +272,25 @@ JSONで返してください。基本は全て文字列値です。
         });
       }
 
-      const values: Record<string, string | string[]> = JSON.parse(jsonMatch[0]);
+      const values: Record<string, string | string[] | boolean> = JSON.parse(jsonMatch[0]);
+
+      // 文字列で "true"/"false" が返ってきた場合は boolean に変換
+      // ただし「conditionFlagList に含まれる名前」だけ対象（通常の値で "true" 等を持つ可能性を考慮）
+      const conditionFlagSet = new Set(conditionFlagList);
+      for (const [key, value] of Object.entries(values)) {
+        if (conditionFlagSet.has(key) && typeof value === "string") {
+          const v = value.toLowerCase().trim();
+          if (v === "true" || v === "1" || v === "はい" || v === "yes") values[key] = true;
+          else if (v === "false" || v === "0" || v === "いいえ" || v === "no") values[key] = false;
+        }
+      }
+
+      // 条件フラグ（boolean値）を分離
+      const conditionFlags: Record<string, boolean> = {};
+      for (const [key, value] of Object.entries(values)) {
+        if (typeof value === "boolean") conditionFlags[key] = value;
+      }
+      console.log("[produce] condition flags:", conditionFlags);
 
       // 配列のキーを特定
       const arrayKeys = new Set<string>();
@@ -247,14 +302,18 @@ JSONで返してください。基本は全て文字列値です。
         }
       }
 
-      // 1通分の共通データ（配列は最初の値を使用）
-      const singleData: Record<string, string> = {};
+      // 1通分の共通データ（配列は最初の値を使用、booleanはそのまま）
+      const singleData: Record<string, string | boolean> = {};
       for (const [key, value] of Object.entries(values)) {
-        singleData[key] = toFullWidth(Array.isArray(value) ? value[0] || "（要確認）" : value);
+        if (typeof value === "boolean") {
+          singleData[key] = value;
+        } else {
+          singleData[key] = toFullWidth(Array.isArray(value) ? value[0] || "（要確認）" : value);
+        }
       }
 
       // ファイルごとに通数を判断する関数
-      function getDataSetsForFile(fileContent: string): Record<string, string>[] {
+      function getDataSetsForFile(fileContent: string): Record<string, string | boolean>[] {
         if (arrayKeys.size === 0) return [singleData];
         // このファイルに配列キーのプレースホルダーが含まれるか
         let hasArrayPlaceholder = false;
@@ -268,11 +327,13 @@ JSONで返してください。基本は全て文字列値です。
         if (!hasArrayPlaceholder) return [singleData]; // 配列プレースホルダーなし→1通
 
         // 配列プレースホルダーあり→人数分
-        const sets: Record<string, string>[] = [];
+        const sets: Record<string, string | boolean>[] = [];
         for (let c = 0; c < maxCopies; c++) {
-          const data: Record<string, string> = {};
+          const data: Record<string, string | boolean> = {};
           for (const [key, value] of Object.entries(values)) {
-            if (Array.isArray(value)) {
+            if (typeof value === "boolean") {
+              data[key] = value;
+            } else if (Array.isArray(value)) {
               data[key] = toFullWidth(value[c] || "（要確認）");
             } else {
               data[key] = toFullWidth(value);
@@ -283,11 +344,12 @@ JSONで返してください。基本は全て文字列値です。
         return sets;
       }
 
-      // 後方互換用ダミー
+      // 後方互換用ダミー（条件フラグは含めない - Excel用）
       const templateDataSets = [singleData]; // デフォルト（Excel用等）
       for (let c = 0; c < 1; c++) {
         const data: Record<string, string> = {};
         for (const [key, value] of Object.entries(values)) {
+          if (typeof value === "boolean") continue;
           data[key] = toFullWidth(Array.isArray(value) ? value[0] || "（要確認）" : value);
         }
         templateDataSets.push(data);
@@ -315,6 +377,7 @@ JSONで返してください。基本は全て文字列値です。
             // Excel: 全角→半角統一（数値・数式が正しく動くように）
             const rawData: Record<string, string> = {};
             for (const [key, value] of Object.entries(values)) {
+              if (typeof value === "boolean") continue; // 条件フラグはExcelでは使わない
               const v = Array.isArray(value) ? value[0] || "（要確認）" : value;
               rawData[key] = toHalfWidth(stripDuplicatedUnit(v, key, df.content));
             }
@@ -512,17 +575,37 @@ JSONで返してください。基本は全て文字列値です。
             }
 
             const filePlaceholders = extractPlaceholders(df.content);
-            const delims = filePlaceholders.length > 0 ? filePlaceholders[0].delimiters : ["【", "】"];
+            // デリミタは自動で選ばず、常に {{ / }} に統一する（全角 ｛｛ ｝｝ は事前に正規化）
+            const delims: [string, string] = ["{{", "}}"];
+            // 後方互換: filePlaceholders は未使用だが型整合のために参照
+            void filePlaceholders;
 
             // ファイルごとに通数を判断して個別生成
             const fileSets = getDataSetsForFile(df.content);
             for (let c = 0; c < fileSets.length; c++) {
               // テンプレ側に既にある単位をAI値が重複させていたら除去
-              const templateData: Record<string, string> = {};
+              // 条件フラグ(boolean)はそのまま、文字列値はstripDuplicatedUnit適用
+              const templateData: Record<string, string | boolean> = {};
               for (const [key, val] of Object.entries(fileSets[c])) {
-                templateData[key] = stripDuplicatedUnit(val, key, df.content);
+                if (typeof val === "boolean") {
+                  templateData[key] = val;
+                } else {
+                  templateData[key] = stripDuplicatedUnit(val, key, df.content);
+                }
               }
               const zip = new PizZip(wordBuffer);
+              // 全角のデリミタ（｛｛ ｝｝ 【 】 ＜ ＞ ［ ］）を docxtemplater が理解できる半角 {{ }} に正規化
+              for (const fileName of Object.keys(zip.files)) {
+                if (!fileName.endsWith(".xml") && !fileName.endsWith(".xml.rels")) continue;
+                const content = zip.file(fileName)?.asText();
+                if (!content) continue;
+                const normalized = content
+                  .replace(/｛｛/g, "{{")
+                  .replace(/｝｝/g, "}}")
+                  .replace(/【/g, "{{")
+                  .replace(/】/g, "}}");
+                if (normalized !== content) zip.file(fileName, normalized);
+              }
               const doc = new Docxtemplater(zip, {
                 delimiters: { start: delims[0], end: delims[1] },
                 paragraphLoop: true,
@@ -550,7 +633,12 @@ JSONで返してください。基本は全て文字列値です。
               });
             }
           }
-        } catch { /* skip failed template */ }
+        } catch (err) {
+          console.error(`[produce] skipped template ${df.name}:`, err instanceof Error ? err.message : err);
+          if (err instanceof Error && "properties" in err) {
+            console.error(`[produce] docxtemplater properties:`, JSON.stringify((err as { properties: unknown }).properties, null, 2));
+          }
+        }
       }
 
       return new Response(JSON.stringify({ documents }), {

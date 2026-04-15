@@ -138,18 +138,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       // 確認質問に回答 → 回答を反映してもう一度 clarify を呼ぶ
       // 新たな確認事項があれば次のカードを出す、無ければ書類生成に進む
       const updatedCard = { ...card, ...cardData, answered: true } as ClarificationCard;
-      // スレッド状態を更新
-      let updatedThread = thread;
-      setThread(prev => {
-        if (!prev) return prev;
-        const msgs = prev.messages.map(m => {
-          if (m.id !== messageId) return m;
-          const newCards = (m.cards || []).map((c, i) => i === cardIndex ? (updatedCard as ActionCard) : c);
-          return { ...m, cards: newCards };
-        });
-        updatedThread = { ...prev, messages: msgs };
-        return updatedThread;
+      // スレッド状態を明示的に組み立てる（setStateコールバックに依存しない）
+      const updatedMessages = thread.messages.map(m => {
+        if (m.id !== messageId) return m;
+        const newCards = (m.cards || []).map((c, i) => i === cardIndex ? (updatedCard as ActionCard) : c);
+        return { ...m, cards: newCards };
       });
+      const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+      setThread(updatedThread);
       // 永続化
       await fetch(`/api/chat-threads/${thread.id}`, {
         method: "PATCH",
@@ -192,7 +188,13 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath, previousQA }),
+        body: JSON.stringify({
+          companyId: company.id,
+          templateFolderPath: templatePath,
+          previousQA,
+          folderPath: updatedThread.folderPath,
+          disabledFiles: updatedThread.disabledFiles,
+        }),
       });
       const clarifyData = await clarifyRes.json();
 
@@ -238,6 +240,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         const result = await res.json();
         setThread(result.thread);
         setLoading(false);
+        // サイドバー一覧を更新（displayName変更を反映するため）
+        onThreadUpdate();
 
         // テンプレート選択後→案件整理+書類生成をSSEで実行
         if (action === "template-selected" && "selectedPath" in cardData && cardData.selectedPath) {
@@ -286,7 +290,11 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const res = await fetch("/api/templates/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id }),
+        body: JSON.stringify({
+          companyId: company.id,
+          folderPath: currentThread.folderPath,
+          disabledFiles: currentThread.disabledFiles,
+        }),
       });
       const reader = res.body?.getReader();
       if (reader) {
@@ -359,7 +367,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath }),
+        body: JSON.stringify({
+          companyId: company.id,
+          templateFolderPath: templatePath,
+          folderPath: currentThread.folderPath,
+          disabledFiles: currentThread.disabledFiles,
+        }),
       });
       const clarifyData = await clarifyRes.json();
 
@@ -403,10 +416,32 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     // スレッド内の案件整理結果を探す
     const organizeContent = currentThread.messages.find(m => m.role === "assistant" && m.content.length > 200)?.content || "";
 
+    // 確認質問の回答を収集（placeholder名→確定値のマップ）
+    const confirmedAnswers: Record<string, string> = {};
+    for (const m of currentThread.messages) {
+      for (const c of m.cards || []) {
+        if (c.type !== "clarification") continue;
+        for (const q of c.questions) {
+          let ans = "";
+          if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+          else if (q.selectedOptionId) {
+            const opt = q.options.find(o => o.id === q.selectedOptionId);
+            ans = opt?.label || "";
+          }
+          if (ans) confirmedAnswers[q.placeholder] = ans;
+        }
+      }
+    }
+
     const produceRes = await fetch("/api/document-templates/produce", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyId: company.id, templateFolderPath: templatePath, masterContent: organizeContent }),
+      body: JSON.stringify({
+        companyId: company.id,
+        templateFolderPath: templatePath,
+        masterContent: organizeContent,
+        confirmedAnswers,
+      }),
     });
     const produceData = await produceRes.json();
     console.log("[ChatWorkflow] produce response:", produceData.error || `${produceData.documents?.length || 0} docs`);
@@ -553,17 +588,30 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 )}
                 {/* アクションカード */}
-                {msg.cards?.map((card, ci) => (
-                  <div key={ci} className="mt-3">
-                    <ActionCardRenderer
-                      card={card}
-                      onAction={(data) => handleCardAction(msg.id, ci, data)}
-                      company={company}
-                      thread={thread}
-                      onPreview={setPreviewFile}
-                    />
-                  </div>
-                ))}
+                {msg.cards?.map((card, ci) => {
+                  // フォルダ選択カードへ戻るハンドラを用意
+                  const goBack = () => {
+                    for (const m of thread.messages) {
+                      const idx = (m.cards || []).findIndex(c => c.type === "folder-select");
+                      if (idx >= 0) {
+                        handleCardAction(m.id, idx, { selectedPath: undefined } as Partial<ActionCard>);
+                        return;
+                      }
+                    }
+                  };
+                  return (
+                    <div key={ci} className="mt-3">
+                      <ActionCardRenderer
+                        card={card}
+                        onAction={(data) => handleCardAction(msg.id, ci, data)}
+                        company={company}
+                        thread={thread}
+                        onPreview={setPreviewFile}
+                        onGoBackToFolder={goBack}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ))}

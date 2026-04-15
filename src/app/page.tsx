@@ -176,7 +176,7 @@ export default function Home() {
             <ChatWorkflow
               company={selectedCompany || null}
               threadId={selectedThreadId}
-              onThreadUpdate={() => {}}
+              onThreadUpdate={() => setThreadsRefreshKey(k => k + 1)}
             />
           )}
           {view === "profile" && (

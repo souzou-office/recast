@@ -113,6 +113,7 @@ export interface Company {
   name: string;
   subfolders: Subfolder[];
   profile?: CompanyProfile;
+  profileSources?: string[]; // 基本情報抽出に使うファイルパス一覧（未設定なら共通フォルダ全ファイル）
   caseRooms?: CaseRoom[];
   // 後方互換: 旧データ
   masterSheet?: MasterSheet;

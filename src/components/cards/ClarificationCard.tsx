@@ -14,7 +14,15 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
   );
   const isLocked = !!card.answered;
 
+  const allAnswered = card.questions.every(q => {
+    const a = answers[q.id];
+    if (!a?.optionId) return false;
+    if (a.optionId === "_manual") return !!(a.manual && a.manual.trim());
+    return true;
+  });
+
   const submit = () => {
+    if (!allAnswered) return;
     const updatedQuestions = card.questions.map(q => ({
       ...q,
       selectedOptionId: answers[q.id]?.optionId,
@@ -72,13 +80,17 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
         ))}
       </div>
       {!isLocked && (
-        <div className="flex gap-2 mt-3">
+        <div className="flex items-center gap-2 mt-3">
           <button
             onClick={submit}
-            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            disabled={!allAnswered}
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
             生成する →
           </button>
+          {!allAnswered && (
+            <span className="text-[10px] text-gray-500">すべての質問に回答してください</span>
+          )}
         </div>
       )}
     </div>

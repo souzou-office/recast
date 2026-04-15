@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
+import { isPathDisabled } from "@/lib/disabled-filter";
 import type { ClarificationQuestion } from "@/types";
 
 const client = new Anthropic();
@@ -9,10 +10,12 @@ const client = new Anthropic();
 // テンプレートのプレースホルダーに対する確認質問を生成
 // previousQA: これまでのQ&A履歴（ループで再質問する際に含める）
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath, previousQA } = await request.json() as {
+  const { companyId, templateFolderPath, previousQA, folderPath, disabledFiles } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
     previousQA?: { question: string; answer: string }[];
+    folderPath?: string;
+    disabledFiles?: string[];
   };
 
   const config = await getWorkspaceConfig();
@@ -23,6 +26,28 @@ export async function POST(request: NextRequest) {
 
   // テンプレートファイルを読み込み
   const templateFiles = await readAllFilesInFolder(templateFolderPath);
+
+  // テンプレートフォルダ内のテキストメモ（ルール・注意事項）を収集
+  // ここに書かれている指示が「何を確認すべきか」の源泉になる
+  const memoText = templateFiles
+    .filter(f => !f.base64 && (f.name.endsWith(".txt") || f.name.endsWith(".md")))
+    .map(f => `【${f.name}】\n${f.content}`)
+    .join("\n\n");
+
+  // templateBasePath 直下の共通ルール（テンプレフォルダの親）
+  let globalMemo = "";
+  if (config.templateBasePath) {
+    try {
+      const { listFiles: listLocalFiles, readFileContent: readLocal } = await import("@/lib/files");
+      const parentFiles = await listLocalFiles(config.templateBasePath);
+      for (const f of parentFiles) {
+        if (!f.isDirectory && (f.name.endsWith(".txt") || f.name.endsWith(".md"))) {
+          const content = await readLocal(f.path);
+          if (content) globalMemo += `【共通ルール: ${f.name}】\n${content.content}\n\n`;
+        }
+      }
+    } catch { /* ignore */ }
+  }
 
   // プレースホルダーを抽出
   const allPlaceholders = new Set<string>();
@@ -67,6 +92,8 @@ export async function POST(request: NextRequest) {
   // AIにデータ矛盾・不明項目を検出させる
   const prompt = `以下の会社データとプレースホルダー一覧を比較して、確認が必要な項目だけをJSON配列で返してください。
 
+${globalMemo ? `## 共通ルール（最優先で従うこと）\n${globalMemo}\n` : ""}
+${memoText ? `## テンプレート注意事項（このテンプレ固有のルール。質問の源泉）\n${memoText}\n\n` : ""}
 ## 会社データ
 ${dataContext}
 ${masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
@@ -80,15 +107,27 @@ ${placeholderList}
 - 共通フォルダと案件フォルダの情報が異なっても、それは矛盾ではなく「変更手続き」である
 
 ## ルール
-- データから明確に値が1つに決まるものは質問不要（確信度が高い）
-- スケジュール表や議事録に記載された日付はそのまま使う（質問しない）
-- **これまでの確認結果で既に確定した値は再質問しない**（前提として扱う）
-- 以下の場合のみ質問を生成:
-  1. 案件フォルダ内の複数資料間で値が矛盾している
-  2. テンプレートのプレースホルダーに対応するデータがどこにもない
-  3. 複数の解釈が可能（例: 役員が複数いてどの人か不明）
-  4. **既に回答された内容を受けて、新たに発生した確認事項**（例: ある役員を選んだことで、その役員の任期や住所を確認する必要が出た等）
-- 質問が0件なら空配列[]を返す
+**質問は「専門家の判断が必要で、データから一意に決まらない」場合だけに絞る**。素人が読んでもわかるような自明なことは聞かない。
+
+### 質問してはいけないもの（これは絶対に聞かない）
+- **会社名・住所・代表者名など、基本情報に明確に記載がある値**
+- プレースホルダー名と基本情報の項目名が一致または明らかに対応するもの（「会社名」「代表取締役」等）
+- 案件整理テキストや議事録に明記されている日付・金額・人名
+- 共通フォルダ（定款・登記簿・株主名簿）に記載されている値
+- 表記ゆれレベルの違い（「株式会社」と「(株)」等はAIが正規化して使う）
+- プレースホルダー名から内容が推測できて、かつ対応データがある場合
+
+### 質問してよいもの（専門家判断が必要な場合だけ）
+1. **テンプレート注意事項/共通ルールで明示的に「〜を確認すること」と書かれている項目**
+2. **案件フォルダ内の複数資料間で値が明確に矛盾している**（単なる表記ゆれは除く）
+3. **複数の解釈が可能で、かつ選択による影響が大きい**（例: 役員が複数いて手続き対象者が特定できない）
+4. **テンプレートに必要な値が、共通フォルダ・案件フォルダ・基本情報・案件整理のどこにも一切存在しない**（よくよく探した上で）
+5. **既に回答された内容を受けて、新たに発生した確認事項**
+
+### 判断のコツ
+- 「このプレースホルダーはこの値でいこう」と確信を持って言えるなら質問しない
+- **既に確定した値は再質問しない**
+- 質問が0件なら空配列[]を返す（それが正しい状態）
 
 ## 出力形式（JSONのみ）
 [
@@ -103,11 +142,58 @@ ${placeholderList}
   }
 ]`;
 
+  // 共通・案件フォルダの原本ファイルを content blocks として添付（AIが生データも参照できるように）
+  type ContentBlock =
+    | { type: "text"; text: string }
+    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+  const contentBlocks: ContentBlock[] = [];
+  const sourceTexts: string[] = [];
+
+  // 共通フォルダ（role === "common"）＋ チャットで指定された案件フォルダを読む
+  const readFromSub = async (subId: string, subDisabled: string[], roleTag: string) => {
+    const files = await readAllFilesInFolder(subId);
+    for (const fc of files) {
+      if (isPathDisabled(fc.path, subDisabled)) continue;
+      if (fc.base64) {
+        const mime = fc.mimeType || "application/pdf";
+        if (mime === "application/pdf") {
+          contentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: fc.base64 }, title: `${roleTag} ${fc.name}` });
+        } else if (IMAGE_MIMES.has(mime)) {
+          contentBlocks.push({ type: "image", source: { type: "base64", media_type: mime, data: fc.base64 } });
+        }
+      } else {
+        sourceTexts.push(`【${roleTag} ${fc.name}】\n${fc.content}`);
+      }
+    }
+  };
+
+  for (const sub of company.subfolders) {
+    if (sub.role !== "common") continue;
+    await readFromSub(sub.id, sub.disabledFiles || [], "[共通]");
+  }
+  if (folderPath) {
+    // チャットで選択された案件フォルダ（sub.activeではなくthread.folderPathを使用）
+    await readFromSub(folderPath, disabledFiles || [], "[案件]");
+  } else {
+    // フォールバック: sub.active な案件フォルダ
+    for (const sub of company.subfolders) {
+      if (!(sub.role === "job" && sub.active)) continue;
+      await readFromSub(sub.id, sub.disabledFiles || [], "[案件]");
+    }
+  }
+
+  const fullPrompt = sourceTexts.length > 0
+    ? `${prompt}\n\n## 原本ファイル（テキスト抽出済み）\n${sourceTexts.join("\n\n")}`
+    : prompt;
+  contentBlocks.push({ type: "text", text: fullPrompt });
+
   try {
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 2048,
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
     });
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";

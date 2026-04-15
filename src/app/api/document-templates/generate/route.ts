@@ -17,8 +17,10 @@ export async function POST(request: NextRequest) {
   // ファイル読み取り
   type ContentBlock =
     | { type: "text"; text: string }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
+    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
 
+  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
   const contentBlocks: ContentBlock[] = [];
   const textParts: string[] = [];
 
@@ -26,11 +28,19 @@ export async function POST(request: NextRequest) {
     const content = await readFileContent(f.id);
     if (!content) continue;
     if (content.base64) {
-      contentBlocks.push({
-        type: "document",
-        source: { type: "base64", media_type: content.mimeType || "application/pdf", data: content.base64 },
-        title: f.name,
-      });
+      const mime = content.mimeType || "application/pdf";
+      if (mime === "application/pdf") {
+        contentBlocks.push({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: content.base64 },
+          title: f.name,
+        });
+      } else if (IMAGE_MIMES.has(mime)) {
+        contentBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: mime, data: content.base64 },
+        });
+      }
     } else {
       textParts.push(`【${f.name}】\n${content.content}`);
     }

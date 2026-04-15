@@ -9,7 +9,11 @@ import { isPathDisabled } from "@/lib/disabled-filter";
 const client = new Anthropic();
 
 export async function POST(request: NextRequest) {
-  const { companyId } = await request.json();
+  const { companyId, folderPath, disabledFiles } = await request.json() as {
+    companyId: string;
+    folderPath?: string;
+    disabledFiles?: string[];
+  };
 
   const config = await getWorkspaceConfig();
   const company = companyId
@@ -25,16 +29,12 @@ export async function POST(request: NextRequest) {
   const pdfFiles: { name: string; base64: string; mimeType: string }[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
-  // 共通+案件フォルダのファイルを読む
-  for (const sub of company.subfolders) {
-    const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
-    if (!isActive) continue;
-
-    const files = await readAllFilesInFolder(sub.id);
-    const disabled = sub.disabledFiles || [];
-
+  if (folderPath) {
+    // チャットのフォルダ選択カードで指定されたパスを読む
+    const files = await readAllFilesInFolder(folderPath);
+    const disabled = disabledFiles || [];
     for (const content of files) {
-      if (isPathDisabled(content.path, disabled)) continue;
+      if (disabled.includes(content.path)) continue;
       const ext = path.extname(content.name).toLowerCase();
       const mime = mimeFromExtension(ext);
       sourceFiles.push({ id: content.path, name: content.name, mimeType: mime });
@@ -44,17 +44,35 @@ export async function POST(request: NextRequest) {
         allTexts.push(`--- ${content.name} ---\n${content.content}`);
       }
     }
+  } else {
+    // フォールバック: sub.role === "job" && sub.active の案件フォルダ
+    for (const sub of company.subfolders) {
+      if (!(sub.role === "job" && sub.active)) continue;
+      const files = await readAllFilesInFolder(sub.id);
+      const disabled = sub.disabledFiles || [];
+      for (const content of files) {
+        if (isPathDisabled(content.path, disabled)) continue;
+        const ext = path.extname(content.name).toLowerCase();
+        const mime = mimeFromExtension(ext);
+        sourceFiles.push({ id: content.path, name: content.name, mimeType: mime });
+        if (content.base64) {
+          pdfFiles.push({ name: content.name, base64: content.base64, mimeType: content.mimeType || "application/pdf" });
+        } else {
+          allTexts.push(`--- ${content.name} ---\n${content.content}`);
+        }
+      }
+    }
   }
 
   if (allTexts.length === 0 && pdfFiles.length === 0) {
-    return NextResponse.json({ error: "読み取れるファイルがありません" }, { status: 400 });
+    return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  const promptText = `以下の資料を全て確認し、内容を抽出・整理してください。
+  const promptText = `以下の「案件資料」を確認し、今回の手続き・案件に関する情報だけを抽出・整理してください。
 
 ルール:
-- 案件固有の情報を抽出・整理する（スケジュール、手続内容、指示事項、議案など）
-- 登記簿・定款・株主名簿など基本資料の内容はそのまま書き出さない（参照用として使うが出力しない）
+- **出力するのは「案件固有の情報」だけ**（スケジュール、手続内容、指示事項、議案、当事者、対象株式等）
+- **会社の基本情報（商号・本店・事業目的・役員構成等）は出力しない**。それは別管理（基本情報タブ）で扱う
 - 各カテゴリは ## 見出しで区切る
 - 結論を簡潔に記載。冗長な説明は不要
 - 一覧系は表形式で簡潔に
@@ -63,20 +81,31 @@ export async function POST(request: NextRequest) {
 - 根拠となるファイル名を各項目に記載
 - 不明・未確認の情報は「*要確認*」とだけ記載
 
-資料:
+## 案件資料
 ${allTexts.join("\n\n")}`;
 
   type ContentBlock =
     | { type: "text"; text: string }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
+    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
+  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
   const contentBlocks: ContentBlock[] = [];
   for (const pdf of pdfFiles) {
-    contentBlocks.push({
-      type: "document",
-      source: { type: "base64", media_type: pdf.mimeType, data: pdf.base64 },
-      title: pdf.name,
-    });
+    if (pdf.mimeType === "application/pdf") {
+      contentBlocks.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: pdf.base64 },
+        title: pdf.name,
+      });
+    } else if (IMAGE_MIMES.has(pdf.mimeType)) {
+      contentBlocks.push({
+        type: "image",
+        source: { type: "base64", media_type: pdf.mimeType, data: pdf.base64 },
+      });
+    }
+    // それ以外のbase64（未対応MIME）はスキップ
   }
   contentBlocks.push({ type: "text", text: promptText });
 

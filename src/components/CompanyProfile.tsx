@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Company } from "@/types";
 import ProfileTemplateModal from "./ProfileTemplateModal";
+import ProfileSourceModal from "./ProfileSourceModal";
 import FilePreview from "./FilePreview";
 
 interface ViewerFile {
@@ -174,6 +175,42 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [showSourceModal, setShowSourceModal] = useState(false);
+  const [availableSources, setAvailableSources] = useState<{ path: string; name: string; folder: string }[]>([]);
+  const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
+
+  // 共通フォルダの全ファイル一覧と選択状態をロード
+  useEffect(() => {
+    if (!company) return;
+    (async () => {
+      try {
+        const res = await fetch(`/api/workspace/profile/sources?companyId=${encodeURIComponent(company.id)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const files = data.files || [];
+        setAvailableSources(files);
+        const saved: string[] = data.selected || [];
+        // 未設定なら全選択扱い
+        setSelectedSources(saved.length > 0 ? new Set(saved) : new Set(files.map((f: { path: string }) => f.path)));
+      } catch { /* ignore */ }
+    })();
+  }, [company]);
+
+  const toggleSource = async (path: string) => {
+    if (!company) return;
+    const next = new Set(selectedSources);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    setSelectedSources(next);
+    // 全選択なら未設定扱い（空配列で保存）
+    const paths = next.size === availableSources.length ? [] : Array.from(next);
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "setProfileSources", companyId: company.id, paths }),
+    });
+    onUpdate();
+  };
 
   if (!company) {
     return (
@@ -234,6 +271,12 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                 className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
               >
                 抽出項目
+              </button>
+              <button
+                onClick={() => setShowSourceModal(true)}
+                className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                参照ファイル
               </button>
               {profile?.structured && (
                 <button
@@ -421,6 +464,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
           <div className="w-full max-w-4xl">{profileContent}</div>
         </div>
         {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
+        {showSourceModal && company && <ProfileSourceModal company={company} onClose={() => setShowSourceModal(false)} onSaved={onUpdate} />}
       </>
     );
   }

@@ -83,14 +83,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ isStale: true, reason: "not_generated" });
   }
 
-  // 共通フォルダの現在のファイルmtimeを取得
+  // 共通フォルダの現在のファイルmtimeを取得（profileSources指定があればそれに絞る）
   const commonSubs = company.subfolders.filter(s => s.role === "common");
+  const profileSourcesSet = company.profileSources && company.profileSources.length > 0
+    ? new Set(company.profileSources)
+    : null;
   const currentFiles: { path: string; mtime: string }[] = [];
   for (const sub of commonSubs) {
     const allContents = await readAllFilesInFolder(sub.id);
     const disabled = sub.disabledFiles || [];
     for (const content of allContents) {
       if (isPathDisabled(content.path, disabled)) continue;
+      if (profileSourcesSet && !profileSourcesSet.has(content.path)) continue;
       try {
         const st = await fs.stat(content.path);
         currentFiles.push({ path: content.path, mtime: st.mtime.toISOString() });
@@ -139,6 +143,9 @@ export async function POST(request: NextRequest) {
 
   // 共通フォルダのファイルをローカルファイルシステムから読む
   const commonSubs = company.subfolders.filter(s => s.role === "common");
+  const profileSourcesSet = company.profileSources && company.profileSources.length > 0
+    ? new Set(company.profileSources)
+    : null; // null = 未設定 → 全ファイル使用（既存動作）
 
   const textFiles: { path: string; name: string; content: string }[] = [];
   const pdfFiles: { path: string; name: string; base64: string; mimeType: string }[] = [];
@@ -149,6 +156,8 @@ export async function POST(request: NextRequest) {
 
     for (const content of allContents) {
       if (isPathDisabled(content.path, disabled)) continue;
+      // profileSources が設定されていれば、そこに含まれるものだけ使う
+      if (profileSourcesSet && !profileSourcesSet.has(content.path)) continue;
 
       if (content.base64) {
         pdfFiles.push({
@@ -174,17 +183,26 @@ export async function POST(request: NextRequest) {
   // メッセージ組み立て
   type ContentBlock =
     | { type: "text"; text: string }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
+    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
 
+  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
   const contentBlocks: ContentBlock[] = [];
 
-  // PDFをドキュメントとして添付
+  // PDFは document、画像は image として添付
   for (const pdf of pdfFiles) {
-    contentBlocks.push({
-      type: "document",
-      source: { type: "base64", media_type: pdf.mimeType, data: pdf.base64 },
-      title: pdf.name,
-    });
+    if (pdf.mimeType === "application/pdf") {
+      contentBlocks.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: pdf.base64 },
+        title: pdf.name,
+      });
+    } else if (IMAGE_MIMES.has(pdf.mimeType)) {
+      contentBlocks.push({
+        type: "image",
+        source: { type: "base64", media_type: pdf.mimeType, data: pdf.base64 },
+      });
+    }
   }
 
   // テキストファイル + プロンプト
