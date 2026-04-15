@@ -326,6 +326,7 @@ JSONで返してください。基本は全て文字列値です。
 
             // 1) 文字列置換（XMLエスケープ付き）
             const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const replacedKeys = new Set<string>();
             for (const fileName of Object.keys(zip.files)) {
               if (fileName.endsWith(".xml") || fileName.endsWith(".xml.rels")) {
                 let content = zip.file(fileName)?.asText();
@@ -338,6 +339,7 @@ JSONで返してください。基本は全て文字列値です。
                       if (content.includes(pat)) {
                         content = content.split(pat).join(escaped);
                         changed = true;
+                        replacedKeys.add(escaped);
                       }
                     }
                   }
@@ -346,14 +348,41 @@ JSONで返してください。基本は全て文字列値です。
               }
             }
 
-            // 2) 全共有文字列をスキャンし、純数値のものを検出（プレースホルダー有無を問わない）
+            // 1b) 置換された<si>要素からルビ（rPh/phoneticPr）を除去
+            //     置換後のテキスト長とルビのsb/eb範囲が不整合になり修復エラーの原因になるため
+            {
+              let ssContent = zip.file(ssPath)?.asText();
+              if (ssContent) {
+                let ssChanged = false;
+                ssContent = ssContent.replace(
+                  /<si\b[^>]*>([\s\S]*?)<\/si>/g,
+                  (siTag: string, inner: string) => {
+                    // この<si>に置換された値が含まれているかチェック
+                    const hasReplaced = Array.from(replacedKeys).some(v => inner.includes(v));
+                    if (!hasReplaced) return siTag;
+                    // rPhとphoneticPrを除去
+                    const cleaned = inner
+                      .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
+                      .replace(/<phoneticPr\b[^/]*\/>/g, "");
+                    if (cleaned !== inner) {
+                      ssChanged = true;
+                      return `<si>${cleaned}</si>`;
+                    }
+                    return siTag;
+                  }
+                );
+                if (ssChanged) zip.file(ssPath, ssContent);
+              }
+            }
+
+            // 2) 全共有文字列をスキャンし、純数値のものを検出
             const numericSiIndexes = new Map<number, string>();
-            const ssXml = zip.file(ssPath)?.asText();
-            if (ssXml) {
+            let currentSsXml = zip.file(ssPath)?.asText();
+            if (currentSsXml) {
               const siRegex = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
               let m: RegExpExecArray | null;
               let i = 0;
-              while ((m = siRegex.exec(ssXml)) !== null) {
+              while ((m = siRegex.exec(currentSsXml)) !== null) {
                 const decoded = extractSiText(m[1]);
                 const cleaned = decoded.replace(/,/g, "").trim();
                 if (cleaned !== "" && /^-?\d+(\.\d+)?$/.test(cleaned)) {
@@ -383,6 +412,25 @@ JSONで返してください。基本は全て文字列値です。
                 if (sheetChanged) zip.file(fileName, sheetXml);
               }
             }
+
+            // 4) sharedStrings.xmlのcount属性を実際のt="s"参照数に合わせて更新
+            currentSsXml = zip.file(ssPath)?.asText();
+            if (currentSsXml) {
+              let totalStringRefs = 0;
+              for (const fileName of Object.keys(zip.files)) {
+                if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
+                const sheetXml = zip.file(fileName)?.asText();
+                if (sheetXml) {
+                  totalStringRefs += (sheetXml.match(/<c\b[^>]*\bt="s"[^>]*>/g) || []).length;
+                }
+              }
+              const updatedSsXml = currentSsXml.replace(
+                /<sst\b[^>]*>/,
+                (tag: string) => tag.replace(/\bcount="[^"]*"/, `count="${totalStringRefs}"`)
+              );
+              if (updatedSsXml !== currentSsXml) zip.file(ssPath, updatedSsXml);
+            }
+
 
             const outputBuffer = zip.generate({ type: "nodebuffer" });
             const outputName = `${company.name}_${baseName}.xlsx`;
