@@ -109,13 +109,15 @@ function stripDuplicatedUnit(value: string, key: string, templateContent: string
 
 // テンプレートフォルダ + マスターシート → 書類生成
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath, mode, caseRoomId, masterContent: directMasterContent, confirmedAnswers } = await request.json() as {
+  const { companyId, templateFolderPath, mode, caseRoomId, masterContent: directMasterContent, confirmedAnswers, folderPath: caseFolderPath, disabledFiles: caseDisabledFiles } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
     mode?: "fill" | "generate";
     caseRoomId?: string;
     masterContent?: string;
     confirmedAnswers?: Record<string, string>;
+    folderPath?: string;
+    disabledFiles?: string[];
   };
 
   const config = await getWorkspaceConfig();
@@ -192,13 +194,144 @@ export async function POST(request: NextRequest) {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mammothHL = require("mammoth");
       const documentsHL: { name: string; docxBase64: string; previewHtml: string; fileName: string }[] = [];
+
+      // 生ファイルは送らない。抽出済みデータ（基本情報+案件整理+clarify回答）だけ使う。
+      // 足りない情報はclarifyが事前に聞いているはず。
+      const hlSourceTexts: string[] = []; // 後方互換用（Excel処理で参照）
+
       docxFiles.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
       for (const df of docxFiles) {
         try {
           const ext = df.name.toLowerCase().split(".").pop() || "";
           const rawBuffer = await fs.readFile(df.path);
           const baseName = df.name.replace(/\.[^.]+$/, "");
-          if (ext === "xlsx" || ext === "xls") continue; // Excel はハイライト方式非対応
+          if (ext === "xlsx" || ext === "xls") {
+            // Excel: まずプレースホルダーをチェック、なければ黄色セル検出
+            const xlPlaceholders = extractPlaceholders(df.content);
+            console.log(`[produce/excel] ${df.name}: placeholders=${xlPlaceholders.length}`);
+
+            if (xlPlaceholders.length === 0) {
+              // プレースホルダーなし → 黄色セル方式
+              try {
+                const { extractXlsxMarkedCells, replaceXlsxMarkedCells, getXlsxMarkedText } = await import("@/lib/xlsx-marker-parser");
+                const markedCells = extractXlsxMarkedCells(rawBuffer);
+                console.log(`[produce/excel] ${df.name}: yellow cells=${markedCells.length}`);
+                if (markedCells.length === 0) { console.log(`[produce/excel] ${df.name}: no placeholders or yellow cells, skipping`); continue; }
+
+                const xlMarkedText = getXlsxMarkedText(rawBuffer);
+                const xlMarkerPrompt = `あなたは司法書士事務所の書類作成担当です。
+以下はExcelの書類テンプレートです。★マーク★で囲まれた部分が「可変箇所」（前案件の値）です。
+今回のデータで差し替えてください。
+
+## Excelテンプレート
+${xlMarkedText}
+
+## 今回の案件データ
+${dataContext}
+${directMasterContent ? `\n### 案件整理テキスト\n${directMasterContent}\n` : ""}
+
+## 回答形式
+★の元の値をキー、新しい値をバリューとするJSONで返してください。値は必ず文字列で。
+**★マーク★で囲まれた全ての値をキーとして返すこと。省略しない。**
+JSONのみ返してください。`;
+
+                const xlResponse = await client.messages.create({
+                  model: "claude-sonnet-4-6",
+                  max_tokens: 4096,
+                  messages: [{ role: "user", content: xlMarkerPrompt }],
+                });
+                const xlText = xlResponse.content[0].type === "text" ? xlResponse.content[0].text : "";
+                const xlJsonMatch = xlText.match(/\{[\s\S]*\}/);
+                if (xlJsonMatch) {
+                  let xlParsed: Record<string, unknown> = {};
+                  try { xlParsed = JSON.parse(xlJsonMatch[0]); } catch {
+                    const lb = xlJsonMatch[0].lastIndexOf("}");
+                    if (lb > 0) try { xlParsed = JSON.parse(xlJsonMatch[0].substring(0, lb + 1)); } catch { /* give up */ }
+                  }
+                  const xlReplacements: Record<string, string> = {};
+                  for (const [k, v] of Object.entries(xlParsed)) {
+                    if (typeof v !== "string") continue;
+                    xlReplacements[k.replace(/★/g, "")] = toHalfWidth(v);
+                  }
+                  console.log(`[produce/excel] ${df.name}: replacements=${Object.keys(xlReplacements).length}`);
+                  const xlOutBuf = replaceXlsxMarkedCells(rawBuffer, xlReplacements);
+                  const xlOutName = `${company.name}_${baseName}.xlsx`;
+                  documentsHL.push({ name: baseName, docxBase64: xlOutBuf.toString("base64"), previewHtml: "", fileName: xlOutName });
+                }
+              } catch (xlErr) {
+                console.error(`[produce/excel/highlight] ${df.name}:`, xlErr instanceof Error ? xlErr.message : xlErr);
+              }
+              continue;
+            }
+
+            // Excel用のAI値生成（簡易版：ハイライトで既に収集した原本データを使用）
+            const xlPlaceholderList = xlPlaceholders.map(p => `- ${p.name}`).join("\n");
+            const xlPrompt = `以下の会社データから、Excelテンプレートのプレースホルダーに入る値をJSON形式で返してください。
+
+## 会社データ
+${dataContext}
+${directMasterContent ? `\n## 案件整理テキスト\n${directMasterContent}\n` : masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
+${globalMemo ? `\n## 共通ルール\n${globalMemo}\n` : ""}
+
+## プレースホルダー一覧
+${xlPlaceholderList}
+
+JSONのみ返してください。データにない情報は "（要確認）" としてください。`;
+
+            try {
+              const xlResponse = await client.messages.create({
+                model: "claude-sonnet-4-6",
+                max_tokens: 4096,
+                messages: [{ role: "user", content: xlPrompt }],
+              });
+              const xlText = xlResponse.content[0].type === "text" ? xlResponse.content[0].text : "";
+              const xlJsonMatch = xlText.match(/\{[\s\S]*\}/);
+              if (xlJsonMatch) {
+                const xlValues: Record<string, string | string[]> = JSON.parse(xlJsonMatch[0]);
+
+                // Excel用の値をtoHalfWidthで処理
+                const rawData: Record<string, string> = {};
+                for (const [key, value] of Object.entries(xlValues)) {
+                  if (typeof value === "boolean") continue;
+                  const v = Array.isArray(value) ? value[0] || "（要確認）" : value;
+                  rawData[key] = toHalfWidth(stripDuplicatedUnit(v, key, df.content));
+                }
+
+                // PizZipで既存のExcel処理を実行
+                const xlZip = new PizZip(rawBuffer);
+                const ssPath = "xl/sharedStrings.xml";
+
+                // 文字列置換
+                const xlXmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                for (const fileName of Object.keys(xlZip.files)) {
+                  if (fileName.endsWith(".xml") || fileName.endsWith(".xml.rels")) {
+                    let content = xlZip.file(fileName)?.asText();
+                    if (content) {
+                      let changed = false;
+                      for (const [key, replacement] of Object.entries(rawData)) {
+                        const patterns = [`【${key}】`, `{{${key}}}`, `｛｛${key}｝｝`];
+                        const escaped = xlXmlEscape(replacement);
+                        for (const pat of patterns) {
+                          if (content.includes(pat)) {
+                            content = content.split(pat).join(escaped);
+                            changed = true;
+                          }
+                        }
+                      }
+                      if (changed) xlZip.file(fileName, content);
+                    }
+                  }
+                }
+
+                const xlOutputBuffer = xlZip.generate({ type: "nodebuffer" });
+                const xlOutputName = `${company.name}_${baseName}.xlsx`;
+                documentsHL.push({ name: baseName, docxBase64: xlOutputBuffer.toString("base64"), previewHtml: "", fileName: xlOutputName });
+              }
+            } catch (xlErr) {
+              console.error(`[produce/highlight] Excel skipped ${df.name}:`, xlErr instanceof Error ? xlErr.message : xlErr);
+            }
+            continue;
+          }
           let wordBuffer = rawBuffer;
           const isOldDoc = ext === "doc" || ext === "docm";
           if (isOldDoc) {
@@ -220,41 +353,7 @@ export async function POST(request: NextRequest) {
             .map(f => `- ★${f.originalValue}★ → ${f.comment}`)
             .join("\n");
 
-          // 共通・案件フォルダの原本ファイルを content blocks で送る
-          type HLContentBlock =
-            | { type: "text"; text: string }
-            | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
-            | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
-          const IMAGE_MIMES_HL = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-          const hlContentBlocks: HLContentBlock[] = [];
-          const hlSourceTexts: string[] = [];
-
-          for (const sub of company.subfolders) {
-            const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
-            if (!isActive) continue;
-            const disabled = sub.disabledFiles || [];
-            const { isPathDisabled } = await import("@/lib/disabled-filter");
-            const subFiles = await readAllFilesInFolder(sub.id);
-            for (const fc of subFiles) {
-              if (isPathDisabled(fc.path, disabled)) continue;
-              const roleTag = sub.role === "common" ? "[共通]" : "[案件]";
-              if (fc.base64) {
-                const mime = fc.mimeType || "application/pdf";
-                if (mime === "application/pdf") {
-                  hlContentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: fc.base64 }, title: `${roleTag} ${fc.name}` });
-                } else if (IMAGE_MIMES_HL.has(mime)) {
-                  hlContentBlocks.push({ type: "image", source: { type: "base64", media_type: mime, data: fc.base64 } });
-                }
-              } else {
-                hlSourceTexts.push(`【${roleTag} ${fc.name}】\n${fc.content}`);
-              }
-            }
-          }
-          // thread.folderPath の案件フォルダも読む（sub.activeでない場合）
-          if (templateFolderPath) {
-            // templateFolderPath は書類テンプレのパスなので、案件フォルダのパスではない
-            // 案件フォルダは company.subfolders から取得済み
-          }
+          // ソースファイルはループ外で読み込み済み（hlSourceTexts, caseFiles）
 
           const markerPrompt = `あなたは司法書士事務所の書類作成担当です。
 以下は過去案件の完成書類をテンプレートとして使ったものです。★マーク★で囲まれた部分が「可変箇所」（前案件の値が入っている場所）です。
@@ -274,54 +373,93 @@ ${globalMemo ? `\n### 共通ルール\n${globalMemo}\n` : ""}
 ${memoText ? `\n### テンプレート注意事項\n${memoText}\n` : ""}
 ${confirmedAnswers && Object.keys(confirmedAnswers).length > 0 ? `\n### ユーザー確定済みの値\n${Object.entries(confirmedAnswers).map(([k, v]) => `- ${k}: ${v}`).join("\n")}\n` : ""}
 
-### 原本ファイル（共通フォルダ・案件フォルダの資料）
-${hlSourceTexts.join("\n\n")}
-
 ## 回答形式
-★マーク★の元の値をキー、新しい値をバリューとするJSONで返してください。値は必ず文字列で。
-同じ元の値が複数箇所に出現する場合でも、書類内の位置によって意味が異なることがあります（例: 同じ日付でも「決定日」と「届出日」で違う値になる場合）。その場合は文脈から正しい値を判断してください。
+**JSONのみ返してください。説明文やコメントは一切不要です。**
 
-例: {"株式会社HIBARI": "株式会社ABC", "佐藤 羽瑠": "山田太郎", "令和８年３月２７日": "令和７年１月１５日"}
+### 通常（1通の場合）
+★マーク★の元の値をキー、新しい値をバリューとするオブジェクトで返す。
+例: {"株式会社HIBARI": "株式会社ABC", "佐藤 羽瑠": "山田太郎"}
+
+### 複数通が必要な場合（共通ルールで「株主毎に1枚」等の指示がある場合）
+配列で返す。各要素が1通分の置換マップ。
+例: [{"株主名": "山田太郎", "住所": "東京都..."}, {"株主名": "鈴木花子", "住所": "大阪府..."}]
+**共通の値（会社名・日付等）も各要素に含めること。**
 
 重要:
+- **★マーク★で囲まれた全ての値をキーとして返すこと。省略しない。変更なしの値もそのまま返す**
+- **★の値はテンプレート（前案件）のもの。今回のデータに対応する値に必ず差し替える。テンプレの値をそのまま返してはいけない（会社名・住所・人名・株数・金額・日付 全て）**
+- 基本情報の「株主構成」に各株主の氏名・住所・持株数・持株比率がある。テンプレの株式数や議決権数は今回の株主のデータに置き換えること
 - **書類を上から通して読み、各★の位置が何を指すか文脈から正確に判断する**
+- **共通ルールに「株主毎に1枚」「各株主に1通ずつ」等の指示があれば、配列形式で株主数分返す**
 - 元の値の「型」（日付の書式、全角/半角、数値の桁区切り等）を維持すること
 - 原本ファイル・基本情報・案件整理テキストに書いてある情報は必ず使い、「要確認」にしない
 - どこにも見つからない情報だけ "（要確認）" とすること`;
 
-          hlContentBlocks.push({ type: "text", text: markerPrompt });
-
+          // 抽出済みデータだけ送る（生ファイルは送らない＝コスト削減）
+          console.log(`[produce/highlight] ${df.name}: dataContext length=${dataContext.length}, masterContent length=${(directMasterContent || "").length}, prompt length=${markerPrompt.length}`);
+          if (df.name.includes("同意書") || df.name.includes("株主")) {
+            // 株主関連のテンプレで、株主データが含まれているか確認
+            console.log(`[produce/highlight] ${df.name}: 株主構成 in dataContext: ${dataContext.includes("株主構成") ? "YES" : "NO"}`);
+            console.log(`[produce/highlight] ${df.name}: 94500 in dataContext: ${dataContext.includes("94500") ? "YES" : "NO"}`);
+          }
           const markerResponse = await client.messages.create({
             model: "claude-sonnet-4-6",
             max_tokens: 4096,
-            messages: [{ role: "user", content: hlContentBlocks as Anthropic.ContentBlockParam[] }],
+            messages: [{ role: "user", content: markerPrompt }],
           });
           const markerText = markerResponse.content[0].type === "text" ? markerResponse.content[0].text : "";
-          const markerJsonMatch = markerText.match(/\{[\s\S]*\}/);
-          if (!markerJsonMatch) continue;
 
-          const replacements: Record<string, string> = {};
-          for (const [k, v] of Object.entries(JSON.parse(markerJsonMatch[0]))) {
-            if (typeof v !== "string") continue;
-            // AIが★マーク★をキーに含めて返す場合があるので除去
-            const cleanKey = k.replace(/★/g, "");
-            replacements[cleanKey] = toFullWidth(v);
+          // JSON パース（オブジェクトまたは配列）
+          const jsonMatch = markerText.match(/[\[{][\s\S]*[\]}]/);
+          if (!jsonMatch) continue;
+
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(jsonMatch[0]);
+          } catch {
+            const raw = jsonMatch[0];
+            const lastBrace = Math.max(raw.lastIndexOf("}"), raw.lastIndexOf("]"));
+            if (lastBrace > 0) {
+              try { parsed = JSON.parse(raw.substring(0, lastBrace + 1)); } catch { continue; }
+            } else { continue; }
           }
-          console.log("[produce/highlight] fields:", markedFields.map(f => `"${f.originalValue}"`).join(", "));
-          console.log("[produce/highlight] AI replacements:", JSON.stringify(replacements, null, 2));
-          // マッチ確認
-          for (const f of markedFields) {
-            if (replacements[f.originalValue]) {
-              console.log(`[produce/highlight] MATCH: "${f.originalValue}" -> "${replacements[f.originalValue]}"`);
-            } else {
-              console.log(`[produce/highlight] MISS: "${f.originalValue}" (no replacement found)`);
+
+          // 配列 → 複数通、オブジェクト → 1通
+          const replacementSets: Record<string, string>[] = [];
+          const parseOneSet = (obj: unknown): Record<string, string> => {
+            const result: Record<string, string> = {};
+            if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+              for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+                if (typeof v !== "string") continue;
+                result[k.replace(/★/g, "")] = toFullWidth(v);
+              }
             }
+            return result;
+          };
+
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) replacementSets.push(parseOneSet(item));
+          } else {
+            replacementSets.push(parseOneSet(parsed));
           }
-          const outputBuffer = replaceMarkedFields(wordBuffer, replacements);
-          const outputName = `${company.name}_${baseName}.docx`;
-          let previewHtml = "";
-          try { previewHtml = (await mammothHL.convertToHtml({ buffer: outputBuffer })).value; } catch { /* ignore */ }
-          documentsHL.push({ name: baseName, docxBase64: outputBuffer.toString("base64"), previewHtml, fileName: outputName });
+
+          console.log(`[produce/highlight] ${df.name}: ${replacementSets.length} copies, fields: ${markedFields.length}`);
+
+          // 各セットで書類生成
+          for (let ci = 0; ci < replacementSets.length; ci++) {
+            const replacements = replacementSets[ci];
+            const outputBuffer = replaceMarkedFields(wordBuffer, replacements);
+            const suffix = replacementSets.length > 1 ? `_${ci + 1}` : "";
+            const outputName = `${company.name}_${baseName}${suffix}.docx`;
+            let previewHtml = "";
+            try { previewHtml = (await mammothHL.convertToHtml({ buffer: outputBuffer })).value; } catch { /* ignore */ }
+            documentsHL.push({
+              name: replacementSets.length > 1 ? `${baseName}_${ci + 1}` : baseName,
+              docxBase64: outputBuffer.toString("base64"),
+              previewHtml,
+              fileName: outputName,
+            });
+          }
         } catch (err) {
           console.error(`[produce/highlight] skipped ${df.name}:`, err instanceof Error ? err.message : err);
         }

@@ -442,6 +442,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         templateFolderPath: templatePath,
         masterContent: organizeContent,
         confirmedAnswers,
+        folderPath: currentThread.folderPath,
+        disabledFiles: currentThread.disabledFiles,
       }),
     });
     const produceData = await produceRes.json();
@@ -498,7 +500,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const res = await fetch("/api/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, threadId: currentThread.id }),
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: currentThread.id,
+          folderPath: currentThread.folderPath,
+          disabledFiles: currentThread.disabledFiles,
+        }),
       });
       const reader = res.body?.getReader();
       if (reader) {

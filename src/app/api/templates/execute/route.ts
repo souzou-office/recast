@@ -69,17 +69,61 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  // テンプレートが指定されていればその内容を読んで、何が必要か把握させる
+  // テンプレートが指定されていれば、必要な「記載項目」を抽出して渡す（値は渡さない）
   let templateContext = "";
   if (templateFolderPath) {
     try {
       const templateFiles = await readAllFilesInFolder(templateFolderPath);
-      const templateTexts = templateFiles
-        .filter(f => f.content && !f.base64)
-        .map(f => `【テンプレート: ${f.name}】\n${f.content}`)
-        .join("\n\n");
-      if (templateTexts) {
-        templateContext = `\n## 書類テンプレート（これらの書類を作成する予定）\n以下のテンプレートで必要とされる情報を重点的に抽出してください。\nハイライトされた箇所やプレースホルダー（【】{{}}）が可変部分です。\n\n${templateTexts}\n`;
+      const itemsByFile: string[] = [];
+
+      for (const tf of templateFiles) {
+        if (tf.base64) continue;
+        const ext = tf.name.toLowerCase().split(".").pop() || "";
+        if (!["docx", "doc", "xlsx", "xls"].includes(ext)) continue;
+
+        // プレースホルダーから項目名を抽出（簡易版）
+        const phNames: string[] = [];
+        const phPatterns = [/【([^】]+)】/g, /\{\{([^}]+)\}\}/g, /｛｛([^｝]+)｝｝/g];
+        for (const re of phPatterns) {
+          let m;
+          while ((m = re.exec(tf.content)) !== null) {
+            const name = m[1].trim();
+            if (!name.startsWith("#") && !name.startsWith("/") && !phNames.includes(name)) {
+              phNames.push(name);
+            }
+          }
+        }
+        if (phNames.length > 0) {
+          itemsByFile.push(`- ${tf.name}: ${phNames.join(", ")}`);
+          continue;
+        }
+
+        // ハイライトテンプレの場合、ファイルを読んでマーク付きフィールドを取得
+        if (ext === "docx") {
+          try {
+            const buf = await import("fs/promises").then(fs => fs.readFile(tf.path));
+            const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
+            const fields = extractMarkedFields(buf);
+            if (fields.length > 0) {
+              // 値ではなく「項目の種類」を推定して渡す（日付、人名、住所、金額等）
+              const fieldDescs = fields.map(f => {
+                const v = f.originalValue;
+                if (/年.*月.*日|令和|平成/.test(v)) return "日付";
+                if (/都|道|府|県|市|区|町|丁目|番/.test(v)) return "住所";
+                if (/株式会社|有限|合同|組合/.test(v)) return "法人名";
+                if (/[，,]\d{3}/.test(v) || /^\d+$/.test(v.replace(/[，,]/g, ""))) return "数値（株数・金額等）";
+                if (f.comment) return f.comment;
+                return "人名等";
+              });
+              const unique = [...new Set(fieldDescs)];
+              itemsByFile.push(`- ${tf.name}: ${unique.join(", ")}`);
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      if (itemsByFile.length > 0) {
+        templateContext = `\n## 作成予定の書類と必要な記載項目\n以下の書類を作成する予定です。各書類に必要な項目の種類を示します。これらに該当する情報を案件資料から漏れなく抽出してください。\n${itemsByFile.join("\n")}\n`;
       }
     } catch { /* ignore */ }
   }
