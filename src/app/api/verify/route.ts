@@ -200,18 +200,9 @@ export async function POST(request: NextRequest) {
     } catch { /* ignore */ }
   }
   if (config.templateBasePath) {
-    try {
-      const { listFiles: listLocalFiles, readFileContent: readLocal } = await import("@/lib/files");
-      const parentFiles = await listLocalFiles(config.templateBasePath);
-      let memo = "";
-      for (const f of parentFiles) {
-        if (!f.isDirectory && (f.name.endsWith(".txt") || f.name.endsWith(".md"))) {
-          const content = await readLocal(f.path);
-          if (content) memo += `【共通ルール: ${f.name}】\n${content.content}\n\n`;
-        }
-      }
-      if (memo) globalMemoBlock = `\n## 共通ルール（最優先）\n${memo}\n`;
-    } catch { /* ignore */ }
+    const { loadGlobalRules } = await import("@/lib/global-rules");
+    const memo = await loadGlobalRules(config.templateBasePath, threadTemplatePath);
+    if (memo) globalMemoBlock = `\n## 共通ルール（最優先）\n${memo}\n`;
   }
 
   // --- 3c. これまでのQ&A（ユーザーが既に確定した内容） ---

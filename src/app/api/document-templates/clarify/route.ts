@@ -34,20 +34,9 @@ export async function POST(request: NextRequest) {
     .map(f => `【${f.name}】\n${f.content}`)
     .join("\n\n");
 
-  // templateBasePath 直下の共通ルール（テンプレフォルダの親）
-  let globalMemo = "";
-  if (config.templateBasePath) {
-    try {
-      const { listFiles: listLocalFiles, readFileContent: readLocal } = await import("@/lib/files");
-      const parentFiles = await listLocalFiles(config.templateBasePath);
-      for (const f of parentFiles) {
-        if (!f.isDirectory && (f.name.endsWith(".txt") || f.name.endsWith(".md"))) {
-          const content = await readLocal(f.path);
-          if (content) globalMemo += `【共通ルール: ${f.name}】\n${content.content}\n\n`;
-        }
-      }
-    } catch { /* ignore */ }
-  }
+  // 共通ルールフォルダの再帰読み込み
+  const { loadGlobalRules } = await import("@/lib/global-rules");
+  const globalMemo = await loadGlobalRules(config.templateBasePath, templateFolderPath);
 
   // プレースホルダーを抽出
   const allPlaceholders = new Set<string>();
@@ -117,17 +106,19 @@ ${placeholderList}
 - 表記ゆれレベルの違い（「株式会社」と「(株)」等はAIが正規化して使う）
 - プレースホルダー名から内容が推測できて、かつ対応データがある場合
 
-### 質問してよいもの（専門家判断が必要な場合だけ）
+### 質問してよいもの
 1. **テンプレート注意事項/共通ルールで明示的に「〜を確認すること」と書かれている項目**
-2. **案件フォルダ内の複数資料間で値が明確に矛盾している**（単なる表記ゆれは除く）
-3. **複数の解釈が可能で、かつ選択による影響が大きい**（例: 役員が複数いて手続き対象者が特定できない）
-4. **テンプレートに必要な値が、共通フォルダ・案件フォルダ・基本情報・案件整理のどこにも一切存在しない**（よくよく探した上で）
+2. **案件フォルダ内の複数資料間で値が矛盾している**
+3. **複数の解釈が可能**（例: 役員が複数いて手続き対象者が特定できない、日付が複数あってどれを使うか不明）
+4. **テンプレートに必要な値が見つからない**（書類の作成に必要だが、提供された資料のどこにもない情報）
 5. **既に回答された内容を受けて、新たに発生した確認事項**
+6. **確信が持てない値**（推測はできるが間違っていたら書類が無効になるような重要な値）
 
 ### 判断のコツ
-- 「このプレースホルダーはこの値でいこう」と確信を持って言えるなら質問しない
+- 日付（届出日・決議日・就任日等）は**特に重要**。資料から明確に特定できない場合は必ず質問する
+- 人名（誰が辞任するか、誰が就任するか等）も確信がなければ質問する
 - **既に確定した値は再質問しない**
-- 質問が0件なら空配列[]を返す（それが正しい状態）
+- 質問が0件なら空配列[]を返す
 
 ## 出力形式（JSONのみ）
 [

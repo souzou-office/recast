@@ -294,6 +294,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           companyId: company.id,
           folderPath: currentThread.folderPath,
           disabledFiles: currentThread.disabledFiles,
+          templateFolderPath: templatePath,
         }),
       });
       const reader = res.body?.getReader();
