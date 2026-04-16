@@ -14,7 +14,7 @@ import {
 const SUPPORTED_EXTENSIONS = new Set([
   ".txt", ".csv", ".json", ".md", ".xml",
   ".html", ".htm", ".log", ".tsv",
-  ".doc", ".docx", ".docm", ".xls", ".xlsx", ".pdf",
+  ".doc", ".docx", ".docm", ".xls", ".xlsx", ".xlsm", ".pdf",
   ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff",
 ]);
 

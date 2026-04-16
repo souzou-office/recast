@@ -24,11 +24,13 @@ async function extractDocxText(base64: string): Promise<string> {
 
 // 案件整理の結果と生成書類を突合せ
 export async function POST(request: NextRequest) {
-  const { companyId, fileIds, caseRoomId, threadId } = await request.json() as {
+  const { companyId, fileIds, caseRoomId, threadId, folderPath: caseFolderPath, disabledFiles: caseDisabledFiles } = await request.json() as {
     companyId: string;
     fileIds?: string[];
     caseRoomId?: string;
     threadId?: string;
+    folderPath?: string;
+    disabledFiles?: string[];
   };
 
   const config = await getWorkspaceConfig();
@@ -145,38 +147,25 @@ export async function POST(request: NextRequest) {
       }
     }
   } else {
-    // 共通フォルダ（基本情報）と案件フォルダ（手続き内容）を分けて収集
-    const commonTexts: string[] = [];
-    const caseTexts: string[] = [];
+    // 統一ヘルパーで共通+案件フォルダを読み込み（folderPath優先）
+    const { readCaseFiles } = await import("@/lib/read-case-files");
+    const caseFileSet = await readCaseFiles(company, {
+      folderPath: caseFolderPath,
+      disabledFiles: caseDisabledFiles,
+    });
 
-    for (const sub of company.subfolders) {
-      const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
-      if (!isActive) continue;
-
-      const disabled = sub.disabledFiles ?? [];
-      const files = await readAllFilesInFolder(sub.id);
-      const isCommon = sub.role === "common";
-
-      for (const fc of files) {
-        if (isPathDisabled(fc.path, disabled)) continue;
-        sourceFiles.push({ id: fc.path, name: fc.name, mimeType: fc.mimeType || "application/octet-stream" });
-
-        if (fc.base64) {
-          pushBase64File({ name: fc.name, mimeType: fc.mimeType, base64: fc.base64 }, `${isCommon ? "[原本/基本情報]" : "[原本/案件]"} ${fc.name}`);
-        } else {
-          if (isCommon) {
-            commonTexts.push(`【${fc.name}】\n${fc.content}`);
-          } else {
-            caseTexts.push(`【${fc.name}】\n${fc.content}`);
-          }
-        }
-      }
+    if (caseFileSet.commonTexts.length > 0) {
+      textParts.push("=== 原本: 共通フォルダ（定款・登記簿・株主名簿等の会社基本情報）===\n" + caseFileSet.commonTexts.join("\n\n"));
     }
-    if (commonTexts.length > 0) {
-      textParts.push("=== 原本: 共通フォルダ（定款・登記簿・株主名簿等の会社基本情報）===\n" + commonTexts.join("\n\n"));
+    if (caseFileSet.caseTexts.length > 0) {
+      textParts.push("=== 原本: 案件フォルダ（今回の手続き内容: 議事録・指示書・スケジュール等）===\n" + caseFileSet.caseTexts.join("\n\n"));
     }
-    if (caseTexts.length > 0) {
-      textParts.push("=== 原本: 案件フォルダ（今回の手続き内容: 議事録・指示書・スケジュール等）===\n" + caseTexts.join("\n\n"));
+    for (const pdf of caseFileSet.pdfBlocks) {
+      contentBlocks.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: pdf.base64 },
+        title: `${pdf.tag} ${pdf.name}`,
+      });
     }
   }
 
@@ -186,24 +175,7 @@ export async function POST(request: NextRequest) {
   if (masterSheet?.structured) referenceData["案件整理結果"] = masterSheet.structured;
   if (masterSheet?.content) referenceData["案件整理テキスト"] = masterSheet.content;
 
-  // --- 3b. テンプレート注意事項・共通ルール（メモ類） ---
-  let templateMemoBlock = "";
-  let globalMemoBlock = "";
-  if (threadTemplatePath) {
-    try {
-      const templateFiles = await readAllFilesInFolder(threadTemplatePath);
-      const templateMemo = templateFiles
-        .filter(f => !f.base64 && (f.name.endsWith(".txt") || f.name.endsWith(".md")))
-        .map(f => `【${f.name}】\n${f.content}`)
-        .join("\n\n");
-      if (templateMemo) templateMemoBlock = `\n## テンプレート注意事項（チェック観点の源泉）\n${templateMemo}\n`;
-    } catch { /* ignore */ }
-  }
-  if (config.templateBasePath) {
-    const { loadGlobalRules } = await import("@/lib/global-rules");
-    const memo = await loadGlobalRules(config.templateBasePath, threadTemplatePath);
-    if (memo) globalMemoBlock = `\n## 共通ルール（最優先）\n${memo}\n`;
-  }
+  // テンプレート・共通ルールは渡さない（最終チェックは原本vs生成書類の突合せのみ）
 
   // --- 3c. これまでのQ&A（ユーザーが既に確定した内容） ---
   const qaBlock = threadQA.length > 0
@@ -213,7 +185,7 @@ export async function POST(request: NextRequest) {
 
   // --- 4. プロンプト構築 ---
   const prompt = `以下の「原本（元資料）」と「生成済み書類（recastが作成した書類）」を突合せチェックしてください。
-${globalMemoBlock}${templateMemoBlock}${qaBlock}
+${qaBlock}
 ## 案件整理結果
 ${JSON.stringify(referenceData, null, 2)}
 
@@ -224,10 +196,6 @@ ${textParts.join("\n\n")}
 ${generatedTexts.join("\n\n")}
 
 ## チェック観点（重要度順）
-
-### 0. テンプレート注意事項・共通ルールの遵守（最優先）
-- 「テンプレート注意事項」「共通ルール」に書かれた指示を生成書類が守っているか
-- そこで「〜を確認すること」と書かれた項目が生成書類で正しく扱われているか
 
 ### 1. 原本と生成書類の整合性
 - 原本（定款・登記簿・株主名簿・議事録・指示書等）に記載されている情報と、生成書類の記載が一致しているか

@@ -56,8 +56,39 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // ハイライト方式のテンプレートかチェック
+  let markedFieldDescs: string[] = [];
   if (allPlaceholders.size === 0) {
-    return NextResponse.json({ questions: [] });
+    // プレースホルダーなし → ハイライト方式かもしれない
+    const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
+    for (const tf of templateFiles) {
+      if (tf.base64) continue;
+      const ext = tf.name.toLowerCase().split(".").pop() || "";
+      if (ext !== "docx") continue;
+      try {
+        const fsLib = await import("fs/promises");
+        const buf = await fsLib.readFile(tf.path);
+        const fields = extractMarkedFields(buf);
+        for (const f of fields) {
+          // コメントがあればそのまま使う。なければ値の「種類」を推定（元の値自体は渡さない＝前案件のデータだから）
+          let desc: string;
+          if (f.comment) {
+            desc = f.comment;
+          } else {
+            const v = f.originalValue;
+            if (/年.*月.*日|令和|平成/.test(v)) desc = "日付（決定日・届出日・払込期日等）";
+            else if (/都|道|府|県|市|区|町|丁目|番/.test(v)) desc = "住所";
+            else if (/株式会社|有限|合同|組合/.test(v)) desc = "法人名";
+            else if (/[，,]\d{3}/.test(v) || /^\d+$/.test(v.replace(/[，,]/g, ""))) desc = "数値（株数・金額等）";
+            else desc = "人名";
+          }
+          if (!markedFieldDescs.includes(desc)) markedFieldDescs.push(desc);
+        }
+      } catch { /* ignore */ }
+    }
+    if (markedFieldDescs.length === 0) {
+      return NextResponse.json({ questions: [] });
+    }
   }
 
   // マスターシートとプロファイル
@@ -70,7 +101,10 @@ export async function POST(request: NextRequest) {
     案件情報: masterSheet?.structured || {},
   }, null, 2);
 
-  const placeholderList = Array.from(allPlaceholders).join(", ");
+  // プレースホルダーまたはハイライトフィールドのリスト
+  const placeholderList = allPlaceholders.size > 0
+    ? Array.from(allPlaceholders).join(", ")
+    : markedFieldDescs.map(d => `「${d}」`).join(", ");
 
   // これまでのQ&Aを前提として追加
   const qaBlock = previousQA && previousQA.length > 0
