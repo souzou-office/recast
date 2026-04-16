@@ -134,21 +134,9 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // 共通メモ（テンプレートフォルダの親=templateBasePath直下のテキストファイル）
-  let globalMemo = "";
-  if (config.templateBasePath) {
-    try {
-      const { listFiles: listLocalFiles } = await import("@/lib/files");
-      const parentFiles = await listLocalFiles(config.templateBasePath);
-      for (const f of parentFiles) {
-        if (!f.isDirectory && (f.name.endsWith(".txt") || f.name.endsWith(".md"))) {
-          const { readFileContent: readLocal } = await import("@/lib/files");
-          const content = await readLocal(f.path);
-          if (content) globalMemo += `【共通ルール: ${f.name}】\n${content.content}\n\n`;
-        }
-      }
-    } catch { /* ignore */ }
-  }
+  // 共通ルールフォルダの再帰読み込み（templateBasePath配下の全ファイル、テンプレフォルダ自体は除外）
+  const { loadGlobalRules } = await import("@/lib/global-rules");
+  const globalMemo = await loadGlobalRules(config.templateBasePath, templateFolderPath);
 
   // マスターシートとプロファイル（caseRoom優先）
   const caseRoom = caseRoomId ? company.caseRooms?.find(r => r.id === caseRoomId) : null;
@@ -184,8 +172,162 @@ export async function POST(request: NextRequest) {
     }
 
     if (allPlaceholders.size === 0) {
-      return new Response(JSON.stringify({ error: "テンプレートにプレースホルダーが見つかりません。【】や{{}}で囲んだプレースホルダーを入れてください" }), {
-        status: 400, headers: { "Content-Type": "application/json" },
+      // ハイライト方式のテンプレートかもしれないので、docxファイルにハイライトがあるかチェック
+      const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
+      let hasHighlights = false;
+      for (const df of docxFiles) {
+        const ext = df.name.toLowerCase().split(".").pop() || "";
+        if (ext === "xlsx" || ext === "xls") continue;
+        try {
+          const buf = await fs.readFile(df.path);
+          if (extractMarkedFields(buf).length > 0) { hasHighlights = true; break; }
+        } catch { /* ignore */ }
+      }
+      if (!hasHighlights) {
+        return new Response(JSON.stringify({ error: "テンプレートにプレースホルダーもハイライトも見つかりません。【】や{{}}で囲むか、可変部分に黄色ハイライトを引いてください" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      // ハイライトあり → プレースホルダー用AI呼び出しをスキップして直接ファイル処理へ
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mammothHL = require("mammoth");
+      const documentsHL: { name: string; docxBase64: string; previewHtml: string; fileName: string }[] = [];
+      docxFiles.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
+      for (const df of docxFiles) {
+        try {
+          const ext = df.name.toLowerCase().split(".").pop() || "";
+          const rawBuffer = await fs.readFile(df.path);
+          const baseName = df.name.replace(/\.[^.]+$/, "");
+          if (ext === "xlsx" || ext === "xls") continue; // Excel はハイライト方式非対応
+          let wordBuffer = rawBuffer;
+          const isOldDoc = ext === "doc" || ext === "docm";
+          if (isOldDoc) {
+            const docxPath = df.path.replace(/\.(doc|docm)$/i, ".docx");
+            const fsSync = require("fs");
+            if (fsSync.existsSync(docxPath)) wordBuffer = fsSync.readFileSync(docxPath);
+            else continue;
+          }
+          const { extractMarkedFields: emf, replaceMarkedFields, getMarkedDocumentText } = await import("@/lib/docx-marker-parser");
+          const markedFields = emf(wordBuffer);
+          if (markedFields.length === 0) continue;
+
+          // 文書全体を★マーク付きで取得（AIが文脈を見ながら判断できるように）
+          const markedDocText = getMarkedDocumentText(wordBuffer);
+
+          // コメント付きフィールドのリスト（補足情報として）
+          const commentList = markedFields
+            .filter(f => f.comment)
+            .map(f => `- ★${f.originalValue}★ → ${f.comment}`)
+            .join("\n");
+
+          // 共通・案件フォルダの原本ファイルを content blocks で送る
+          type HLContentBlock =
+            | { type: "text"; text: string }
+            | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
+            | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+          const IMAGE_MIMES_HL = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+          const hlContentBlocks: HLContentBlock[] = [];
+          const hlSourceTexts: string[] = [];
+
+          for (const sub of company.subfolders) {
+            const isActive = sub.role === "common" || (sub.role === "job" && sub.active);
+            if (!isActive) continue;
+            const disabled = sub.disabledFiles || [];
+            const { isPathDisabled } = await import("@/lib/disabled-filter");
+            const subFiles = await readAllFilesInFolder(sub.id);
+            for (const fc of subFiles) {
+              if (isPathDisabled(fc.path, disabled)) continue;
+              const roleTag = sub.role === "common" ? "[共通]" : "[案件]";
+              if (fc.base64) {
+                const mime = fc.mimeType || "application/pdf";
+                if (mime === "application/pdf") {
+                  hlContentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: fc.base64 }, title: `${roleTag} ${fc.name}` });
+                } else if (IMAGE_MIMES_HL.has(mime)) {
+                  hlContentBlocks.push({ type: "image", source: { type: "base64", media_type: mime, data: fc.base64 } });
+                }
+              } else {
+                hlSourceTexts.push(`【${roleTag} ${fc.name}】\n${fc.content}`);
+              }
+            }
+          }
+          // thread.folderPath の案件フォルダも読む（sub.activeでない場合）
+          if (templateFolderPath) {
+            // templateFolderPath は書類テンプレのパスなので、案件フォルダのパスではない
+            // 案件フォルダは company.subfolders から取得済み
+          }
+
+          const markerPrompt = `あなたは司法書士事務所の書類作成担当です。
+以下は過去案件の完成書類をテンプレートとして使ったものです。★マーク★で囲まれた部分が「可変箇所」（前案件の値が入っている場所）です。
+
+この書類を上から通して読み、★マーク★の各箇所が書類の文脈上どのような意味の値なのか判断してください。
+その上で、今回の案件データ（下記の原本ファイル・基本情報・案件整理テキスト）から正しい値を見つけて差し替えてください。
+
+## 書類テンプレート（★マーク★部分が差し替え対象）
+${markedDocText}
+${commentList ? `\n## コメント補足（★部分の意味のヒント）\n${commentList}\n` : ""}
+
+## 今回の案件データ
+### 基本情報（会社の登記情報等）
+${dataContext}
+${directMasterContent ? `\n### 案件整理テキスト（今回の手続き内容）\n${directMasterContent}\n` : masterSheet?.content ? `\n### 案件整理テキスト\n${masterSheet.content}\n` : ""}
+${globalMemo ? `\n### 共通ルール\n${globalMemo}\n` : ""}
+${memoText ? `\n### テンプレート注意事項\n${memoText}\n` : ""}
+${confirmedAnswers && Object.keys(confirmedAnswers).length > 0 ? `\n### ユーザー確定済みの値\n${Object.entries(confirmedAnswers).map(([k, v]) => `- ${k}: ${v}`).join("\n")}\n` : ""}
+
+### 原本ファイル（共通フォルダ・案件フォルダの資料）
+${hlSourceTexts.join("\n\n")}
+
+## 回答形式
+★マーク★の元の値をキー、新しい値をバリューとするJSONで返してください。値は必ず文字列で。
+同じ元の値が複数箇所に出現する場合でも、書類内の位置によって意味が異なることがあります（例: 同じ日付でも「決定日」と「届出日」で違う値になる場合）。その場合は文脈から正しい値を判断してください。
+
+例: {"株式会社HIBARI": "株式会社ABC", "佐藤 羽瑠": "山田太郎", "令和８年３月２７日": "令和７年１月１５日"}
+
+重要:
+- **書類を上から通して読み、各★の位置が何を指すか文脈から正確に判断する**
+- 元の値の「型」（日付の書式、全角/半角、数値の桁区切り等）を維持すること
+- 原本ファイル・基本情報・案件整理テキストに書いてある情報は必ず使い、「要確認」にしない
+- どこにも見つからない情報だけ "（要確認）" とすること`;
+
+          hlContentBlocks.push({ type: "text", text: markerPrompt });
+
+          const markerResponse = await client.messages.create({
+            model: "claude-sonnet-4-6",
+            max_tokens: 4096,
+            messages: [{ role: "user", content: hlContentBlocks as Anthropic.ContentBlockParam[] }],
+          });
+          const markerText = markerResponse.content[0].type === "text" ? markerResponse.content[0].text : "";
+          const markerJsonMatch = markerText.match(/\{[\s\S]*\}/);
+          if (!markerJsonMatch) continue;
+
+          const replacements: Record<string, string> = {};
+          for (const [k, v] of Object.entries(JSON.parse(markerJsonMatch[0]))) {
+            if (typeof v !== "string") continue;
+            // AIが★マーク★をキーに含めて返す場合があるので除去
+            const cleanKey = k.replace(/★/g, "");
+            replacements[cleanKey] = toFullWidth(v);
+          }
+          console.log("[produce/highlight] fields:", markedFields.map(f => `"${f.originalValue}"`).join(", "));
+          console.log("[produce/highlight] AI replacements:", JSON.stringify(replacements, null, 2));
+          // マッチ確認
+          for (const f of markedFields) {
+            if (replacements[f.originalValue]) {
+              console.log(`[produce/highlight] MATCH: "${f.originalValue}" -> "${replacements[f.originalValue]}"`);
+            } else {
+              console.log(`[produce/highlight] MISS: "${f.originalValue}" (no replacement found)`);
+            }
+          }
+          const outputBuffer = replaceMarkedFields(wordBuffer, replacements);
+          const outputName = `${company.name}_${baseName}.docx`;
+          let previewHtml = "";
+          try { previewHtml = (await mammothHL.convertToHtml({ buffer: outputBuffer })).value; } catch { /* ignore */ }
+          documentsHL.push({ name: baseName, docxBase64: outputBuffer.toString("base64"), previewHtml, fileName: outputName });
+        } catch (err) {
+          console.error(`[produce/highlight] skipped ${df.name}:`, err instanceof Error ? err.message : err);
+        }
+      }
+      return new Response(JSON.stringify({ documents: documentsHL }), {
+        headers: { "Content-Type": "application/json" },
       });
     }
 
@@ -574,63 +716,127 @@ JSONで返してください。基本は全て文字列値です。
               }
             }
 
-            const filePlaceholders = extractPlaceholders(df.content);
-            // デリミタは自動で選ばず、常に {{ / }} に統一する（全角 ｛｛ ｝｝ は事前に正規化）
-            const delims: [string, string] = ["{{", "}}"];
-            // 後方互換: filePlaceholders は未使用だが型整合のために参照
-            void filePlaceholders;
+            // ハイライト方式の検出
+            const { extractMarkedFields, replaceMarkedFields } = await import("@/lib/docx-marker-parser");
+            const markedFields = extractMarkedFields(wordBuffer);
 
-            // ファイルごとに通数を判断して個別生成
-            const fileSets = getDataSetsForFile(df.content);
-            for (let c = 0; c < fileSets.length; c++) {
-              // テンプレ側に既にある単位をAI値が重複させていたら除去
-              // 条件フラグ(boolean)はそのまま、文字列値はstripDuplicatedUnit適用
-              const templateData: Record<string, string | boolean> = {};
-              for (const [key, val] of Object.entries(fileSets[c])) {
-                if (typeof val === "boolean") {
-                  templateData[key] = val;
-                } else {
-                  templateData[key] = stripDuplicatedUnit(val, key, df.content);
+            if (markedFields.length > 0) {
+              // === 新方式: ハイライトベース ===
+              // ハイライトされた可変部分をAIに渡して新しい値を生成
+              const fieldList = markedFields.map((f, i) =>
+                `${i + 1}. 元の値: "${f.originalValue}"${f.comment ? ` (説明: ${f.comment})` : ""}\n   文脈: ${f.context}`
+              ).join("\n");
+
+              const markerPrompt = `この書類は過去案件の完成書類をテンプレートとして使っています。
+ハイライトされた部分が「可変箇所」です。ハイライトの値は前案件のものであり、今回の案件とは無関係です。
+
+今回のデータに基づいて、各可変箇所に入れるべき値をJSONで返してください。
+
+## 今回の会社データ
+${dataContext}
+${directMasterContent ? `\n## 案件整理テキスト（最新）\n${directMasterContent}\n` : masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
+${globalMemo ? `\n## 共通ルール\n${globalMemo}\n` : ""}
+${memoText ? `\n## テンプレート注意事項\n${memoText}\n` : ""}
+${confirmedAnswers && Object.keys(confirmedAnswers).length > 0 ? `\n## ユーザー確定済みの値\n${Object.entries(confirmedAnswers).map(([k, v]) => `- ${k}: ${v}`).join("\n")}\n` : ""}
+
+## 可変箇所（ハイライト部分）
+${fieldList}
+
+## 回答形式
+元の値をキー、新しい値をバリューとするJSONで返してください。
+同じ元の値が複数箇所に出現する場合、全て同じ新しい値に置換されます。
+例: {"株式会社HIBARI": "株式会社Aicurion", "佐藤 羽瑠": "石橋賢人", "静岡県御殿場市川島田989番地の5": "東京都目黒区東が丘2丁目7番7号"}
+
+重要:
+- 元の値の「型」（日付の書式、数値の桁区切り、敬称の有無等）を維持すること
+- 今回のデータにない情報は "（要確認）" とすること
+- ユーザー確定済みの値は必ずそのまま使うこと`;
+
+              const markerResponse = await client.messages.create({
+                model: "claude-sonnet-4-6",
+                max_tokens: 4096,
+                messages: [{ role: "user", content: markerPrompt }],
+              });
+
+              const markerText = markerResponse.content[0].type === "text" ? markerResponse.content[0].text : "";
+              const markerJsonMatch = markerText.match(/\{[\s\S]*\}/);
+              if (markerJsonMatch) {
+                const replacements: Record<string, string> = JSON.parse(markerJsonMatch[0]);
+                // 全角変換（Word用）
+                const fullWidthReplacements: Record<string, string> = {};
+                for (const [key, val] of Object.entries(replacements)) {
+                  if (typeof val !== "string") continue;
+                  fullWidthReplacements[key] = toFullWidth(val);
                 }
+                const outputBuffer = replaceMarkedFields(wordBuffer, fullWidthReplacements);
+                const outputName = `${company.name}_${baseName}.docx`;
+
+                let previewHtml = "";
+                try {
+                  const result = await mammoth.convertToHtml({ buffer: outputBuffer });
+                  previewHtml = result.value;
+                } catch { /* ignore */ }
+
+                documents.push({
+                  name: baseName,
+                  docxBase64: outputBuffer.toString("base64"),
+                  previewHtml,
+                  fileName: outputName,
+                });
               }
-              const zip = new PizZip(wordBuffer);
-              // 全角のデリミタ（｛｛ ｝｝ 【 】 ＜ ＞ ［ ］）を docxtemplater が理解できる半角 {{ }} に正規化
-              for (const fileName of Object.keys(zip.files)) {
-                if (!fileName.endsWith(".xml") && !fileName.endsWith(".xml.rels")) continue;
-                const content = zip.file(fileName)?.asText();
-                if (!content) continue;
-                const normalized = content
-                  .replace(/｛｛/g, "{{")
-                  .replace(/｝｝/g, "}}")
-                  .replace(/【/g, "{{")
-                  .replace(/】/g, "}}");
-                if (normalized !== content) zip.file(fileName, normalized);
+            } else {
+              // === 従来方式: プレースホルダーベース ===
+              const filePlaceholders = extractPlaceholders(df.content);
+              void filePlaceholders;
+              const delims: [string, string] = ["{{", "}}"];
+
+              const fileSets = getDataSetsForFile(df.content);
+              for (let c = 0; c < fileSets.length; c++) {
+                const templateData: Record<string, string | boolean> = {};
+                for (const [key, val] of Object.entries(fileSets[c])) {
+                  if (typeof val === "boolean") {
+                    templateData[key] = val;
+                  } else {
+                    templateData[key] = stripDuplicatedUnit(val, key, df.content);
+                  }
+                }
+                const zip = new PizZip(wordBuffer);
+                for (const fileName of Object.keys(zip.files)) {
+                  if (!fileName.endsWith(".xml") && !fileName.endsWith(".xml.rels")) continue;
+                  const content = zip.file(fileName)?.asText();
+                  if (!content) continue;
+                  const normalized = content
+                    .replace(/｛｛/g, "{{")
+                    .replace(/｝｝/g, "}}")
+                    .replace(/【/g, "{{")
+                    .replace(/】/g, "}}");
+                  if (normalized !== content) zip.file(fileName, normalized);
+                }
+                const doc = new Docxtemplater(zip, {
+                  delimiters: { start: delims[0], end: delims[1] },
+                  paragraphLoop: true,
+                  linebreaks: true,
+                  nullGetter: () => "（要確認）",
+                });
+                doc.render(templateData);
+                const outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
+
+                const suffix = fileSets.length > 1 ? `_${c + 1}` : "";
+                const outputName = `${company.name}_${baseName}${suffix}.docx`;
+
+                let previewHtml = "";
+                try {
+                  const result = await mammoth.convertToHtml({ buffer: outputBuffer });
+                  previewHtml = result.value;
+                } catch { /* ignore */ }
+
+                documents.push({
+                  name: fileSets.length > 1 ? `${baseName}_${c + 1}` : baseName,
+                  docxBase64: outputBuffer.toString("base64"),
+                  previewHtml,
+                  fileName: outputName,
+                });
               }
-              const doc = new Docxtemplater(zip, {
-                delimiters: { start: delims[0], end: delims[1] },
-                paragraphLoop: true,
-                linebreaks: true,
-                nullGetter: () => "（要確認）",
-              });
-              doc.render(templateData);
-              const outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
-
-              // ファイル名: 元のファイル名を維持、複数通のみ枝番
-              const suffix = fileSets.length > 1 ? `_${c + 1}` : "";
-              const outputName = `${company.name}_${baseName}${suffix}.docx`;
-
-              let previewHtml = "";
-              try {
-                const result = await mammoth.convertToHtml({ buffer: outputBuffer });
-                previewHtml = result.value;
-              } catch { /* ignore */ }
-
-              documents.push({
-                name: fileSets.length > 1 ? `${baseName}_${c + 1}` : baseName,
-                docxBase64: outputBuffer.toString("base64"),
-                previewHtml,
-                fileName: outputName,
-              });
             }
           }
         } catch (err) {

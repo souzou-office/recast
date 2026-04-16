@@ -9,10 +9,11 @@ import { isPathDisabled } from "@/lib/disabled-filter";
 const client = new Anthropic();
 
 export async function POST(request: NextRequest) {
-  const { companyId, folderPath, disabledFiles } = await request.json() as {
+  const { companyId, folderPath, disabledFiles, templateFolderPath } = await request.json() as {
     companyId: string;
     folderPath?: string;
     disabledFiles?: string[];
+    templateFolderPath?: string;
   };
 
   const config = await getWorkspaceConfig();
@@ -68,11 +69,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  const promptText = `以下の「案件資料」を確認し、今回の手続き・案件に関する情報だけを抽出・整理してください。
+  // テンプレートが指定されていればその内容を読んで、何が必要か把握させる
+  let templateContext = "";
+  if (templateFolderPath) {
+    try {
+      const templateFiles = await readAllFilesInFolder(templateFolderPath);
+      const templateTexts = templateFiles
+        .filter(f => f.content && !f.base64)
+        .map(f => `【テンプレート: ${f.name}】\n${f.content}`)
+        .join("\n\n");
+      if (templateTexts) {
+        templateContext = `\n## 書類テンプレート（これらの書類を作成する予定）\n以下のテンプレートで必要とされる情報を重点的に抽出してください。\nハイライトされた箇所やプレースホルダー（【】{{}}）が可変部分です。\n\n${templateTexts}\n`;
+      }
+    } catch { /* ignore */ }
+  }
 
+  const promptText = `以下の「案件資料」を確認し、今回の手続き・案件に関する情報を抽出・整理してください。
+${templateContext}
 ルール:
 - **出力するのは「案件固有の情報」だけ**（スケジュール、手続内容、指示事項、議案、当事者、対象株式等）
 - **会社の基本情報（商号・本店・事業目的・役員構成等）は出力しない**。それは別管理（基本情報タブ）で扱う
+- **テンプレートが指定されている場合、テンプレートで必要な情報（日付・人名・金額・株数等）を漏れなく抽出する**
 - 各カテゴリは ## 見出しで区切る
 - 結論を簡潔に記載。冗長な説明は不要
 - 一覧系は表形式で簡潔に
@@ -99,13 +116,8 @@ ${allTexts.join("\n\n")}`;
         source: { type: "base64", media_type: "application/pdf", data: pdf.base64 },
         title: pdf.name,
       });
-    } else if (IMAGE_MIMES.has(pdf.mimeType)) {
-      contentBlocks.push({
-        type: "image",
-        source: { type: "base64", media_type: pdf.mimeType, data: pdf.base64 },
-      });
     }
-    // それ以外のbase64（未対応MIME）はスキップ
+    // 画像は案件整理では送らない（テキスト+PDFで十分、壊れた画像でAPIエラーになるリスク回避）
   }
   contentBlocks.push({ type: "text", text: promptText });
 
