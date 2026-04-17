@@ -364,6 +364,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         });
       }
 
+      // 案件整理が終わった直後のスレッドで書類生成できるよう、ここで最新内容を含むスレッドを作る
+      // （currentThread 引数は organizeMsg 追加前のスナップショットなので stale になる）
+      const freshThread: ChatThread = {
+        ...currentThread,
+        messages: [...currentThread.messages, organizeMsg],
+      };
       // 2. 確認質問（clarify）
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
@@ -402,8 +408,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 3. 質問なし→直接書類生成
-      await generateDocuments(currentThread, templatePath);
+      // 3. 質問なし→直接書類生成（organizeMsg を含む freshThread を渡す）
+      await generateDocuments(freshThread, templatePath);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
   };
