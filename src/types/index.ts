@@ -115,7 +115,8 @@ export interface Company {
   profile?: CompanyProfile;
   profileSources?: string[]; // 基本情報抽出に使うファイルパス一覧（未設定なら共通フォルダ全ファイル）
   caseRooms?: CaseRoom[];
-  // 後方互換: 旧データ
+  // 後方互換: 旧データ（読み取り専用、新規コードでは使用しない。削除API経由で掃除）
+  /** @deprecated company.masterSheet は廃止。caseRoom.masterSheet を使うこと。 */
   masterSheet?: MasterSheet;
   generatedDocuments?: GeneratedDocument[];
 }

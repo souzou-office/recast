@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
   }
 
   const caseRoom = caseRoomId ? company.caseRooms?.find(r => r.id === caseRoomId) : null;
-  const masterSheet = caseRoom?.masterSheet || company.masterSheet;
+  const masterSheet = caseRoom?.masterSheet; // company.masterSheet は廃止
   const profile = company.profile;
   const generatedDocuments = threadDocs.length > 0
     ? threadDocs

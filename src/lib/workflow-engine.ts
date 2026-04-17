@@ -23,12 +23,16 @@ export async function createInitialMessage(companyId: string, subfolders: { id: 
         suffix,
       }];
     }
-    return subDirs.map(dir => ({
-      name: `${sub.name} / ${dir.name}${suffix}`,
-      path: dir.path,
-      fileCount: 0,
-      suffix,
+    const inner = await Promise.all(subDirs.map(async dir => {
+      const innerEntries = await listFiles(dir.path);
+      return {
+        name: `${sub.name} / ${dir.name}${suffix}`,
+        path: dir.path,
+        fileCount: innerEntries.filter(e => !e.isDirectory).length,
+        suffix,
+      };
     }));
+    return inner;
   };
 
   const jobFolders = subfolders.filter(s => s.role === "job");

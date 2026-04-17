@@ -45,11 +45,27 @@ function getParagraphText(pXml: string): string {
   return texts.join("");
 }
 
+// docx の document.xml から、段落の入れ子を引き起こす AlternateContent (drawing/textbox等) と
+// 図形内の wps:txbx/v:textbox 内の段落を除去。外側の <w:p> 構造を壊さないようにする。
+function stripNestedParagraphs(xml: string): string {
+  return xml
+    // mc:AlternateContent 全体を削除（中に mc:Choice > w:drawing > 図形内のテキストが含まれる）
+    .replace(/<mc:AlternateContent\b[\s\S]*?<\/mc:AlternateContent>/g, "")
+    // wps:txbx, v:textbox など図形内のテキスト（独自の w:p を持つ）を削除
+    .replace(/<wps:txbx\b[\s\S]*?<\/wps:txbx>/g, "")
+    .replace(/<v:textbox\b[\s\S]*?<\/v:textbox>/g, "")
+    // w:pict 内の図形定義も一旦削除（中に w:p が入る可能性）
+    .replace(/<w:pict\b[\s\S]*?<\/w:pict>/g, "")
+    // w:drawing 全体を削除（内部に mc:AlternateContent が含まれないケースのバックアップ）
+    .replace(/<w:drawing\b[\s\S]*?<\/w:drawing>/g, "");
+}
+
 // docx Buffer → ハイライト付きフィールド一覧
 export function extractMarkedFields(buffer: Buffer): MarkedField[] {
   const zip = new PizZip(buffer);
-  const docXml = zip.file("word/document.xml")?.asText();
-  if (!docXml) return [];
+  const rawDocXml = zip.file("word/document.xml")?.asText();
+  if (!rawDocXml) return [];
+  const docXml = stripNestedParagraphs(rawDocXml);
 
   // コメント情報
   const commentTexts = new Map<string, string>();
@@ -135,8 +151,9 @@ export function extractMarkedFields(buffer: Buffer): MarkedField[] {
 // AIが文書の流れを見ながら各マーク部分が何を指すか判断できるようにする
 export function getMarkedDocumentText(buffer: Buffer): string {
   const zip = new PizZip(buffer);
-  const docXml = zip.file("word/document.xml")?.asText();
-  if (!docXml) return "";
+  const rawDocXml = zip.file("word/document.xml")?.asText();
+  if (!rawDocXml) return "";
+  const docXml = stripNestedParagraphs(rawDocXml);
 
   const lines: string[] = [];
   const pRe = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g;
@@ -174,6 +191,17 @@ export function replaceMarkedFields(
   const zip = new PizZip(buffer);
   let docXml = zip.file("word/document.xml")?.asText();
   if (!docXml) return buffer;
+
+  // 入れ子段落を持つブロック（drawing内のtextbox等）を一時的にマスクして、
+  // 段落単位の正規表現マッチを壊さないようにする
+  const masks = new Map<string, string>();
+  let maskIndex = 0;
+  const MASK_RE = /<(?:mc:AlternateContent|w:drawing|w:pict|wps:txbx|v:textbox)\b[\s\S]*?<\/(?:mc:AlternateContent|w:drawing|w:pict|wps:txbx|v:textbox)>/g;
+  docXml = docXml.replace(MASK_RE, (match) => {
+    const key = `__MASK_${maskIndex++}__`;
+    masks.set(key, match);
+    return key;
+  });
 
   // 段落ごとにハイライト付きランを見つけて置換
   docXml = docXml.replace(
@@ -255,6 +283,9 @@ export function replaceMarkedFields(
       return parts.map(p => p.content).join("");
     }
   );
+
+  // マスクを復元
+  docXml = docXml.replace(/__MASK_\d+__/g, (m) => masks.get(m) || m);
 
   // コメント関連要素を除去
   docXml = docXml

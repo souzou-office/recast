@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 
-// マスターシートJSON取得
+// profile の structured JSON 取得/更新（masterSheet 機能は廃止）
 export async function GET(request: NextRequest) {
   const companyId = request.nextUrl.searchParams.get("companyId");
   if (!companyId) {
@@ -15,12 +15,11 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.json({
-    masterSheet: company.masterSheet || null,
+    masterSheet: null, // 廃止
     profile: company.profile || null,
   });
 }
 
-// マスターシートJSON更新
 export async function PATCH(request: NextRequest) {
   const { companyId, type, structured } = await request.json() as {
     companyId: string;
@@ -32,16 +31,19 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "companyId, type, structured は必須です" }, { status: 400 });
   }
 
+  // masterSheet 更新は廃止
+  if (type === "masterSheet") {
+    return NextResponse.json({ error: "masterSheet 機能は廃止されました" }, { status: 410 });
+  }
+
   const config = await getWorkspaceConfig();
   const company = config.companies.find(c => c.id === companyId);
   if (!company) {
     return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
   }
 
-  if (type === "masterSheet" && company.masterSheet) {
-    company.masterSheet.structured = structured;
-  } else if (type === "profile" && company.profile) {
-    company.profile.structured = structured as any;
+  if (type === "profile" && company.profile) {
+    company.profile.structured = structured as never;
   }
 
   await saveWorkspaceConfig(config);

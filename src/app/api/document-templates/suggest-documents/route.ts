@@ -15,10 +15,12 @@ export async function POST(request: NextRequest) {
   }
 
   const profile = company.profile?.structured;
-  const masterSheet = company.masterSheet?.structured;
+  // company.masterSheet は廃止。caseRoom.masterSheet のみ参照
+  const caseRoomMasterSheet = company.caseRooms?.find(r => r.masterSheet)?.masterSheet?.structured;
+  const masterSheet = caseRoomMasterSheet;
 
   if (!profile && !masterSheet) {
-    return NextResponse.json({ error: "基本情報またはマスターシートが必要です" }, { status: 400 });
+    return NextResponse.json({ error: "基本情報が必要です" }, { status: 400 });
   }
 
   const context = JSON.stringify({

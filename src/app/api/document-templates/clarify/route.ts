@@ -91,9 +91,9 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // マスターシートとプロファイル
+  // プロファイル（company.masterSheet は廃止、caseRoom のみ）
   const caseRoom = company.caseRooms?.find(r => r.masterSheet);
-  const masterSheet = caseRoom?.masterSheet || company.masterSheet;
+  const masterSheet = caseRoom?.masterSheet;
   const profile = company.profile;
 
   const dataContext = JSON.stringify({

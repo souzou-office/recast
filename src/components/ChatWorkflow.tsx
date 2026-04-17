@@ -298,10 +298,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
       const reader = res.body?.getReader();
+      let fullText = "";
       if (reader) {
         const decoder = new TextDecoder();
         let buffer = "";
-        let fullText = "";
         let metaSourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
         while (true) {
@@ -402,20 +402,27 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 3. 質問なし→直接書類生成
-      await generateDocuments(currentThread, templatePath);
+      // 3. 質問なし→直接書類生成（fullTextを明示的に渡す＝setState遅延対策）
+      await generateDocuments(currentThread, templatePath, undefined, fullText);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
   };
 
   // 書類生成
-  const generateDocuments = async (currentThread: ChatThread, templatePath: string, clarificationData?: Partial<ActionCard>) => {
+  const generateDocuments = async (currentThread: ChatThread, templatePath: string, clarificationData?: Partial<ActionCard>, explicitOrganizeContent?: string) => {
     if (!company) return;
     setLoading(true);
     console.log("[ChatWorkflow] generateDocuments called, templatePath:", templatePath);
 
-    // スレッド内の案件整理結果を探す
-    const organizeContent = currentThread.messages.find(m => m.role === "assistant" && m.content.length > 200)?.content || "";
+    // 案件整理テキスト: 明示的に渡されたものを優先（SSE直後の場合）、なければスレッドから探す
+    let organizeContent = explicitOrganizeContent || "";
+    if (!organizeContent) {
+      // setState closure の遅延で案件整理メッセージがまだ currentThread に反映されてない可能性
+      // 最新の thread state を参照する
+      const latestThread = thread || currentThread;
+      organizeContent = latestThread.messages.find(m => m.role === "assistant" && m.content.length > 200)?.content || "";
+    }
+    console.log(`[ChatWorkflow] organizeContent length: ${organizeContent.length}, preview: ${organizeContent.substring(0, 100)}`);
 
     // 確認質問の回答を収集（placeholder名→確定値のマップ）
     const confirmedAnswers: Record<string, string> = {};

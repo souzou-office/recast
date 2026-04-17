@@ -160,18 +160,21 @@ data/
 - テンプレート管理（設定タブ: 箇条書き入力、AI生成）
 
 ### 書類生成 ✅
-- テンプレートフォルダ方式（ドライブ上のdocx+メモファイル）
-- Wordテンプレート【プレースホルダー】→AIが値生成→docxtemplater置換
-- Excelテンプレート【プレースホルダー】→PizZipでXML直接置換
-- 複数docx一括生成、人数分展開（配列プレースホルダーはファイル単位で判定）
+- テンプレートフォルダ方式（ドライブ上のdocx/xlsx+メモファイル）
+- **2方式併存**:
+  - **プレースホルダー方式**: `{{会社名}}` `【会社名】` `｛｛会社名｝｝` 等を検出→AIが値生成→docxtemplater置換
+  - **ハイライト方式（新）**: 過去案件の完成書類に黄色ハイライトを引く。recastが★マーク付きテキストに変換→AIが新案件のデータで値生成→置換（ハイライトも除去）
+- **Word条件分岐**: `{{#出資者は法人}}...{{/出資者は法人}}` で法人/個人/組合の出し分け（docxtemplater sections）
+- **Excelハイライト方式**: xlsxのセル背景色（黄色=FFFFFF00）を検出→★マーク付きテキストで値生成→置換＋背景色除去（xlsx-marker-parser.ts）
+- 複数docx一括生成、人数分展開（AI配列応答→株主ごとに書類生成）
 - Word: 英数字全角変換 / Excel: 全角→半角統一（数式が動くように）
 - Excel: 日付（年月日を含む値）だけ全角数字に戻す
 - Excel: 置換後の純数値セルを自動で数値型に変換（t="s"→数値、数式エラー防止）
-- Excel: 置換値のXMLエスケープ（&lt;&gt;&amp;で壊れない）
-- 単位重複の自動除去（「100個個」→「100個」、テンプレ直後の単位と値末尾の重複を検出）
-- プロンプトにテンプレート本文を渡し、プレースホルダー前後の文脈をAIが理解
-- 案件整理の最新テキストをmasterContent引数で直接渡せる
-- チャット内右ペインでの生成書類プレビュー
+- Excel: 置換値のXMLエスケープ、rPh/phoneticPr削除、calcChain削除
+- 単位重複の自動除去、全角デリミタ `｛｛｝｝ 【】` → 半角 `{{}}` 自動正規化
+- 入れ子段落対策: `<mc:AlternateContent>`/`<w:drawing>`/`<w:pict>`/`<wps:txbx>`/`<v:textbox>` を一時マスクして段落正規表現を壊さない（figure内の通常段落末尾のハイライトも拾える）
+- 案件整理の最新テキストをmasterContent引数で直接渡せる（SSE後にfullTextを明示渡し＝setState closure遅延対策）
+- チャット内右ペインでの生成書類プレビュー、生成書類の一括ZIPダウンロード
 - 生成書類の保存・一覧・プレビュー・ダウンロード
 
 ### 突合せ（チェック）✅
@@ -180,6 +183,21 @@ data/
 - 表形式レポート出力（チェック観点・生成書類・問題内容・原本の正しい値・重要度）
 - 生成書類がない場合はエラー表示
 - 結果削除機能
+- **verify のインプットはシンプル**: テンプレ注意事項・共通ルールは渡さない（原本 vs 生成書類の純粋な突合せ）
+- 「テンプレの前案件の値と比較してはいけない」旨をプロンプトに明記
+
+### 確認質問（clarify）✅
+- 書類生成前に、プレースホルダー/ハイライトが求める値で情報が足りないものをAIが検出→質問カードを表示
+- **ループ化**: 回答を `previousQA` として渡して再チェック、質問が尽きるまで繰り返す
+- 全質問に回答するまで「生成する→」ボタンを無効化
+- テンプレフォルダ内のメモ(.txt/.md)を「チェック観点の源泉」として参照
+- ハイライトテンプレの場合も、フィールドの種類（日付/住所/人名/法人名/数値）を抽出して質問
+
+### 統一ヘルパー ✅
+- **`src/lib/read-case-files.ts`**: 共通フォルダ+案件フォルダ読み込みを統一。`folderPath` 優先、なければ `sub.active` フォールバック。execute/clarify/produce/verify 全て同じロジック
+- **`src/lib/global-rules.ts`**: `templateBasePath` 配下を再帰読み込み（docx含む）。選択中のテンプレフォルダ自体は除外
+- **`src/lib/docx-marker-parser.ts`**: Word docx のハイライト検出・★マーク付きテキスト生成・置換・ハイライト除去
+- **`src/lib/xlsx-marker-parser.ts`**: Excel xlsx のセル背景色（黄色）検出・★マーク付きテキスト生成・置換・背景色除去
 
 ### ファイルプレビュー ✅
 - PDF: ブラウザネイティブ
@@ -222,7 +240,7 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 - **フォルダ分類**: 設定画面 → **サイドバーのバッジ切替**
 - **案件整理+チャット**: 統合 → **分離**（案件整理はテンプレートカード、チャットは専用タブ）
 - **書類雛形**: コード内管理 → **ドライブ上のテンプレートフォルダ**（docx+メモ）
-- **書類生成**: AI全文生成 → **docxtemplater【プレースホルダー】置換**
+- **書類生成**: AI全文生成 → **docxtemplater【プレースホルダー】置換** → **ハイライト方式併存（新）**
 - **プレビュー**: Google Drive iframe → **LibreOffice PDF/HTML変換**
 - **フォルダロール**: common/job 2種 → **common/job/none 3種**
 - **案件フォルダ選択**: 複数選択 → **単一選択**
@@ -233,6 +251,41 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 - **突合せ対象**: 案件整理テキストのみ → **生成済み書類（docxBase64→mammothテキスト抽出）を原本と突合せ**
 - **書類生成の品質管理**: produce側での先回り対策（ルールベース正規化など）→ **verify側のLLM判断に集約**（produce=生成、verify=品質管理の責任分割）
 - **展開モデル**: 完全ローカル前提 → **UIはWeb、ファイル読み取りはクライアント側ローカル**を将来の前提に（新規コードはパス参照ではなくコンテンツ参照で書く）
+- **テンプレート作成**: プレースホルダー手書き → **過去案件の完成書類にハイライト引くだけ**（+コメントで補足）で再利用可能テンプレ化
+- **案件整理の責務**: テンプレ内容を見て抽出項目を推測 → **案件フォルダのみから抽出**（テンプレ内容=前案件データは混入させない）。テンプレからは**ファイル名リストと項目タイプ**のみ渡す
+- **produce のデータ入力**: 抽出済みデータ（profile+案件整理）のみ → **原本ファイルも併送**（抽出漏れを AI が直接参照で補える。ただしコスト増）
+- **company.masterSheet は廃止**: 会社レベルの案件整理保存は別案件のデータ汚染を引き起こすため削除。案件整理データはチャットスレッドの messages として保存（`caseRoom.masterSheet` は残る）
+- **基本情報の自動再生成**: 共通フォルダのファイル mtime が変わったら自動でprofileを再生成（会社選択時・ページロード時にチェック）
+- **基本情報の参照ファイル選択**: 会社ごとに「基本情報抽出に使うファイル」を明示選択可能（`company.profileSources`）
+
+## 既知の落とし穴・重要な実装注意点
+
+### ChatWorkflow の setState closure 遅延
+`runWorkflow` 内で SSE ストリーミング中に `setThread` でメッセージを追加しても、**関数引数の `currentThread` は更新されない**。その後 `generateDocuments(currentThread, ...)` に渡すと、案件整理メッセージが見つからず `organizeContent` が空になって produce で古い `masterSheet.content` にフォールバックする恐れがある。
+→ **対策**: SSE ストリームで組み立てた `fullText` を `generateDocuments` の引数で明示的に渡す。`generateDocuments` 側は `explicitOrganizeContent` 優先、次に `thread` state、最後に `currentThread` の順でフォールバック
+
+### 案件フォルダパス（folderPath）の渡し方
+ChatWorkflow のフォルダ選択カードで選んだフォルダは `thread.folderPath` に入るが、`sub.active` には反映されない。API（execute/clarify/produce/verify）は `readCaseFiles` ヘルパー経由で統一して読む（folderPath 優先、sub.active フォールバック）。**API呼び出し時には必ず `folderPath` と `disabledFiles` を body に含める**こと
+
+### docx の入れ子段落
+図形（textbox内のテキスト）・代替コンテンツ（`<mc:AlternateContent>`）・ピクト（`<w:pict>`）の中には `<w:p>` が入れ子で存在する。段落正規表現の非貪欲マッチが内側の `</w:p>` で早期終了して外側の段落を壊す。
+→ **対策**: `docx-marker-parser.ts` の `stripNestedParagraphs` で事前除去（extractMarkedFields/getMarkedDocumentText）、`replaceMarkedFields` では一時マスクして処理後に復元
+
+### Excel 黄色ハイライト方式
+- `xl/styles.xml` の `<fills>` から黄色（`FFFFFF00` or `ffff00`）を持つ fillId を特定
+- `<cellXfs>` の `<xf fillId="N">` でそれを参照しているスタイルインデックスを特定
+- シート XML で `<c s="N">` のセルが黄色セル
+- 共有文字列セル（`t="s"`）は shared string index を `sharedStrings.xml` から取得、直接値セルはそのまま
+- 置換時は共有文字列側を書き換え（複数セルで同じ文字列参照している場合は1箇所の修正で反映）+ 数値セルは個別書き換え
+- 黄色背景除去: `<fill>` の `FFFFFF00` を `patternType="none"` に差し替え
+
+### AI が ★マーク★ をキーに含めて返すことがある
+AI の応答 JSON のキーが `"★福田峻介★"` 形式で返ることがある（不安定）。
+→ **対策**: パース時に `.replace(/★/g, "")` で除去してから照合
+
+### clarify/produce 間で質問の意味を取り違える
+clarify は「項目の型（日付・住所・人名等）」だけ渡す。テンプレのハイライト値そのもの（前案件データ）を渡すと、今回の案件データと比較して「違うから確認」という誤った質問を量産する。
+→ **対策**: `extractMarkedFields` で取った値を正規表現で型推定して desc だけ渡す
 
 ## 運用ルール
 
@@ -259,4 +312,36 @@ npm run dev    # http://localhost:3000
 
 ## 現在のブランチ
 
-- `main` — 最新（PR #13〜#18 マージ済み）
+- `claude/reverent-shannon` — 作業中（main へは PR #13〜#24 マージ済み）
+
+## 最近の主要変更（PR #23〜#24）
+
+- **PR#23**: ハイライトテンプレ方式（Word）、共通ルール再帰読込、案件整理のテンプレ参照
+- **PR#24**: readCaseFiles統一ヘルパー、Excel黄色セル方式、produceコスト改善
+
+### 未マージ中の追加修正（次PRで入る予定）
+- docx 入れ子段落（figure内のhighlightが拾えないバグ）修正: `stripNestedParagraphs`
+- company.masterSheet 廃止（別案件データ汚染源の掃除）
+- produce に案件原本ファイルを直送（コストは上がるが精度確保）
+- Excel xlsx-marker-parser 新規、黄色背景除去
+- ChatWorkflow から produce/verify に folderPath 明示渡し
+- setState closure 遅延対策（fullText を明示的に渡す）
+
+## テスト会社
+- 071.株式会社JINGS_D（進行中、第三者割当）
+- 074.株式会社Aicurion_D（進行中）
+- 097.株式会社HIBARI_J（終了）
+
+## テンプレート構造
+```
+templateBasePath/
+├ 共通ルール/                    # 全テンプレで必ず読む
+│   └ 統一ルール.txt
+├ 代表取締役の変更/              # テンプレフォルダ（種別ごと）
+├ 会社設立/
+├ 募集株式の発行/
+│   ├ 1.取締役決定書.docx        # ハイライト方式
+│   ├ 6-2.株主リスト.xlsx         # Excelハイライト方式
+│   └ memo.txt                  # テンプレ固有の注意事項
+└ 取締役の辞任/
+```
