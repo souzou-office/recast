@@ -131,7 +131,49 @@ export function extractMarkedFields(buffer: Buffer): MarkedField[] {
   return fields;
 }
 
-// 文書全体のテキストを、ハイライト部分を★マーク★で囲んで返す
+// 文書全体のテキストを、ハイライト部分を［要入力_N］に置き換えて返す。
+// ★値★ の中身（前案件の値）はAIに見せず、文脈だけで判断させるため。
+// 併せて N → 元テキスト（originalValue）のマッピングも返す。
+export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
+  const zip = new PizZip(buffer);
+  const docXml = zip.file("word/document.xml")?.asText();
+  if (!docXml) return { text: "", slots: new Map() };
+
+  const slots = new Map<number, string>();
+  let slotId = 0;
+  const lines: string[] = [];
+  const pRe = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g;
+  let pm;
+  while ((pm = pRe.exec(docXml)) !== null) {
+    const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
+    let rm;
+    let lineText = "";
+    let currentGroupText = "";
+    const flushGroup = () => {
+      if (currentGroupText) {
+        slots.set(slotId, currentGroupText);
+        lineText += `［要入力_${slotId}］`;
+        slotId++;
+        currentGroupText = "";
+      }
+    };
+    while ((rm = runRe.exec(pm[1])) !== null) {
+      const text = getRunText(rm[0]);
+      if (!text) continue;
+      if (hasHighlight(rm[0])) {
+        currentGroupText += text;
+      } else {
+        flushGroup();
+        lineText += text;
+      }
+    }
+    flushGroup();
+    if (lineText.trim()) lines.push(lineText);
+  }
+  return { text: lines.join("\n"), slots };
+}
+
+// 文書全体のテキストを、ハイライト部分を★マーク★で囲んで返す（旧方式、後方互換用）
 // AIが文書の流れを見ながら各マーク部分が何を指すか判断できるようにする
 export function getMarkedDocumentText(buffer: Buffer): string {
   const zip = new PizZip(buffer);

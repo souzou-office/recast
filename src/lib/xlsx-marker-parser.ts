@@ -440,7 +440,59 @@ export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffe
   return zip.generate({ type: "nodebuffer" });
 }
 
-// Excelの全体テキストを★マーク付きで返す（Word版と同じ発想）
+// Excelの全体テキストを ［要入力_N］ 付きで返す（黄色セルの値は隠す）。
+// AIは前案件の値に引きずられず文脈だけで判断できる。
+// slots: N → セルの元値（originalValue）。extractXlsxMarkedCells と同じ順序。
+export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
+  const zip = new PizZip(buffer);
+  const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
+  const yellowStyles = findYellowStyleIndexes(stylesXml);
+  const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
+  const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
+
+  const slots = new Map<number, string>();
+  let slotId = 0;
+  const lines: string[] = [];
+
+  for (const fileName of Object.keys(zip.files)) {
+    if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
+    const sheetXml = zip.file(fileName)?.asText();
+    if (!sheetXml) continue;
+
+    const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+    let rm;
+    while ((rm = rowRe.exec(sheetXml)) !== null) {
+      const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+      let cm;
+      const rowTexts: string[] = [];
+      while ((cm = cellRe.exec(rm[1])) !== null) {
+        const attrs = cm[1];
+        const inner = cm[2] || "";
+        const vMatch = inner.match(/<v>([^<]*)<\/v>/);
+        if (!vMatch) continue;
+        const tMatch = attrs.match(/\bt="([^"]*)"/);
+        let val = "";
+        if (tMatch?.[1] === "s") val = sharedStrings[parseInt(vMatch[1])] || "";
+        else val = vMatch[1];
+        const sMatch = attrs.match(/\bs="(\d+)"/);
+        const isYellow = sMatch && yellowStyles.has(parseInt(sMatch[1]));
+        if (!val.trim()) continue;
+        if (/<f\b/.test(inner)) { rowTexts.push(val); continue; } // 数式セルは素通し
+        if (isYellow) {
+          slots.set(slotId, val);
+          rowTexts.push(`［要入力_${slotId}］`);
+          slotId++;
+        } else {
+          rowTexts.push(val);
+        }
+      }
+      if (rowTexts.some(t => t.trim())) lines.push(rowTexts.join("\t"));
+    }
+  }
+  return { text: lines.join("\n"), slots };
+}
+
+// Excelの全体テキストを★マーク付きで返す（旧方式、後方互換用）
 export function getXlsxMarkedText(buffer: Buffer): string {
   const cells = extractXlsxMarkedCells(buffer);
   if (cells.length === 0) return "";
