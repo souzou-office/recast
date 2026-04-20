@@ -113,20 +113,85 @@ function renderValue(value: string) {
   const hasSlashFormat = lines.length > 1 && lines.filter(l => l.includes("/")).length >= 2;
 
   if (hasSlashFormat) {
+    // 各行を「/」で分割してレコードに
+    type Record = { fields: string[]; isTotal: boolean; raw: string };
+    const records: Record[] = lines
+      .map(line => {
+        const trimmed = line.trim().replace(/^[\-•・]\s*/, "");
+        const fields = trimmed.split("/").map(f => f.trim()).filter(Boolean);
+        const isTotal = /^合計|合計\s*[:：]/.test(trimmed);
+        return { fields, isTotal, raw: trimmed };
+      })
+      .filter(r => r.fields.length > 0);
+
+    const dataRecords = records.filter(r => !r.isTotal && r.fields.length >= 2);
+    const totalRecord = records.find(r => r.isTotal);
+    const otherLines = records.filter(r => r.fields.length < 2 && !r.isTotal);
+
+    // 全レコードの列数が揃っていれば表で描画
+    const maxCols = Math.max(...dataRecords.map(r => r.fields.length));
+    const allSameShape = dataRecords.length >= 2 && dataRecords.every(r => r.fields.length === maxCols);
+
+    if (allSameShape && dataRecords.length >= 1) {
+      return (
+        <div>
+          <table className="w-full text-sm border-separate border-spacing-0">
+            <tbody>
+              {dataRecords.map((r, i) => (
+                <tr key={i} className={i % 2 === 0 ? "" : "bg-[var(--color-hover)]/40"}>
+                  {r.fields.map((f, fi) => {
+                    // 「ラベル: 値」形式の場合はラベル削除して値のみ
+                    const labelMatch = f.match(/^(.+?)[：:](.+)$/);
+                    const display = labelMatch ? labelMatch[2].trim() : f;
+                    return (
+                      <td
+                        key={fi}
+                        className={`px-3 py-1.5 border-b border-[var(--color-border-soft)] align-top ${
+                          fi === 0 ? "font-medium text-[var(--color-fg)] whitespace-nowrap" : "text-[var(--color-fg-muted)]"
+                        }`}
+                      >
+                        {display}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              {totalRecord && (
+                <tr className="text-[var(--color-fg)]">
+                  {Array.from({ length: maxCols }).map((_, ci) => {
+                    const val = totalRecord.fields[ci] || "";
+                    // 「合計: X」形式ならラベル剥がす
+                    const labelMatch = val.match(/^(.+?)[：:](.+)$/);
+                    const display = labelMatch ? labelMatch[2].trim() : val;
+                    return (
+                      <td key={ci} className={`px-3 py-2 border-t-2 border-[var(--color-border)] ${ci === 0 ? "font-semibold text-[var(--color-fg-muted)] text-xs uppercase tracking-wider" : "font-medium"}`}>
+                        {ci === 0 && /^合計/.test(val) ? "合計" : display}
+                      </td>
+                    );
+                  })}
+                </tr>
+              )}
+            </tbody>
+          </table>
+          {otherLines.length > 0 && (
+            <div className="mt-2 space-y-0.5">
+              {otherLines.map((r, i) => (
+                <p key={i} className="text-xs text-[var(--color-fg-muted)]">{r.raw}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // 形がばらついていたら旧来のカード表示にフォールバック
     return (
       <div className="space-y-2">
-        {lines.map((line, i) => {
-          const trimmed = line.trim().replace(/^[\-•・]\s*/, "");
-          if (!trimmed) return null;
-
-          // 「/」で分割してフィールドに
-          const fields = trimmed.split("/").map(f => f.trim()).filter(Boolean);
-
-          if (fields.length >= 2) {
+        {records.map((r, i) => {
+          if (r.fields.length >= 2) {
             return (
-              <div key={i} className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-hover)]/50 px-3 py-2">
-                {fields.map((field, fi) => {
-                  // 「ラベル: 値」形式か判定
+              <div key={i} className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-hover)]/40 px-3 py-2">
+                {r.fields.map((field, fi) => {
                   const labelMatch = field.match(/^(.+?)[：:](.+)$/);
                   if (labelMatch) {
                     return (
@@ -136,18 +201,13 @@ function renderValue(value: string) {
                       </div>
                     );
                   }
-                  // 最初のフィールドは名前として太字
-                  if (fi === 0) {
-                    return <div key={fi} className="text-sm font-medium text-[var(--color-fg)] pb-0.5">{field}</div>;
-                  }
-                  return <div key={fi} className="text-sm text-[var(--color-fg)] py-0.5">{field}</div>;
+                  if (fi === 0) return <div key={fi} className="text-sm font-medium text-[var(--color-fg)] pb-0.5">{field}</div>;
+                  return <div key={fi} className="text-sm text-[var(--color-fg-muted)] py-0.5">{field}</div>;
                 })}
               </div>
             );
           }
-
-          // 「/」なしの行（注釈等）
-          return <p key={i} className="text-xs text-[var(--color-fg-muted)]">{trimmed}</p>;
+          return <p key={i} className="text-xs text-[var(--color-fg-muted)]">{r.raw}</p>;
         })}
       </div>
     );
