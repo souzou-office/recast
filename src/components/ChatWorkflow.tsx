@@ -548,7 +548,21 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const docCard = cards[docCardIdx];
             if (docCard.type !== "document-result") break;
             const updatedDocs = docCard.documents.map(doc => {
-              const match = parsed!.documents!.find(d => d.docName === doc.name);
+              // AI 返答の docName はファイル名／基本名／任意のいずれか。柔軟にマッチ。
+              const baseFromFile = doc.fileName.replace(/\.[^.]+$/, "");
+              const match = parsed!.documents!.find(d => {
+                if (!d.docName) return false;
+                const dn = d.docName.replace(/\.[^.]+$/, "");
+                return (
+                  d.docName === doc.name ||
+                  d.docName === doc.fileName ||
+                  dn === doc.name ||
+                  dn === baseFromFile ||
+                  dn.endsWith(doc.name) ||            // prefix（会社名_）を無視して一致
+                  doc.name.endsWith(dn) ||
+                  baseFromFile.endsWith(dn)
+                );
+              });
               if (!match) return doc;
               const issues = (match.issues || []).map(iss => ({
                 severity: (iss.severity === "error" || iss.severity === "warn" || iss.severity === "info" ? iss.severity : "warn") as "error" | "warn" | "info",
