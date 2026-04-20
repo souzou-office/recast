@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { Company, ChatThread } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface ThreadSummary {
   id: string;
@@ -95,7 +96,7 @@ export default function ChatSidebar({
   }
 
   return (
-    <aside className="flex-1 min-w-0 border-r border-gray-200 bg-gray-50 flex flex-col overflow-hidden">
+    <aside className="flex-1 min-w-0 border-r border-[var(--color-border)] bg-[var(--color-sidebar)] flex flex-col overflow-hidden">
       {/* 会社セレクター */}
       <div className="border-b border-gray-200 p-2">
         <button
@@ -105,7 +106,7 @@ export default function ChatSidebar({
           <span className="flex-1 truncate text-left text-gray-700">
             {company ? company.name : "会社を選択"}
           </span>
-          <span className="text-gray-400 text-[10px]">{companySearchOpen ? "▲" : "▼"}</span>
+          <Icon name={companySearchOpen ? "ChevronUp" : "ChevronDown"} size={13} className="text-[var(--color-fg-subtle)]" />
         </button>
         {companySearchOpen && (
           <div className="mt-1 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
@@ -145,7 +146,7 @@ export default function ChatSidebar({
           onClick={onNewThread}
           className="w-full rounded-lg border border-dashed border-gray-300 py-2 text-xs text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
         >
-          + 新規チャット
+          <span className="inline-flex items-center justify-center gap-1.5"><Icon name="Plus" size={14} /> 新規チャット</span>
         </button>
       </div>
 
@@ -177,8 +178,8 @@ export default function ChatSidebar({
                       className="w-full text-xs border-b border-blue-400 outline-none bg-transparent"
                     />
                   ) : (
-                    <div className="flex items-center gap-1" onClick={() => onSelectThread(t.id)}>
-                      <span className="text-xs">💬</span>
+                    <div className="flex items-center gap-1.5" onClick={() => onSelectThread(t.id)}>
+                      <Icon name="MessageSquare" size={13} className="text-[var(--color-fg-subtle)] shrink-0" />
                       <span className="flex-1 text-xs truncate">{t.displayName}</span>
                       <div className="hidden group-hover:flex items-center gap-1">
                         <button
