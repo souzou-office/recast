@@ -496,14 +496,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     if (!company) return;
     setLoading(true);
 
-    const checkMsg: ThreadMessage = {
-      id: `msg_${Date.now()}`,
-      role: "assistant",
-      content: "",
-      timestamp: new Date().toISOString(),
-    };
-    setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
-
+    // verify は SSE で AI の出力をストリームする。最後に JSON を取り出す。
     try {
       const res = await fetch("/api/verify", {
         method: "POST",
@@ -516,41 +509,95 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
       const reader = res.body?.getReader();
-      if (reader) {
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let fullText = "";
+      if (!reader) return;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            const match = line.match(/^data: (.+)$/m);
-            if (!match) continue;
-            const data = JSON.parse(match[1]);
-            if (data.type === "text") {
-              fullText += data.text;
-              setThread(prev => {
-                if (!prev) return prev;
-                const msgs = [...prev.messages];
-                const last = msgs[msgs.length - 1];
-                if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: fullText };
-                return { ...prev, messages: msgs };
-              });
-            }
-          }
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const m = line.match(/^data: (.+)$/m);
+          if (!m) continue;
+          const data = JSON.parse(m[1]);
+          if (data.type === "text") fullText += data.text;
         }
+      }
 
-        // チェック結果を保存
-        checkMsg.content = fullText;
-        checkMsg.cards = [{ type: "check-result", content: fullText }];
+      // JSON 抽出
+      const jsonMatch = fullText.match(/```json\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
+      let parsed: { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> } | null = null;
+      if (jsonMatch) {
+        try { parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]); } catch { parsed = null; }
+      }
+
+      // 最新の document-result カードに check 結果を差し込む
+      if (parsed?.documents) {
+        setThread(prev => {
+          if (!prev) return prev;
+          const msgs = [...prev.messages];
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const cards = msgs[i].cards;
+            if (!cards) continue;
+            const docCardIdx = cards.findIndex(c => c.type === "document-result");
+            if (docCardIdx < 0) continue;
+            const docCard = cards[docCardIdx];
+            if (docCard.type !== "document-result") break;
+            const updatedDocs = docCard.documents.map(doc => {
+              const match = parsed!.documents!.find(d => d.docName === doc.name);
+              if (!match) return doc;
+              const issues = (match.issues || []).map(iss => ({
+                severity: (iss.severity === "error" || iss.severity === "warn" || iss.severity === "info" ? iss.severity : "warn") as "error" | "warn" | "info",
+                aspect: iss.aspect || "",
+                problem: iss.problem || "",
+                expected: iss.expected,
+              }));
+              const status: "ok" | "warn" | "error" =
+                match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
+                match.status === "warn" || issues.length > 0 ? "warn" : "ok";
+              return { ...doc, checkStatus: status, issues };
+            });
+            const updatedCard = { ...docCard, documents: updatedDocs, checkSummary: parsed.summary || "", checkedAt: new Date().toISOString() };
+            msgs[i] = { ...msgs[i], cards: cards.map((c, idx) => idx === docCardIdx ? updatedCard : c) };
+            break;
+          }
+          return { ...prev, messages: msgs };
+        });
+
+        // 永続化: 最新の document-result を更新したスレッドメッセージ全体を保存
+        // （永続層のインタフェースが message 1 件単位なので、ここでは verify 終了時の
+        //   スレッド再ロードで同期される）
+      }
+
+      // フォールバック: JSON が取れなかった時だけ旧 check-result カード表示
+      if (!parsed?.documents) {
+        const checkMsg: ThreadMessage = {
+          id: `msg_${Date.now()}`,
+          role: "assistant",
+          content: fullText,
+          cards: [{ type: "check-result", content: fullText }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
         await fetch(`/api/chat-threads/${currentThread.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ companyId: company.id, message: checkMsg, checkResult: fullText }),
+        });
+      } else {
+        // スレッド全体を PATCH で上書き（document-result が更新されてるので）
+        setThread(prev => {
+          if (!prev) return prev;
+          fetch(`/api/chat-threads/${currentThread.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ companyId: company.id, messages: prev.messages, checkResult: fullText }),
+          });
+          return prev;
         });
       }
     } catch { /* ignore */ }
