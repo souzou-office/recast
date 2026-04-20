@@ -93,29 +93,25 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // ハイライト方式: 各フィールドの周辺文脈から「ラベル（型）」を作る
+        // ハイライト方式: コメントがあればそれをラベルにする。
+        // コメントが無いハイライトは意味の推定が難しいので、汎用カテゴリに集約する。
         if (ext === "docx") {
           try {
             const buf = await import("fs/promises").then(fs => fs.readFile(tf.path));
             const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
             const fields = extractMarkedFields(buf);
+            const genericByType = new Set<string>();
             for (const f of fields) {
               if (f.comment) { requiredLabels.add(f.comment); continue; }
-              const ctx = (f.context || "").replace(/\s+/g, " ").trim();
               const val = f.originalValue;
-              const idx = ctx.indexOf(val);
-              const before = idx >= 0 ? ctx.slice(Math.max(0, idx - 40), idx).trim() : "";
-              const after  = idx >= 0 ? ctx.slice(idx + val.length, idx + val.length + 20).trim() : "";
-              const m = before.match(/[一-龥ぁ-んァ-ヶA-Za-z0-9]+(?=[\s　:：の・]*$)/);
-              let label = m ? m[0] : before.slice(-20);
-              if (after.startsWith("円")) label = label + "（金額）";
-              else if (after.startsWith("株")) label = label + "（株数）";
-              else if (after.startsWith("名")) label = label + "（人数）";
-              else if (/年|月|日/.test(val) && !/人名|氏名|住所/.test(label)) label = label + "（日付）";
-              label = label.trim();
-              if (label.length > 40) label = label.slice(-40);
-              if (label) requiredLabels.add(label);
+              // 値の型から汎用カテゴリを推定（個別ラベル化はしない）
+              if (/^\d+[年月日]|令和|平成|昭和/.test(val)) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の日付`);
+              else if (/[都道府県市区町村丁目番号]/.test(val) && /^\S{8,}/.test(val)) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の住所`);
+              else if (/^株式会社|有限会社|合同会社|組合$/.test(val.replace(/\s/g, ""))) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の法人名`);
+              else if (/^[\d,，]+(\.\d+)?$/.test(val.replace(/\s/g, ""))) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の数値`);
+              // それ以外（短い人名・役職名など）は集約しない（ノイズ防止）
             }
+            for (const g of genericByType) requiredLabels.add(g);
           } catch { /* ignore */ }
         }
         // Excel の黄色セルは今はラベル抽出が難しいのでスキップ（プレースホルダーが優先）
