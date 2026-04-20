@@ -29,7 +29,60 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     if (!threadId || !company) { setThread(null); return; }
     fetch(`/api/chat-threads/${threadId}?companyId=${encodeURIComponent(company.id)}`)
       .then(r => r.json())
-      .then(data => setThread(data.thread || null))
+      .then(data => {
+        const loaded: ChatThread | null = data.thread || null;
+        if (!loaded) { setThread(null); return; }
+        // 既に checkResult が thread に保存されているが、document-result カードに未反映の時は
+        // ここで JSON をパースしてマージする（再 verify は不要）
+        const checkText = loaded.checkResult;
+        if (checkText && typeof checkText === "string" && checkText.includes("documents")) {
+          try {
+            const m = checkText.match(/```json\s*([\s\S]*?)```/) || checkText.match(/(\{[\s\S]*\})/);
+            if (m) {
+              const parsed = JSON.parse(m[1] || m[0]) as { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> };
+              if (parsed.documents) {
+                for (let i = loaded.messages.length - 1; i >= 0; i--) {
+                  const cards = loaded.messages[i].cards;
+                  if (!cards) continue;
+                  const docIdx = cards.findIndex(c => c.type === "document-result");
+                  if (docIdx < 0) continue;
+                  const docCard = cards[docIdx];
+                  if (docCard.type !== "document-result") break;
+                  // 既にマージ済みなら何もしない
+                  if (docCard.documents.some(d => d.checkStatus !== undefined)) break;
+                  const updatedDocs = docCard.documents.map(doc => {
+                    const baseFromFile = doc.fileName.replace(/\.[^.]+$/, "");
+                    const match = parsed.documents!.find(d => {
+                      if (!d.docName) return false;
+                      const dn = d.docName.replace(/\.[^.]+$/, "");
+                      return (
+                        d.docName === doc.name || d.docName === doc.fileName ||
+                        dn === doc.name || dn === baseFromFile ||
+                        dn.endsWith(doc.name) || doc.name.endsWith(dn) || baseFromFile.endsWith(dn)
+                      );
+                    });
+                    if (!match) return doc;
+                    const issues = (match.issues || []).map(iss => ({
+                      severity: (iss.severity === "error" || iss.severity === "warn" || iss.severity === "info" ? iss.severity : "warn") as "error" | "warn" | "info",
+                      aspect: iss.aspect || "",
+                      problem: iss.problem || "",
+                      expected: iss.expected,
+                    }));
+                    const status: "ok" | "warn" | "error" =
+                      match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
+                      match.status === "warn" || issues.length > 0 ? "warn" : "ok";
+                    return { ...doc, checkStatus: status, issues };
+                  });
+                  const updatedCard = { ...docCard, documents: updatedDocs, checkSummary: parsed.summary || "" };
+                  loaded.messages[i] = { ...loaded.messages[i], cards: cards.map((c, idx) => idx === docIdx ? updatedCard : c) };
+                  break;
+                }
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        setThread(loaded);
+      })
       .catch(() => setThread(null));
   }, [threadId, company?.id]);
 
