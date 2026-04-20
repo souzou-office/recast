@@ -113,13 +113,12 @@ function renderValue(value: string) {
   const hasSlashFormat = lines.length > 1 && lines.filter(l => l.includes("/")).length >= 2;
 
   if (hasSlashFormat) {
-    // 各行を「/」で分割してレコードに
     type Record = { fields: string[]; isTotal: boolean; raw: string };
     const records: Record[] = lines
       .map(line => {
         const trimmed = line.trim().replace(/^[\-•・]\s*/, "");
         const fields = trimmed.split("/").map(f => f.trim()).filter(Boolean);
-        const isTotal = /^合計|合計\s*[:：]/.test(trimmed);
+        const isTotal = /^合計(?:[:：\s]|$)/.test(trimmed);
         return { fields, isTotal, raw: trimmed };
       })
       .filter(r => r.fields.length > 0);
@@ -128,87 +127,41 @@ function renderValue(value: string) {
     const totalRecord = records.find(r => r.isTotal);
     const otherLines = records.filter(r => r.fields.length < 2 && !r.isTotal);
 
-    // 全レコードの列数が揃っていれば表で描画
-    const maxCols = Math.max(...dataRecords.map(r => r.fields.length));
-    const allSameShape = dataRecords.length >= 2 && dataRecords.every(r => r.fields.length === maxCols);
-
-    if (allSameShape && dataRecords.length >= 1) {
-      return (
-        <div>
-          <table className="w-full text-sm border-separate border-spacing-0">
-            <tbody>
-              {dataRecords.map((r, i) => (
-                <tr key={i}>
-                  {r.fields.map((f, fi) => {
-                    // 「ラベル: 値」形式の場合はラベル削除して値のみ
-                    const labelMatch = f.match(/^(.+?)[：:](.+)$/);
-                    const display = labelMatch ? labelMatch[2].trim() : f;
-                    return (
-                      <td
-                        key={fi}
-                        className={`px-3 py-1.5 border-b border-[var(--color-border-soft)] align-top ${
-                          fi === 0 ? "font-medium text-[var(--color-fg)] whitespace-nowrap" : "text-[var(--color-fg-muted)]"
-                        }`}
-                      >
-                        {display}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-              {totalRecord && (
-                <tr className="text-[var(--color-fg)]">
-                  {Array.from({ length: maxCols }).map((_, ci) => {
-                    const val = totalRecord.fields[ci] || "";
-                    // 「合計: X」形式ならラベル剥がす
-                    const labelMatch = val.match(/^(.+?)[：:](.+)$/);
-                    const display = labelMatch ? labelMatch[2].trim() : val;
-                    return (
-                      <td key={ci} className={`px-3 py-2 border-t-2 border-[var(--color-border)] ${ci === 0 ? "font-semibold text-[var(--color-fg-muted)] text-xs uppercase tracking-wider" : "font-medium"}`}>
-                        {ci === 0 && /^合計/.test(val) ? "合計" : display}
-                      </td>
-                    );
-                  })}
-                </tr>
-              )}
-            </tbody>
-          </table>
-          {otherLines.length > 0 && (
-            <div className="mt-2 space-y-0.5">
-              {otherLines.map((r, i) => (
-                <p key={i} className="text-xs text-[var(--color-fg-muted)]">{r.raw}</p>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // 形がばらついていたら旧来のカード表示にフォールバック
     return (
       <div className="space-y-2">
-        {records.map((r, i) => {
-          if (r.fields.length >= 2) {
-            return (
-              <div key={i} className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-hover)]/40 px-3 py-2">
-                {r.fields.map((field, fi) => {
-                  const labelMatch = field.match(/^(.+?)[：:](.+)$/);
-                  if (labelMatch) {
-                    return (
-                      <div key={fi} className="flex gap-2 py-0.5">
-                        <span className="text-xs text-[var(--color-fg-subtle)] shrink-0 w-20">{labelMatch[1].trim()}</span>
-                        <span className="text-sm text-[var(--color-fg)]">{labelMatch[2].trim()}</span>
-                      </div>
-                    );
-                  }
-                  if (fi === 0) return <div key={fi} className="text-sm font-medium text-[var(--color-fg)] pb-0.5">{field}</div>;
-                  return <div key={fi} className="text-sm text-[var(--color-fg-muted)] py-0.5">{field}</div>;
+        {dataRecords.map((r, i) => (
+          <div key={i} className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-hover)]/40 px-3 py-2">
+            {r.fields.map((field, fi) => {
+              const labelMatch = field.match(/^(.+?)[：:](.+)$/);
+              if (labelMatch) {
+                return (
+                  <div key={fi} className="flex gap-2 py-0.5">
+                    <span className="text-xs text-[var(--color-fg-subtle)] shrink-0 w-20">{labelMatch[1].trim()}</span>
+                    <span className="text-sm text-[var(--color-fg)]">{labelMatch[2].trim()}</span>
+                  </div>
+                );
+              }
+              if (fi === 0) return <div key={fi} className="text-sm font-medium text-[var(--color-fg)] pb-0.5">{field}</div>;
+              return <div key={fi} className="text-sm text-[var(--color-fg-muted)] py-0.5">{field}</div>;
+            })}
+          </div>
+        ))}
+        {totalRecord && (
+          <div className="flex items-center gap-3 pt-1 px-3 text-[13px]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--color-fg-subtle)] w-20 shrink-0">合計</span>
+            <span className="flex items-center gap-4 text-[var(--color-fg)]">
+              {totalRecord.fields
+                .filter(f => !/^合計/.test(f))
+                .map((f, fi) => {
+                  const labelMatch = f.match(/^(.+?)[：:](.+)$/);
+                  return <span key={fi}>{labelMatch ? labelMatch[2].trim() : f}</span>;
                 })}
-              </div>
-            );
-          }
-          return <p key={i} className="text-xs text-[var(--color-fg-muted)]">{r.raw}</p>;
-        })}
+            </span>
+          </div>
+        )}
+        {otherLines.map((r, i) => (
+          <p key={`other-${i}`} className="text-xs text-[var(--color-fg-muted)] px-1">{r.raw}</p>
+        ))}
       </div>
     );
   }
@@ -418,7 +371,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                   <tbody>
                     {section.rows.map((row, ri) => (
                       <tr key={ri} className="border-b border-[var(--color-border-soft)] last:border-0">
-                        <th className="w-[180px] px-4 py-3 text-left text-[12px] font-medium text-[var(--color-fg-muted)] align-top break-words leading-relaxed">
+                        <th className="w-[180px] px-4 py-3 text-left text-[12px] font-medium text-[var(--color-fg-muted)] align-top break-words leading-relaxed bg-[var(--color-hover)]/50">
                           {row.key}
                         </th>
                         <td className="px-4 py-3 text-sm text-[var(--color-fg)] leading-relaxed">
