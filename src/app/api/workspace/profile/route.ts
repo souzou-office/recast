@@ -10,45 +10,47 @@ import type { CompanyProfile, StructuredProfile, ChangeHistoryEntry } from "@/ty
 const client = new Anthropic();
 const PROFILE_TEMPLATE_PATH = path.join(process.cwd(), "data", "profile-template.json");
 
-const DEFAULT_ITEMS = [
+// 推奨キー名（下流の produce/verify 等が参照するため、AI にはこの名前を使うよう誘導する）
+// 資料にある内容はすべて出す。これ以外のキーも資料の見出しに素直に合わせて追加してよい。
+const SUGGESTED_KEYS = [
   "会社法人等番号", "商号", "本店所在地", "設立年月日", "事業目的",
   "資本金", "発行可能株式総数", "発行済株式総数", "株式の譲渡制限（承認機関も記載）",
-  "役員（役職・氏名・住所・就任日・任期満了）", "新株予約権", "公告方法", "決算期",
-  "役員の任期（定款の規定）", "株主構成（氏名・住所・持株数・持株比率）", "備考",
+  "役員（役職・氏名・住所・就任日・任期満了）",
+  "新株予約権", "公告方法", "決算期", "役員の任期（定款の規定）",
+  "株主構成（氏名・住所・持株数・持株比率）",
 ];
 
-async function getProfileItems(): Promise<string[]> {
+async function getSuggestedKeys(): Promise<string[]> {
   try {
     const raw = await fs.readFile(PROFILE_TEMPLATE_PATH, "utf-8");
     const data = JSON.parse(raw);
-    return data.items || DEFAULT_ITEMS;
+    return Array.isArray(data.items) && data.items.length > 0 ? data.items : SUGGESTED_KEYS;
   } catch {
-    return DEFAULT_ITEMS;
+    return SUGGESTED_KEYS;
   }
 }
 
-function buildExtractPrompt(items: string[]): string {
-  const itemList = items.map((item, i) => `${i + 1}. ${item}`).join("\n");
-  const jsonFields = items.map(item => `    "${item}": "..."`).join(",\n");
+function buildExtractPrompt(suggestedKeys: string[]): string {
+  const suggested = suggestedKeys.map(k => `  - ${k}`).join("\n");
 
-  return `以下のファイルから会社の基本情報を抽出してください。
-情報がないものは「不明」としてください。
+  return `以下の「資料（登記簿・定款・株主名簿・許認可証等）」から、その会社に関する情報を**すべて**抽出して構造化してください。
+固定のフォーマットに無理に当てはめず、**資料に書いてある内容をそのまま JSON として整える**のが目的です。
 
-2つのブロックに分けて出力してください:
+2つのブロックに分けて出力してください。
 
 【ブロック1: 表示用テキスト】
-以下の項目について「項目名: 値」の形式で出力。値が複数行になる場合、2行目以降は先頭にスペース2つ。
-セクション見出し（【】）やマークダウン記法は使わないでください。
-一覧系（役員・株主など）は「氏名 / 住所 / ...」の形式で1人1行。
-
-抽出項目:
-${itemList}
+- 「項目名: 値」形式で1行ずつ出力（複数行は2行目以降インデント2スペース）
+- 一覧系（役員・株主など）は1人1行 "氏名 / 住所 / ..." 形式
+- セクション見出し（【】）やマークダウン記法は使わない
 
 【ブロック2: JSON】
 \`\`\`json
 {
   "structured": {
-${jsonFields}
+    "商号": "...",
+    "役員（役職・氏名・住所・就任日・任期満了）": [ { ... }, ... ],
+    "株主構成（氏名・住所・持株数・持株比率）": [ { ... }, ... ],
+    ...資料にある項目を全て...
   },
   "変更履歴": [
     { "日付": "YYYY-MM-DD", "内容": "変更内容の概要", "根拠ファイル": "ファイル名" }
@@ -56,14 +58,19 @@ ${jsonFields}
 }
 \`\`\`
 
-ルール:
-- 役員は代表取締役を最初に記載。住所は登記簿に記載があれば記載、なければ省略
-- 就任日が不明でも設立時取締役であれば設立年月日を就任日とすること
-- 任期満了は必ず具体的な年月で算出すること（就任日+任期年数→該当事業年度末日後の定時株主総会）
-- 一覧系の項目はJSON内では配列で返すこと
-- 変更履歴は複数のファイル（旧登記簿・旧定款等）を比較して時系列で記録
-- 変更履歴がない場合は空配列[]で返す
-- ブロック1とブロック2の内容は完全に一致させること`;
+## 抽出ルール
+- **資料に書かれている情報はすべて出す**（メールアドレス・電話番号・支店・取引銀行口座・許認可番号等があれば **それらも含める**）
+- **下記の推奨キー名は優先して使う**（下流の書類生成で参照される）。資料にあるが推奨リストに無い項目は、素直な日本語で追加してよい
+- 一覧系（役員・株主など）の**配列の各要素は、資料に記載のあるプロパティをすべて含める**。氏名・住所以外にメールアドレス・電話・持株数・議決権数・持株比率・就任日等、資料に書かれていれば全部入れる
+- 資料に記載がない項目は**キー自体を省略する**（「不明」や空文字で埋めない）。
+- ただし **推奨キーのうち登記簿・定款の基本事項**（商号・本店所在地・役員・資本金 等）は、資料に無ければ値を "不明" とする
+- 役員は代表取締役を最初に記載
+- 任期満了は就任日+任期年数→該当事業年度末日後の定時株主総会
+- 変更履歴は複数の資料（旧登記簿・旧定款等）を比較して時系列記録。無ければ空配列[]
+- ブロック1とブロック2の内容は完全一致させる
+
+## 推奨キー（この名前で出力することを優先）
+${suggested}`;
 }
 
 // 鮮度チェック: 共通フォルダのファイルが基本情報生成時より新しい/追加/削除されたかを判定
@@ -206,8 +213,8 @@ export async function POST(request: NextRequest) {
   }
 
   // テキストファイル + プロンプト
-  const profileItems = await getProfileItems();
-  let filesText = buildExtractPrompt(profileItems) + "\n\n--- ファイル内容 ---\n";
+  const suggestedKeys = await getSuggestedKeys();
+  let filesText = buildExtractPrompt(suggestedKeys) + "\n\n--- ファイル内容 ---\n";
   for (const f of textFiles) {
     filesText += `\n【${f.name}】\n${f.content}\n`;
   }
