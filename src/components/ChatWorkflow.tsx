@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { WarnHighlightMarkdown } from "./ui/WarnHighlightMarkdown";
 import type { ChatThread, ThreadMessage, ActionCard, Company, ClarificationCard } from "@/types";
 import ActionCardRenderer from "./cards/ActionCardRenderer";
 import FilePreview from "./FilePreview";
@@ -625,7 +626,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                   <span className="font-serif text-[12px] font-medium">recast</span>
                 </header>
                 <div className="pl-8 text-[14px] leading-[1.75] text-[var(--color-fg)] prose-recast max-w-none">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <WarnHighlightMarkdown>{msg.content}</WarnHighlightMarkdown>
                   {loading && i === thread.messages.length - 1 && !msg.content && (
                     <div className="flex items-center gap-2 text-[var(--color-fg-subtle)]">
                       <Icon name="Loader2" size={14} className="animate-spin" />
