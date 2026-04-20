@@ -69,60 +69,86 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  // テンプレートから「必要な項目ラベル」を抽出して JSON キーとして AI に渡す。
-  // テンプレ本文は送らない（AI はラベル一覧だけ見て、案件資料から値を拾う）。
+  // テンプレートごとに「意味ラベル付きのスロット一覧」を準備する。
+  // 初回は Haiku で解析してキャッシュ（.labels.json）、以降はキャッシュから即返し。
+  // これで案件整理 AI は各スロットの意味（例: "取締役決定書の作成日"）＋記載形式
+  // （例: "令和○年○月○日"）＋推定出典（"案件スケジュール表"）が分かる。
   let templateContext = "";
-  const requiredLabels = new Set<string>();
+  type FlatLabel = { docName: string; label: string; format: string; sourceHint?: string };
+  const allLabels: FlatLabel[] = [];
   if (templateFolderPath) {
     try {
       const templateFiles = await readAllFilesInFolder(templateFolderPath);
+      const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
 
+      // プレースホルダー方式 ({{X}} / 【X】): その名前自体が意味ラベルなのでそのまま使う
+      const placeholderExists = new Set<string>();
       for (const tf of templateFiles) {
         if (tf.base64) continue;
-        const ext = tf.name.toLowerCase().split(".").pop() || "";
-        if (!["docx", "doc", "xlsx", "xls"].includes(ext)) continue;
-
-        // プレースホルダー方式: 【X】 / {{X}} の X をそのままラベルに
         const phPatterns = [/【([^】]+)】/g, /\{\{([^}]+)\}\}/g, /｛｛([^｝]+)｝｝/g];
         for (const re of phPatterns) {
           let m;
           while ((m = re.exec(tf.content)) !== null) {
             const name = m[1].trim();
             if (name.startsWith("#") || name.startsWith("/")) continue;
-            requiredLabels.add(name);
+            if (!placeholderExists.has(name)) {
+              allLabels.push({ docName: tf.name, label: name, format: "" });
+              placeholderExists.add(name);
+            }
           }
         }
-
-        // ハイライト方式: コメントがあればそれをラベルにする。
-        // コメントが無いハイライトは意味の推定が難しいので、汎用カテゴリに集約する。
-        if (ext === "docx") {
-          try {
-            const buf = await import("fs/promises").then(fs => fs.readFile(tf.path));
-            const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
-            const fields = extractMarkedFields(buf);
-            const genericByType = new Set<string>();
-            for (const f of fields) {
-              if (f.comment) { requiredLabels.add(f.comment); continue; }
-              const val = f.originalValue;
-              // 値の型から汎用カテゴリを推定（個別ラベル化はしない）
-              if (/^\d+[年月日]|令和|平成|昭和/.test(val)) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の日付`);
-              else if (/[都道府県市区町村丁目番号]/.test(val) && /^\S{8,}/.test(val)) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の住所`);
-              else if (/^株式会社|有限会社|合同会社|組合$/.test(val.replace(/\s/g, ""))) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の法人名`);
-              else if (/^[\d,，]+(\.\d+)?$/.test(val.replace(/\s/g, ""))) genericByType.add(`${tf.name.replace(/\.[^.]+$/, "")}に記載の数値`);
-              // それ以外（短い人名・役職名など）は集約しない（ノイズ防止）
-            }
-            for (const g of genericByType) requiredLabels.add(g);
-          } catch { /* ignore */ }
-        }
-        // Excel の黄色セルは今はラベル抽出が難しいのでスキップ（プレースホルダーが優先）
       }
 
-      if (requiredLabels.size > 0) {
-        const labels = [...requiredLabels].sort();
-        templateContext = `\n## 作成予定の書類に必要な項目（これだけ抽出すればよい）\n以下のラベルが全ての「可変箇所」です。これに対応する値を案件資料から取ってきてください。
-${labels.map(l => `- ${l}`).join("\n")}
+      // ハイライト方式: キャッシュ利用のラベル解析
+      for (const tf of templateFiles) {
+        if (tf.base64) continue;
+        const ext = tf.name.toLowerCase().split(".").pop() || "";
+        const baseName = tf.name.replace(/\.[^.]+$/, "");
+        let labels;
+        if (ext === "docx" || ext === "docm") {
+          labels = await ensureDocxLabels(tf.path);
+        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+          labels = await ensureXlsxLabels(tf.path);
+        }
+        if (!labels) continue;
+        // 同一 label が重複する場合は排除（ハイライトが複数あっても同じ意味ラベルなら1行）
+        const seen = new Set<string>();
+        for (const s of labels.slots) {
+          const labelKey = s.label;
+          if (!labelKey || labelKey === "不明" || seen.has(labelKey)) continue;
+          seen.add(labelKey);
+          allLabels.push({
+            docName: baseName,
+            label: s.label,
+            format: s.format,
+            sourceHint: s.sourceHint,
+          });
+        }
+      }
 
-**出力方針**: 上記ラベルと同じキーを持つ JSON に近い表形式で整理してください。
+      if (allLabels.length > 0) {
+        // 書類別にグループ化して AI に渡す
+        const byDoc: Record<string, FlatLabel[]> = {};
+        for (const l of allLabels) {
+          if (!byDoc[l.docName]) byDoc[l.docName] = [];
+          byDoc[l.docName].push(l);
+        }
+        const lines: string[] = [];
+        for (const [doc, labels] of Object.entries(byDoc)) {
+          lines.push(`### ${doc}`);
+          for (const l of labels) {
+            const parts = [`- **${l.label}**`];
+            if (l.format) parts.push(`形式: \`${l.format}\``);
+            if (l.sourceHint) parts.push(`出典候補: ${l.sourceHint}`);
+            lines.push(parts.join(" | "));
+          }
+          lines.push("");
+        }
+        templateContext = `\n## 作成予定の書類に必要な項目（これだけ抽出すればよい）\n各書類ごとに、必要な項目・記載形式・推定出典を示します。
+これに対応する値を案件資料から取ってきてください。
+
+${lines.join("\n")}
+**出力方針**: 上記ラベルと同じ項目名を使って表形式で整理してください。値は format の記載形式に揃えてください。
 `;
       }
     } catch { /* ignore */ }
