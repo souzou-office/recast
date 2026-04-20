@@ -3,9 +3,33 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { WarnHighlightMarkdown } from "./ui/WarnHighlightMarkdown";
 import type { ChatThread, ThreadMessage, ActionCard, Company, ClarificationCard } from "@/types";
 import ActionCardRenderer from "./cards/ActionCardRenderer";
 import FilePreview from "./FilePreview";
+import { Icon } from "./ui/Icon";
+
+// 案件整理の出力テキストから「値が *要確認* / （要確認）」になってる行の項目名を抽出
+// 例: | 払込期日 | *要確認* | ─ |  →  "払込期日"
+function extractMissingFromOrganize(organizeText: string): string[] {
+  if (!organizeText) return [];
+  const items: string[] = [];
+  for (const rawLine of organizeText.split("\n")) {
+    const line = rawLine.trim();
+    if (!line.startsWith("|") || !line.includes("|")) continue;
+    const cols = line.split("|").map(s => s.trim()).filter(Boolean);
+    if (cols.length < 2) continue;
+    const value = cols[1] || "";
+    // *要確認* / 要確認 / （要確認） / (要確認) 等を検出
+    if (/(?:^|[*\s（(])要確認(?:[*\s）)]|$)/.test(value)) {
+      const label = cols[0];
+      if (label && !/^項目$|^-+$/.test(label) && !items.includes(label)) {
+        items.push(label);
+      }
+    }
+  }
+  return items;
+}
 
 interface Props {
   company: Company | null;
@@ -27,7 +51,60 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     if (!threadId || !company) { setThread(null); return; }
     fetch(`/api/chat-threads/${threadId}?companyId=${encodeURIComponent(company.id)}`)
       .then(r => r.json())
-      .then(data => setThread(data.thread || null))
+      .then(data => {
+        const loaded: ChatThread | null = data.thread || null;
+        if (!loaded) { setThread(null); return; }
+        // 既に checkResult が thread に保存されているが、document-result カードに未反映の時は
+        // ここで JSON をパースしてマージする（再 verify は不要）
+        const checkText = loaded.checkResult;
+        if (checkText && typeof checkText === "string" && checkText.includes("documents")) {
+          try {
+            const m = checkText.match(/```json\s*([\s\S]*?)```/) || checkText.match(/(\{[\s\S]*\})/);
+            if (m) {
+              const parsed = JSON.parse(m[1] || m[0]) as { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> };
+              if (parsed.documents) {
+                for (let i = loaded.messages.length - 1; i >= 0; i--) {
+                  const cards = loaded.messages[i].cards;
+                  if (!cards) continue;
+                  const docIdx = cards.findIndex(c => c.type === "document-result");
+                  if (docIdx < 0) continue;
+                  const docCard = cards[docIdx];
+                  if (docCard.type !== "document-result") break;
+                  // 既にマージ済みなら何もしない
+                  if (docCard.documents.some(d => d.checkStatus !== undefined)) break;
+                  const updatedDocs = docCard.documents.map(doc => {
+                    const baseFromFile = doc.fileName.replace(/\.[^.]+$/, "");
+                    const match = parsed.documents!.find(d => {
+                      if (!d.docName) return false;
+                      const dn = d.docName.replace(/\.[^.]+$/, "");
+                      return (
+                        d.docName === doc.name || d.docName === doc.fileName ||
+                        dn === doc.name || dn === baseFromFile ||
+                        dn.endsWith(doc.name) || doc.name.endsWith(dn) || baseFromFile.endsWith(dn)
+                      );
+                    });
+                    if (!match) return doc;
+                    const issues = (match.issues || []).map(iss => ({
+                      severity: (iss.severity === "error" || iss.severity === "warn" || iss.severity === "info" ? iss.severity : "warn") as "error" | "warn" | "info",
+                      aspect: iss.aspect || "",
+                      problem: iss.problem || "",
+                      expected: iss.expected,
+                    }));
+                    const status: "ok" | "warn" | "error" =
+                      match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
+                      match.status === "warn" || issues.length > 0 ? "warn" : "ok";
+                    return { ...doc, checkStatus: status, issues };
+                  });
+                  const updatedCard = { ...docCard, documents: updatedDocs, checkSummary: parsed.summary || "" };
+                  loaded.messages[i] = { ...loaded.messages[i], cards: cards.map((c, idx) => idx === docIdx ? updatedCard : c) };
+                  break;
+                }
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        setThread(loaded);
+      })
       .catch(() => setThread(null));
   }, [threadId, company?.id]);
 
@@ -184,6 +261,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
       }
 
+      // 案件整理の *要確認* 項目を再抽出（前と同じ内容だが、前回答後の状態から再確認のため）
+      const organizeMsg = updatedThread.messages.find(m => m.role === "assistant" && (m.content || "").length > 500);
+      const knownMissingContinue = extractMissingFromOrganize(organizeMsg?.content || "");
+
       // もう一度 clarify を呼ぶ
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
@@ -194,6 +275,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           previousQA,
           folderPath: updatedThread.folderPath,
           disabledFiles: updatedThread.disabledFiles,
+          knownMissing: knownMissingContinue,
         }),
       });
       const clarifyData = await clarifyRes.json();
@@ -342,7 +424,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               // 出典情報をメッセージに含める（見出し横にファイル名）
               let enrichedText = fullText;
               for (const [heading, files] of Object.entries(links)) {
-                const fileLinks = (files as { id: string; name: string }[]).map(f => `📄${f.name}`).join(" ");
+                const fileLinks = (files as { id: string; name: string }[]).map(f => f.name).join(" / ");
                 if (fileLinks) {
                   enrichedText = enrichedText.replace(
                     new RegExp(`(## ${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`),
@@ -364,6 +446,17 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         });
       }
 
+      // 案件整理が終わった直後のスレッドで書類生成できるよう、ここで最新内容を含むスレッドを作る
+      // （currentThread 引数は organizeMsg 追加前のスナップショットなので stale になる）
+      const freshThread: ChatThread = {
+        ...currentThread,
+        messages: [...currentThread.messages, organizeMsg],
+      };
+
+      // 案件整理の出力から *要確認* / （要確認） となった項目を機械的に抽出
+      // これは clarify AI の判断に頼らず、確実に質問する対象
+      const knownMissing = extractMissingFromOrganize(organizeMsg.content);
+
       // 2. 確認質問（clarify）
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
@@ -373,6 +466,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           templateFolderPath: templatePath,
           folderPath: currentThread.folderPath,
           disabledFiles: currentThread.disabledFiles,
+          knownMissing,
         }),
       });
       const clarifyData = await clarifyRes.json();
@@ -402,8 +496,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 3. 質問なし→直接書類生成
-      await generateDocuments(currentThread, templatePath);
+      // 3. 質問なし→直接書類生成（organizeMsg を含む freshThread を渡す）
+      await generateDocuments(freshThread, templatePath);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
   };
@@ -488,14 +582,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     if (!company) return;
     setLoading(true);
 
-    const checkMsg: ThreadMessage = {
-      id: `msg_${Date.now()}`,
-      role: "assistant",
-      content: "",
-      timestamp: new Date().toISOString(),
-    };
-    setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
-
+    // verify は SSE で AI の出力をストリームする。最後に JSON を取り出す。
     try {
       const res = await fetch("/api/verify", {
         method: "POST",
@@ -508,41 +595,109 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
       const reader = res.body?.getReader();
-      if (reader) {
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let fullText = "";
+      if (!reader) return;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            const match = line.match(/^data: (.+)$/m);
-            if (!match) continue;
-            const data = JSON.parse(match[1]);
-            if (data.type === "text") {
-              fullText += data.text;
-              setThread(prev => {
-                if (!prev) return prev;
-                const msgs = [...prev.messages];
-                const last = msgs[msgs.length - 1];
-                if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: fullText };
-                return { ...prev, messages: msgs };
-              });
-            }
-          }
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const m = line.match(/^data: (.+)$/m);
+          if (!m) continue;
+          const data = JSON.parse(m[1]);
+          if (data.type === "text") fullText += data.text;
         }
+      }
 
-        // チェック結果を保存
-        checkMsg.content = fullText;
-        checkMsg.cards = [{ type: "check-result", content: fullText }];
+      // JSON 抽出
+      const jsonMatch = fullText.match(/```json\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
+      let parsed: { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> } | null = null;
+      if (jsonMatch) {
+        try { parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]); } catch { parsed = null; }
+      }
+
+      // 最新の document-result カードに check 結果を差し込む
+      if (parsed?.documents) {
+        setThread(prev => {
+          if (!prev) return prev;
+          const msgs = [...prev.messages];
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const cards = msgs[i].cards;
+            if (!cards) continue;
+            const docCardIdx = cards.findIndex(c => c.type === "document-result");
+            if (docCardIdx < 0) continue;
+            const docCard = cards[docCardIdx];
+            if (docCard.type !== "document-result") break;
+            const updatedDocs = docCard.documents.map(doc => {
+              // AI 返答の docName はファイル名／基本名／任意のいずれか。柔軟にマッチ。
+              const baseFromFile = doc.fileName.replace(/\.[^.]+$/, "");
+              const match = parsed!.documents!.find(d => {
+                if (!d.docName) return false;
+                const dn = d.docName.replace(/\.[^.]+$/, "");
+                return (
+                  d.docName === doc.name ||
+                  d.docName === doc.fileName ||
+                  dn === doc.name ||
+                  dn === baseFromFile ||
+                  dn.endsWith(doc.name) ||            // prefix（会社名_）を無視して一致
+                  doc.name.endsWith(dn) ||
+                  baseFromFile.endsWith(dn)
+                );
+              });
+              if (!match) return doc;
+              const issues = (match.issues || []).map(iss => ({
+                severity: (iss.severity === "error" || iss.severity === "warn" || iss.severity === "info" ? iss.severity : "warn") as "error" | "warn" | "info",
+                aspect: iss.aspect || "",
+                problem: iss.problem || "",
+                expected: iss.expected,
+              }));
+              const status: "ok" | "warn" | "error" =
+                match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
+                match.status === "warn" || issues.length > 0 ? "warn" : "ok";
+              return { ...doc, checkStatus: status, issues };
+            });
+            const updatedCard = { ...docCard, documents: updatedDocs, checkSummary: parsed.summary || "", checkedAt: new Date().toISOString() };
+            msgs[i] = { ...msgs[i], cards: cards.map((c, idx) => idx === docCardIdx ? updatedCard : c) };
+            break;
+          }
+          return { ...prev, messages: msgs };
+        });
+
+        // 永続化: 最新の document-result を更新したスレッドメッセージ全体を保存
+        // （永続層のインタフェースが message 1 件単位なので、ここでは verify 終了時の
+        //   スレッド再ロードで同期される）
+      }
+
+      // フォールバック: JSON が取れなかった時だけ旧 check-result カード表示
+      if (!parsed?.documents) {
+        const checkMsg: ThreadMessage = {
+          id: `msg_${Date.now()}`,
+          role: "assistant",
+          content: fullText,
+          cards: [{ type: "check-result", content: fullText }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
         await fetch(`/api/chat-threads/${currentThread.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ companyId: company.id, message: checkMsg, checkResult: fullText }),
+        });
+      } else {
+        // スレッド全体を PATCH で上書き（document-result が更新されてるので）
+        setThread(prev => {
+          if (!prev) return prev;
+          fetch(`/api/chat-threads/${currentThread.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ companyId: company.id, messages: prev.messages, checkResult: fullText }),
+          });
+          return prev;
         });
       }
     } catch { /* ignore */ }
@@ -551,18 +706,18 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
   if (!company) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <p className="text-sm text-gray-400">サイドバーから会社を選択してください</p>
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
+        <p className="text-sm text-[var(--color-fg-subtle)]">サイドバーから会社を選択してください</p>
       </div>
     );
   }
 
   if (!thread) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
         <div className="text-center">
-          <p className="text-3xl mb-3">💬</p>
-          <p className="text-sm text-gray-500">チャットを選択するか、新規作成してください</p>
+          <Icon name="MessageSquare" size={36} className="mx-auto mb-3 text-[var(--color-fg-subtle)]" />
+          <p className="text-sm text-[var(--color-fg-muted)]">チャットを選択するか、新規作成してください</p>
         </div>
       </div>
     );
@@ -573,42 +728,61 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       {/* 左: チャット */}
       <div className={`flex flex-col ${previewFile ? "flex-1 min-w-0" : "w-full"}`}>
       {/* メッセージ一覧 */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-3xl mx-auto space-y-4">
-          {thread.messages.map((msg, i) => (
-            <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                msg.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-white border border-gray-200 text-gray-800"
-              }`}>
-                {msg.role === "assistant" ? (
-                  <div className="prose prose-sm max-w-none">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                    {loading && i === thread.messages.length - 1 && !msg.content && (
-                      <div className="flex items-center gap-2 text-gray-400">
-                        <span className="animate-spin text-sm">⏳</span>
-                        <span className="text-xs animate-pulse">考え中...</span>
-                      </div>
-                    )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto px-10 py-10">
+          {/* 案件名ヘッダ */}
+          <div className="mb-8">
+            <h1 className="font-serif text-[26px] font-semibold tracking-tight mb-1 text-[var(--color-fg)]">
+              {thread.displayName || "新規チャット"}
+            </h1>
+            <div className="text-[12px] text-[var(--color-fg-muted)]">
+              {company.name}
+              {thread.createdAt && <> · {new Date(thread.createdAt).toLocaleDateString("ja-JP")}</>}
+            </div>
+          </div>
+          {thread.messages.map((msg, i) => {
+            const goBack = () => {
+              for (const m of thread.messages) {
+                const idx = (m.cards || []).findIndex(c => c.type === "folder-select");
+                if (idx >= 0) {
+                  handleCardAction(m.id, idx, { selectedPath: undefined } as Partial<ActionCard>);
+                  return;
+                }
+              }
+            };
+            if (msg.role === "user") {
+              // ユーザー発言は黒背景の吹き出し（右寄せ）
+              return (
+                <div key={msg.id} className="flex justify-end mb-10">
+                  <div className="max-w-[70%] rounded-2xl px-4 py-3 text-[14px] leading-relaxed bg-[var(--color-fg)] text-[var(--color-bg)]">
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
                   </div>
-                ) : (
-                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                )}
-                {/* アクションカード */}
-                {msg.cards?.map((card, ci) => {
-                  // フォルダ選択カードへ戻るハンドラを用意
-                  const goBack = () => {
-                    for (const m of thread.messages) {
-                      const idx = (m.cards || []).findIndex(c => c.type === "folder-select");
-                      if (idx >= 0) {
-                        handleCardAction(m.id, idx, { selectedPath: undefined } as Partial<ActionCard>);
-                        return;
-                      }
-                    }
-                  };
-                  return (
-                    <div key={ci} className="mt-3">
+                </div>
+              );
+            }
+            // AIメッセージ: 吹き出し廃止。アバター + フローテキスト
+            return (
+              <article key={msg.id} className="mb-10">
+                <header className="flex items-center gap-2.5 mb-3">
+                  <div
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold text-white shrink-0"
+                    style={{ background: "linear-gradient(135deg, #fbbf24, #d97706)" }}
+                  >
+                    R
+                  </div>
+                  <span className="font-serif text-[12px] font-medium">recast</span>
+                </header>
+                <div className="pl-8 text-[14px] leading-[1.75] text-[var(--color-fg)] prose-recast max-w-none">
+                  <WarnHighlightMarkdown>{msg.content}</WarnHighlightMarkdown>
+                  {loading && i === thread.messages.length - 1 && !msg.content && (
+                    <div className="flex items-center gap-2 text-[var(--color-fg-subtle)]">
+                      <Icon name="Loader2" size={14} className="animate-spin" />
+                      <span className="text-xs animate-pulse">考え中...</span>
+                    </div>
+                  )}
+                  {/* アクションカード */}
+                  {msg.cards?.map((card, ci) => (
+                    <div key={ci} className="mt-3 not-prose">
                       <ActionCardRenderer
                         card={card}
                         onAction={(data) => handleCardAction(msg.id, ci, data)}
@@ -618,49 +792,48 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                         onGoBackToFolder={goBack}
                       />
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-          {/* 考え中表示 */}
-          {loading && (
-            <div className="flex justify-start">
-              <div className="rounded-2xl px-4 py-3 bg-white border border-gray-200">
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.15s]" />
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.3s]" />
-                  </div>
-                  <span className="text-xs text-gray-400">処理中...</span>
+                  ))}
                 </div>
+              </article>
+            );
+          })}
+          {/* 考え中表示（末尾） */}
+          {loading && (
+            <div className="flex items-center gap-2 pl-8 text-[var(--color-fg-subtle)]">
+              <div className="flex gap-1">
+                <span className="w-2 h-2 bg-[var(--color-fg-subtle)] rounded-full animate-bounce" />
+                <span className="w-2 h-2 bg-[var(--color-fg-subtle)] rounded-full animate-bounce [animation-delay:0.15s]" />
+                <span className="w-2 h-2 bg-[var(--color-fg-subtle)] rounded-full animate-bounce [animation-delay:0.3s]" />
               </div>
+              <span className="text-xs">処理中...</span>
             </div>
           )}
         </div>
       </div>
 
       {/* 入力欄 */}
-      <div className="border-t border-gray-200 bg-white p-4">
-        <div className="max-w-3xl mx-auto flex items-end gap-3">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-            placeholder="メッセージを入力...（Shift+Enterで改行）"
-            disabled={loading}
-            rows={1}
-            className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50"
-          />
-          <button
-            onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-          >
-            送信
-          </button>
+      <div className="px-10 py-5 bg-[var(--color-bg)]">
+        <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex items-end gap-2 px-4 py-3 focus-within:border-[var(--color-accent)]/40">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              placeholder="メッセージを入力..."
+              disabled={loading}
+              rows={1}
+              className="flex-1 resize-none bg-transparent text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)] focus:outline-none py-1.5 disabled:opacity-50"
+            />
+            <button
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+              className="w-9 h-9 rounded-xl shrink-0 flex items-center justify-center text-white bg-[var(--color-accent)] hover:bg-[var(--color-accent-fg)] disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)]"
+              aria-label="送信"
+            >
+              <Icon name="Send" size={14} />
+            </button>
+          </div>
         </div>
       </div>
       </div>

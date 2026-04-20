@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import type { Company } from "@/types";
-import ProfileTemplateModal from "./ProfileTemplateModal";
 import ProfileSourceModal from "./ProfileSourceModal";
 import FilePreview from "./FilePreview";
 
+import { Icon } from "./ui/Icon";
 interface ViewerFile {
   id: string;
   name: string;
@@ -113,42 +113,55 @@ function renderValue(value: string) {
   const hasSlashFormat = lines.length > 1 && lines.filter(l => l.includes("/")).length >= 2;
 
   if (hasSlashFormat) {
+    type Record = { fields: string[]; isTotal: boolean; raw: string };
+    const records: Record[] = lines
+      .map(line => {
+        const trimmed = line.trim().replace(/^[\-•・]\s*/, "");
+        const fields = trimmed.split("/").map(f => f.trim()).filter(Boolean);
+        const isTotal = /^合計(?:[:：\s]|$)/.test(trimmed);
+        return { fields, isTotal, raw: trimmed };
+      })
+      .filter(r => r.fields.length > 0);
+
+    const dataRecords = records.filter(r => !r.isTotal && r.fields.length >= 2);
+    const totalRecord = records.find(r => r.isTotal);
+    const otherLines = records.filter(r => r.fields.length < 2 && !r.isTotal);
+
     return (
       <div className="space-y-2">
-        {lines.map((line, i) => {
-          const trimmed = line.trim().replace(/^[\-•・]\s*/, "");
-          if (!trimmed) return null;
-
-          // 「/」で分割してフィールドに
-          const fields = trimmed.split("/").map(f => f.trim()).filter(Boolean);
-
-          if (fields.length >= 2) {
-            return (
-              <div key={i} className="rounded-lg border border-gray-100 bg-gray-50/50 px-3 py-2">
-                {fields.map((field, fi) => {
-                  // 「ラベル: 値」形式か判定
-                  const labelMatch = field.match(/^(.+?)[：:](.+)$/);
-                  if (labelMatch) {
-                    return (
-                      <div key={fi} className="flex gap-2 py-0.5">
-                        <span className="text-xs text-gray-400 shrink-0 w-20">{labelMatch[1].trim()}</span>
-                        <span className="text-sm text-gray-800">{labelMatch[2].trim()}</span>
-                      </div>
-                    );
-                  }
-                  // 最初のフィールドは名前として太字
-                  if (fi === 0) {
-                    return <div key={fi} className="text-sm font-medium text-gray-900 pb-0.5">{field}</div>;
-                  }
-                  return <div key={fi} className="text-sm text-gray-700 py-0.5">{field}</div>;
+        {dataRecords.map((r, i) => (
+          <div key={i} className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-hover)]/40 px-3 py-2">
+            {r.fields.map((field, fi) => {
+              const labelMatch = field.match(/^(.+?)[：:](.+)$/);
+              if (labelMatch) {
+                return (
+                  <div key={fi} className="flex gap-2 py-0.5">
+                    <span className="text-xs text-[var(--color-fg-subtle)] shrink-0 w-20">{labelMatch[1].trim()}</span>
+                    <span className="text-sm text-[var(--color-fg)]">{labelMatch[2].trim()}</span>
+                  </div>
+                );
+              }
+              if (fi === 0) return <div key={fi} className="text-sm font-medium text-[var(--color-fg)] pb-0.5">{field}</div>;
+              return <div key={fi} className="text-sm text-[var(--color-fg-muted)] py-0.5">{field}</div>;
+            })}
+          </div>
+        ))}
+        {totalRecord && (
+          <div className="flex items-center gap-3 pt-1 px-3 text-[13px]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--color-fg-subtle)] w-20 shrink-0">合計</span>
+            <span className="flex items-center gap-4 text-[var(--color-fg)]">
+              {totalRecord.fields
+                .filter(f => !/^合計/.test(f))
+                .map((f, fi) => {
+                  const labelMatch = f.match(/^(.+?)[：:](.+)$/);
+                  return <span key={fi}>{labelMatch ? labelMatch[2].trim() : f}</span>;
                 })}
-              </div>
-            );
-          }
-
-          // 「/」なしの行（注釈等）
-          return <p key={i} className="text-xs text-gray-500">{trimmed}</p>;
-        })}
+            </span>
+          </div>
+        )}
+        {otherLines.map((r, i) => (
+          <p key={`other-${i}`} className="text-xs text-[var(--color-fg-muted)] px-1">{r.raw}</p>
+        ))}
       </div>
     );
   }
@@ -174,7 +187,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [showJson, setShowJson] = useState(false);
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
-  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showSourceModal, setShowSourceModal] = useState(false);
   const [availableSources, setAvailableSources] = useState<{ path: string; name: string; folder: string }[]>([]);
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
@@ -214,10 +226,10 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
 
   if (!company) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
         <div className="text-center">
-          <p className="text-lg text-gray-300 mb-2">&#128196;</p>
-          <p className="text-sm text-gray-400">サイドバーから会社を選択してください</p>
+          <Icon name="FileText" size={36} className="mx-auto mb-2 text-[var(--color-fg-subtle)]" />
+          <p className="text-sm text-[var(--color-fg-subtle)]">サイドバーから会社を選択してください</p>
         </div>
       </div>
     );
@@ -247,34 +259,28 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const sections = profile?.summary ? parseProfile(profile.summary) : [];
 
   const profileContent = (
-    <div className="h-full overflow-y-auto bg-gray-50">
-      <div className="px-6 py-6">
+    <div className="h-full overflow-y-auto bg-[var(--color-bg)]">
+      <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto px-10 py-10">
         {/* ヘッダー */}
-        <div className="mb-5">
+        <div className="mb-8">
           <div className="flex items-start justify-between">
             <div>
-              <h2 className="text-xl font-bold text-gray-900">{company.name}</h2>
+              <h2 className="font-serif text-[26px] font-semibold tracking-tight text-[var(--color-fg)]">{company.name}</h2>
               {profile && (
-                <p className="text-xs text-gray-400 mt-1">
+                <p className="text-xs text-[var(--color-fg-subtle)] mt-1">
                   最終更新: {new Date(profile.updatedAt).toLocaleDateString("ja-JP")}
                   &nbsp;&middot;&nbsp;
                   元資料: {profile.sourceFiles.length}件
                   {profile.structured && (
-                    <span className="ml-2 text-green-500">JSON保存済</span>
+                    <span className="ml-2 text-[var(--color-ok-fg)]">JSON保存済</span>
                   )}
                 </p>
               )}
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setShowTemplateModal(true)}
-                className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
-              >
-                抽出項目
-              </button>
-              <button
                 onClick={() => setShowSourceModal(true)}
-                className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+                className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
               >
                 参照ファイル
               </button>
@@ -289,8 +295,8 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                   }}
                   className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                     showJson
-                      ? "bg-gray-800 text-white"
-                      : "border border-gray-300 text-gray-600 hover:bg-gray-100"
+                      ? "bg-[var(--color-fg)] text-white"
+                      : "border border-[var(--color-border)] text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                   }`}
                 >
                   {showJson ? "テーブル表示" : "JSON表示"}
@@ -299,8 +305,8 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
               <button
                 onClick={generateProfile}
                 disabled={generating || commonSubs.length === 0}
-                className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white
-                           hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                className="shrink-0 rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
+                           hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
                 {generating ? "生成中..." : profile ? "再生成" : "基本情報を生成"}
               </button>
@@ -310,9 +316,9 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
 
         {profile && showJson && profile.structured ? (
           <div className="space-y-4">
-            <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
-              <div className="bg-gray-800 border-b border-gray-700 px-4 py-2.5 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-200">Structured JSON</h3>
+            <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
+              <div className="bg-[var(--color-fg)] border-b border-[var(--color-border)] px-4 py-2.5 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-[var(--color-bg)]">Structured JSON</h3>
                 {profileJsonDirty && (
                   <div className="flex gap-2">
                     <button
@@ -320,7 +326,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                         setProfileJson(JSON.stringify({ structured: profile.structured, 変更履歴: profile.変更履歴 || [] }, null, 2));
                         setProfileJsonDirty(false);
                       }}
-                      className="text-xs text-gray-400 hover:text-gray-200"
+                      className="text-xs text-[var(--color-fg-subtle)] hover:text-[var(--color-bg)]"
                     >
                       リセット
                     </button>
@@ -339,7 +345,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                           alert("JSONの形式が正しくありません");
                         }
                       }}
-                      className="rounded bg-blue-600 px-2 py-0.5 text-xs text-white hover:bg-blue-700"
+                      className="rounded bg-[var(--color-fg)] px-2 py-0.5 text-xs text-white hover:opacity-90"
                     >
                       保存
                     </button>
@@ -349,7 +355,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
               <textarea
                 value={profileJson}
                 onChange={e => { setProfileJson(e.target.value); setProfileJsonDirty(true); }}
-                className="w-full min-h-[400px] p-4 text-xs text-gray-300 bg-gray-900 font-mono border-0 focus:outline-none resize-none leading-relaxed"
+                className="w-full min-h-[400px] p-4 text-xs text-[var(--color-fg-subtle)] bg-[var(--color-fg)] font-mono border-0 focus:outline-none resize-none leading-relaxed"
                 spellCheck={false}
               />
             </div>
@@ -357,18 +363,18 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
         ) : profile && sections.length > 0 ? (
           <div className="space-y-4">
             {sections.map((section, si) => (
-              <div key={si} className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
-                <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5">
-                  <h3 className="text-sm font-semibold text-gray-700">{section.title}</h3>
+              <div key={si} className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
+                <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-2.5">
+                  <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">{section.title}</h3>
                 </div>
-                <table className="w-full">
+                <table className="w-full table-fixed">
                   <tbody>
                     {section.rows.map((row, ri) => (
-                      <tr key={ri} className="border-b border-gray-100 last:border-0">
-                        <th className="px-4 py-3 text-left text-sm font-medium text-gray-500 w-44 align-top bg-gray-50/50 whitespace-nowrap">
+                      <tr key={ri} className="border-b border-[var(--color-border-soft)] last:border-0">
+                        <th className="w-[180px] px-4 py-3 text-left text-[12px] font-medium text-[var(--color-fg-muted)] align-top break-words leading-relaxed bg-[var(--color-hover)]/50">
                           {row.key}
                         </th>
-                        <td className="px-4 py-3 text-sm text-gray-800 leading-relaxed">
+                        <td className="px-4 py-3 text-sm text-[var(--color-fg)] leading-relaxed">
                           {renderValue(row.value)}
                         </td>
                       </tr>
@@ -379,9 +385,9 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             ))}
 
             {/* 元資料リスト */}
-            <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
-              <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5">
-                <h3 className="text-sm font-semibold text-gray-700">参照元資料</h3>
+            <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
+              <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-2.5">
+                <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">参照元資料</h3>
               </div>
               <div className="px-4 py-3">
                 <ul className="space-y-1">
@@ -390,12 +396,12 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                     const fileId = typeof f === "string" ? null : f.id;
                     return (
                       <li key={i} className="text-sm flex items-center gap-2">
-                        <span className="text-gray-400 text-xs">&#128196;</span>
+                        <Icon name="FileText" size={12} className="text-[var(--color-fg-subtle)]" />
                         {fileId ? (
                           <div className="flex items-center gap-2">
                             <button
                               onClick={() => setViewerFile({ id: fileId, name })}
-                              className="text-blue-600 hover:text-blue-800 hover:underline text-left"
+                              className="text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] hover:underline text-left"
                             >
                               {name}
                             </button>
@@ -416,13 +422,13 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                                   URL.revokeObjectURL(url);
                                 }
                               }}
-                              className="text-[10px] text-gray-400 hover:text-gray-600 shrink-0"
+                              className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] shrink-0"
                             >
                               DL
                             </button>
                           </div>
                         ) : (
-                          <span className="text-gray-600">{name}</span>
+                          <span className="text-[var(--color-fg-muted)]">{name}</span>
                         )}
                       </li>
                     );
@@ -432,21 +438,21 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             </div>
           </div>
         ) : profile?.summary ? (
-          <div className="rounded-xl bg-white shadow-sm border border-gray-200 p-6">
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
+          <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] p-6">
+            <pre className="text-sm text-[var(--color-fg)] whitespace-pre-wrap leading-relaxed">
               {profile.summary}
             </pre>
           </div>
         ) : (
-          <div className="rounded-xl border-2 border-dashed border-gray-300 p-12 text-center bg-white">
-            <p className="text-4xl mb-4">&#128203;</p>
-            <p className="text-gray-500 mb-2">
+          <div className="rounded-xl border-2 border-dashed border-[var(--color-border)] p-12 text-center bg-[var(--color-panel)]">
+            <Icon name="ClipboardList" size={48} className="mx-auto mb-4 text-[var(--color-fg-subtle)]" />
+            <p className="text-[var(--color-fg-muted)] mb-2">
               {commonSubs.length === 0
                 ? "サイドバーで共通フォルダを設定してください"
                 : "定款・登記等から会社の基本情報を自動抽出します"}
             </p>
             {commonSubs.length > 0 && (
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-[var(--color-fg-subtle)]">
                 共通フォルダ: {commonSubs.map(s => s.name).join(", ")}
               </p>
             )}
@@ -460,10 +466,9 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   if (!viewerFile) {
     return (
       <>
-        <div className="h-full flex justify-center">
-          <div className="w-full max-w-4xl">{profileContent}</div>
+        <div className="h-full">
+          {profileContent}
         </div>
-        {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
         {showSourceModal && company && <ProfileSourceModal company={company} onClose={() => setShowSourceModal(false)} onSaved={onUpdate} />}
       </>
     );
@@ -480,7 +485,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
         fileName={viewerFile.name}
         onClose={() => setViewerFile(null)}
       />
-      {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
     </div>
   );
 }

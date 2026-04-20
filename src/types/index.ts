@@ -207,14 +207,28 @@ export interface ClarificationCard {
   answered?: boolean;
 }
 
+export interface CheckIssue {
+  severity: "error" | "warn" | "info"; // 🔴重大 / 🟡注意 / 🔵軽微
+  aspect: string;   // チェック観点（例: 原本との整合性 / 書類間の整合性 / 要確認の残り）
+  problem: string;  // 問題内容
+  expected?: string; // 原本の正しい値（あれば）
+}
+
+export interface DocumentResultItem {
+  name: string;
+  fileName: string;
+  docxBase64: string;
+  previewHtml: string;
+  // 突合せチェックの結果（runCheck 後に追加）
+  checkStatus?: "ok" | "warn" | "error";
+  issues?: CheckIssue[];
+}
+
 export interface DocumentResultCard {
   type: "document-result";
-  documents: {
-    name: string;
-    fileName: string;
-    docxBase64: string;
-    previewHtml: string;
-  }[];
+  documents: DocumentResultItem[];
+  checkSummary?: string;        // 人間向けの短いサマリ（例: 3件要確認）
+  checkedAt?: string;           // ISO datetime
 }
 
 export interface CheckPromptCard {

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { FileSelectCard, ActionCard } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: FileSelectCard;
@@ -111,23 +112,24 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
 
       return (
         <div key={node.path} style={{ marginLeft: depth * 16 }}>
-          <div className="flex items-center gap-1 rounded hover:bg-white px-1 py-0.5">
+          <div className="flex items-center gap-2.5 rounded-xl hover:bg-[var(--color-hover)] px-3 py-2">
             <input
               type="checkbox"
               checked={allEnabled}
               ref={el => { if (el) el.indeterminate = hasFiles && !allEnabled && !noneEnabled; }}
               onChange={() => toggleFolderFiles(node)}
               disabled={isLocked || !hasFiles}
-              className="w-3.5 h-3.5 shrink-0"
+              className="w-4 h-4 shrink-0"
             />
             <button
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFolder(node.path); }}
               type="button"
-              className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:text-blue-600 cursor-pointer"
+              className="inline-flex items-center gap-2 text-[13px] font-medium text-[var(--color-fg)] hover:text-[var(--color-accent-fg)] cursor-pointer"
             >
-              <span className="text-[10px]">{isOpen ? "▼" : "▶"}</span>
-              <span>📁 {node.name}</span>
-              <span className="text-[9px] text-gray-400">({childFileIndices.length})</span>
+              <Icon name={isOpen ? "ChevronDown" : "ChevronRight"} size={13} className="text-[var(--color-fg-subtle)]" />
+              <Icon name={isOpen ? "FolderOpen" : "Folder"} size={15} className="text-[var(--color-fg-muted)]" />
+              <span>{node.name}</span>
+              <span className="text-[10.5px] text-[var(--color-fg-subtle)]">({childFileIndices.length})</span>
             </button>
           </div>
           {isOpen && (
@@ -140,39 +142,51 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
     }
 
     // ファイル
+    const ext = node.name.split(".").pop()?.toLowerCase() || "";
+    const fileIcon: "FileType" | "FileSpreadsheet" | "FileText" | "File" =
+      ext === "pdf" ? "FileType" :
+      ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" :
+      ["doc", "docx"].includes(ext) ? "FileText" : "File";
     return (
-      <label key={node.path} className="flex items-center gap-2 rounded px-2 py-0.5 hover:bg-white cursor-pointer" style={{ marginLeft: depth * 16 }}>
+      <label key={node.path} className="flex items-center gap-2.5 rounded-xl px-3 py-1.5 hover:bg-[var(--color-hover)] cursor-pointer" style={{ marginLeft: depth * 16 }}>
         <input
           type="checkbox"
           checked={files[node.fileIndex].enabled}
           onChange={() => toggle(node.fileIndex)}
           disabled={isLocked}
-          className="w-3.5 h-3.5"
+          className="w-4 h-4"
         />
-        <span className={`text-xs flex-1 ${files[node.fileIndex].enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{node.name}</span>
+        <Icon name={fileIcon} size={14} className="text-[var(--color-fg-muted)] shrink-0" />
+        <span className={`text-[13px] flex-1 ${files[node.fileIndex].enabled ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)] line-through"}`}>{node.name}</span>
       {onPreview && (
         <button
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPreview({ filePath: node.path, fileName: node.name }); }}
-          className="text-[9px] text-blue-400 hover:text-blue-600 shrink-0 ml-1"
-        >👁</button>
+          className="text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] shrink-0 ml-1"
+          title="プレビュー"
+        ><Icon name="Eye" size={13} /></button>
       )}
       </label>
     );
   };
 
   return (
-    <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
-      <p className="text-xs font-medium text-gray-600 mb-2">使用するファイルを確認してください</p>
-      <div className="max-h-72 overflow-y-auto mb-2">
+    <div className="mt-4 rounded-2xl border p-1.5 border-[var(--color-border)] bg-[var(--color-panel)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+      <div className="px-3 py-2 flex items-center gap-2">
+        <Icon name="FileText" size={13} className="text-[var(--color-fg-muted)]" />
+        <span className="text-[11.5px] font-medium text-[var(--color-fg-muted)]">使用するファイル</span>
+      </div>
+      <div className="max-h-80 overflow-y-auto space-y-0.5">
         {tree.map(node => renderNode(node, 0))}
       </div>
       {!isLocked && (
-        <button
-          onClick={confirm}
-          className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-        >
-          これで進める
-        </button>
+        <div className="flex items-center pt-2.5 mt-2 border-t border-[var(--color-border-soft)] px-2">
+          <button
+            onClick={confirm}
+            className="h-9 px-4 rounded-full text-[12.5px] font-medium text-white bg-[var(--color-accent)] hover:bg-[var(--color-accent-fg)]"
+          >
+            これで進める
+          </button>
+        </div>
       )}
     </div>
   );

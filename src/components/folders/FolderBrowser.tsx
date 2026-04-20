@@ -66,15 +66,15 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-      <div className="flex w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl"
+      <div className="flex w-full max-w-lg flex-col rounded-2xl bg-[var(--color-panel)] shadow-xl"
            style={{ maxHeight: "70vh" }}>
         {/* ヘッダー */}
-        <div className="border-b border-gray-200 px-5 py-4">
-          <h3 className="text-lg font-semibold text-gray-900">
+        <div className="border-b border-[var(--color-border)] px-5 py-4">
+          <h3 className="text-lg font-semibold text-[var(--color-fg)]">
             {providerLabel} - フォルダを選択
           </h3>
           {data && (
-            <p className="mt-1 truncate text-xs font-mono text-gray-500" title={data.current}>
+            <p className="mt-1 truncate text-xs font-mono text-[var(--color-fg-muted)]" title={data.current}>
               {provider === "google"
                 ? (currentName || (data.current === "root" ? "マイドライブ" : data.current))
                 : (data.current || "/")}
@@ -85,7 +85,7 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
         {/* フォルダ一覧 */}
         <div className="flex-1 overflow-y-auto px-2 py-2">
           {loading && (
-            <p className="px-3 py-4 text-center text-sm text-gray-400">読み込み中...</p>
+            <p className="px-3 py-4 text-center text-sm text-[var(--color-fg-subtle)]">読み込み中...</p>
           )}
           {error && (
             <p className="px-3 py-4 text-center text-sm text-red-500">{error}</p>
@@ -97,7 +97,7 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
                   <button
                     onClick={() => browse(data.parent!)}
                     className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm
-                               text-blue-600 hover:bg-blue-50 transition-colors"
+                               text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] transition-colors"
                   >
                     <span className="text-base">&#8593;</span>
                     上の階層へ
@@ -105,7 +105,7 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
                 </li>
               )}
               {data.dirs.length === 0 && (
-                <li className="px-3 py-4 text-center text-sm text-gray-400">
+                <li className="px-3 py-4 text-center text-sm text-[var(--color-fg-subtle)]">
                   サブフォルダなし
                 </li>
               )}
@@ -114,7 +114,7 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
                   <button
                     onClick={() => browse(dir.path, dir.name)}
                     className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm
-                               text-gray-700 hover:bg-gray-100 transition-colors"
+                               text-[var(--color-fg)] hover:bg-[var(--color-hover)] transition-colors"
                   >
                     <span className="shrink-0 text-yellow-500">&#128193;</span>
                     {dir.name}
@@ -123,12 +123,12 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
               ))}
               {data.files && data.files.length > 0 && (
                 <>
-                  <li className="border-t border-gray-100 mt-1 pt-1">
-                    <span className="px-3 py-1 text-[10px] text-gray-400">ファイル</span>
+                  <li className="border-t border-[var(--color-border-soft)] mt-1 pt-1">
+                    <span className="px-3 py-1 text-[10px] text-[var(--color-fg-subtle)]">ファイル</span>
                   </li>
                   {data.files.map((file, i) => (
                     <li key={`file-${i}`}
-                        className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-gray-400">
+                        className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-[var(--color-fg-subtle)]">
                       <span className="shrink-0 text-xs">
                         {file.mimeType.includes("pdf") ? "📄" :
                          file.mimeType.includes("word") || file.mimeType.includes("document") ? "📝" :
@@ -145,18 +145,18 @@ export default function FolderBrowser({ provider = "local", onSelect, onClose }:
         </div>
 
         {/* フッター */}
-        <div className="flex justify-end gap-3 border-t border-gray-200 px-5 py-4">
+        <div className="flex justify-end gap-3 border-t border-[var(--color-border)] px-5 py-4">
           <button
             onClick={onClose}
-            className="rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+            className="rounded-lg px-4 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
           >
             キャンセル
           </button>
           <button
             onClick={() => data && onSelect(data.current, currentName || undefined)}
             disabled={!data}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white
-                       hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
+                       hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
           >
             このフォルダを選択
           </button>

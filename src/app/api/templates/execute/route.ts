@@ -69,78 +69,152 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  // テンプレートが指定されていれば、必要な「記載項目」を抽出して渡す（値は渡さない）
+  // テンプレートごとに「意味ラベル付きのスロット一覧」を準備する。
+  // 初回は Haiku で解析してキャッシュ（.labels.json）、以降はキャッシュから即返し。
+  // これで案件整理 AI は各スロットの意味（例: "取締役決定書の作成日"）＋記載形式
+  // （例: "令和○年○月○日"）＋推定出典（"案件スケジュール表"）が分かる。
   let templateContext = "";
+  type FlatLabel = { docName: string; label: string; format: string; sourceHint?: string };
+  const allLabels: FlatLabel[] = [];
   if (templateFolderPath) {
     try {
       const templateFiles = await readAllFilesInFolder(templateFolderPath);
-      const itemsByFile: string[] = [];
+      const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
 
+      // プレースホルダー方式 ({{X}} / 【X】): その名前自体が意味ラベルなのでそのまま使う
+      const placeholderExists = new Set<string>();
       for (const tf of templateFiles) {
         if (tf.base64) continue;
-        const ext = tf.name.toLowerCase().split(".").pop() || "";
-        if (!["docx", "doc", "xlsx", "xls"].includes(ext)) continue;
-
-        // プレースホルダーから項目名を抽出（簡易版）
-        const phNames: string[] = [];
         const phPatterns = [/【([^】]+)】/g, /\{\{([^}]+)\}\}/g, /｛｛([^｝]+)｝｝/g];
         for (const re of phPatterns) {
           let m;
           while ((m = re.exec(tf.content)) !== null) {
             const name = m[1].trim();
-            if (!name.startsWith("#") && !name.startsWith("/") && !phNames.includes(name)) {
-              phNames.push(name);
+            if (name.startsWith("#") || name.startsWith("/")) continue;
+            if (!placeholderExists.has(name)) {
+              allLabels.push({ docName: tf.name, label: name, format: "" });
+              placeholderExists.add(name);
             }
           }
         }
-        if (phNames.length > 0) {
-          itemsByFile.push(`- ${tf.name}: ${phNames.join(", ")}`);
-          continue;
-        }
+      }
 
-        // ハイライトテンプレの場合、ファイルを読んでマーク付きフィールドを取得
-        if (ext === "docx") {
-          try {
-            const buf = await import("fs/promises").then(fs => fs.readFile(tf.path));
-            const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
-            const fields = extractMarkedFields(buf);
-            if (fields.length > 0) {
-              // 値ではなく「項目の種類」を推定して渡す（日付、人名、住所、金額等）
-              const fieldDescs = fields.map(f => {
-                const v = f.originalValue;
-                if (/年.*月.*日|令和|平成/.test(v)) return "日付";
-                if (/都|道|府|県|市|区|町|丁目|番/.test(v)) return "住所";
-                if (/株式会社|有限|合同|組合/.test(v)) return "法人名";
-                if (/[，,]\d{3}/.test(v) || /^\d+$/.test(v.replace(/[，,]/g, ""))) return "数値（株数・金額等）";
-                if (f.comment) return f.comment;
-                return "人名等";
-              });
-              const unique = [...new Set(fieldDescs)];
-              itemsByFile.push(`- ${tf.name}: ${unique.join(", ")}`);
-            }
-          } catch { /* ignore */ }
+      // ハイライト方式: キャッシュ利用のラベル解析
+      for (const tf of templateFiles) {
+        if (tf.base64) continue;
+        const ext = tf.name.toLowerCase().split(".").pop() || "";
+        const baseName = tf.name.replace(/\.[^.]+$/, "");
+        let labels;
+        if (ext === "docx" || ext === "docm") {
+          labels = await ensureDocxLabels(tf.path);
+        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+          labels = await ensureXlsxLabels(tf.path);
+        }
+        if (!labels) continue;
+        // 同一 label が重複する場合は排除（ハイライトが複数あっても同じ意味ラベルなら1行）
+        const seen = new Set<string>();
+        for (const s of labels.slots) {
+          const labelKey = s.label;
+          if (!labelKey || labelKey === "不明" || seen.has(labelKey)) continue;
+          seen.add(labelKey);
+          allLabels.push({
+            docName: baseName,
+            label: s.label,
+            format: s.format,
+            sourceHint: s.sourceHint,
+          });
         }
       }
 
-      if (itemsByFile.length > 0) {
-        templateContext = `\n## 作成予定の書類と必要な記載項目\n以下の書類を作成する予定です。各書類に必要な項目の種類を示します。これらに該当する情報を案件資料から漏れなく抽出してください。\n${itemsByFile.join("\n")}\n`;
+      if (allLabels.length > 0) {
+        // 書類別にグループ化して AI に渡す
+        const byDoc: Record<string, FlatLabel[]> = {};
+        for (const l of allLabels) {
+          if (!byDoc[l.docName]) byDoc[l.docName] = [];
+          byDoc[l.docName].push(l);
+        }
+        const lines: string[] = [];
+        for (const [doc, labels] of Object.entries(byDoc)) {
+          lines.push(`### ${doc}`);
+          for (const l of labels) {
+            const parts = [`- **${l.label}**`];
+            if (l.format) parts.push(`形式: \`${l.format}\``);
+            if (l.sourceHint) parts.push(`出典候補: ${l.sourceHint}`);
+            lines.push(parts.join(" | "));
+          }
+          lines.push("");
+        }
+        templateContext = `\n## 作成予定の書類に必要な項目（これだけ抽出すればよい）\n各書類ごとに、必要な項目・記載形式・推定出典を示します。
+これに対応する値を案件資料から取ってきてください。
+
+${lines.join("\n")}
+**出力方針**: 上記ラベルと同じ項目名を使って表形式で整理してください。値は format の記載形式に揃えてください。
+`;
       }
     } catch { /* ignore */ }
   }
 
-  const promptText = `以下の「案件資料」を確認し、今回の手続き・案件に関する情報を抽出・整理してください。
+  // 会社の基本情報（profile.structured）も参考データとして添付する。
+  // 案件資料に書かれていない値が基本情報にあれば、そこから採用してよい（根拠は「基本情報」と表示）。
+  const profileBlock = company.profile?.structured
+    ? `\n## 会社の基本情報（参照データ）\n\`\`\`json\n${JSON.stringify(company.profile.structured, null, 2)}\n\`\`\`\n`
+    : "";
+
+  const promptText = `以下の「案件資料」を確認し、**上記の「必要な項目」だけ**を抽出・整理してください。
+
 ${templateContext}
-ルール:
-- **出力するのは「案件固有の情報」だけ**（スケジュール、手続内容、指示事項、議案、当事者、対象株式等）
-- **会社の基本情報（商号・本店・事業目的・役員構成等）は出力しない**。それは別管理（基本情報タブ）で扱う
-- **テンプレートが指定されている場合、テンプレートで必要な情報（日付・人名・金額・株数等）を漏れなく抽出する**
-- 各カテゴリは ## 見出しで区切る
-- 結論を簡潔に記載。冗長な説明は不要
-- 一覧系は表形式で簡潔に
-- 日付・金額・人名は正確に転記
-- 矛盾や不整合があれば「⚠ 要確認」として指摘
-- 根拠となるファイル名を各項目に記載
-- 不明・未確認の情報は「*要確認*」とだけ記載
+${profileBlock}
+
+## 出力の作り方（ユーザーが読む内容）
+
+見出しでグループ化し、項目ごとに短いコメントを添えて、**人が読みやすい** 形で整理してください。
+
+- **意味のまとまりごと** に \`## 見出し\` を置く（例: 日程 / 金銭条件 / 当事者 / 引受先 / その他）
+- 各グループ内は **表形式** で \`| 項目 | 値 | 根拠 |\`
+- 項目名は上記ラベルと対応するが、**読みやすさ優先**で自然な日本語に整える（例: 「払込期日（日付）」→「払込期日」）
+- 値は **正確に転記**（勝手な変換・四捨五入・補完は禁止）
+- **根拠欄**の書き方:
+  - 案件資料のファイルから取った → 📄<ファイル名>
+  - 会社の基本情報（上の「参照データ」JSON）から取った → **📇基本情報**
+  - 両方に載っていれば 📇基本情報 を先に
+- 資料にも基本情報にも見つからない項目は値欄を **\`*要確認*\`** にし、省略しない
+- 矛盾・表記揺れ・要確認事項は最後に **\`## ⚠ 要確認事項\`** として箇条書き
+- 本文の頭に 1 文の「今回の手続き要約」を書いてよい（例: 「Deep30 投資事業有限責任組合を引受人とする第三者割当増資」）
+- **上記ラベルに無い情報は出さない**
+
+## 出力例（形式の参考）
+
+\`\`\`
+今回の手続き: Deep30投資事業有限責任組合を引受人とする第三者割当増資。
+
+## 当事者
+
+| 項目 | 値 | 根拠 |
+|------|-----|------|
+| 発行会社 | 株式会社JINGS | 📇基本情報 |
+| 代表取締役 | 三上春香 | 📇基本情報 |
+| 取締役総数 | 2名 | 📇基本情報 |
+| 引受人 | Deep30投資事業有限責任組合 | 📄10.普通株投資契約書.docx |
+
+## 日程
+
+| 項目 | 値 | 根拠 |
+|------|-----|------|
+| 取締役決定日 | 2025年1月21日 | 📄00.増資関連書類、スケジュール.xlsx |
+| 払込期日 | 2025年1月30日 | 📄10.普通株投資契約書.docx |
+
+## 金銭条件
+
+| 項目 | 値 | 根拠 |
+|------|-----|------|
+| 募集株式の数 | 5,263株（普通株式） | 📄10.普通株投資契約書.docx |
+| 1株払込金額 | 475円 | 📄10.普通株投資契約書.docx |
+| 増加する資本金 | 1,249,963円 | 📄10.普通株投資契約書.docx |
+| 増加する資本準備金 | 1,249,962円 | 📄10.普通株投資契約書.docx |
+
+## ⚠ 要確認事項
+- 発行会社の商号が「株式会社JING」と「株式会社JINGS」で混在
+\`\`\`
 
 ## 案件資料
 ${allTexts.join("\n\n")}`;

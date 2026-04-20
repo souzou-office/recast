@@ -1,6 +1,7 @@
 "use client";
 
-import type { DocumentResultCard } from "@/types";
+import type { DocumentResultCard, DocumentResultItem, CheckIssue } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: DocumentResultCard;
@@ -23,7 +24,6 @@ function downloadDocx(base64: string, fileName: string) {
 }
 
 async function downloadAllZip(docs: { docxBase64: string; fileName: string }[]) {
-  // PizZipで全ファイルをまとめて1つのzipにしてダウンロード
   const PizZip = (await import("pizzip")).default;
   const zip = new PizZip();
   for (const d of docs) {
@@ -37,40 +37,117 @@ async function downloadAllZip(docs: { docxBase64: string; fileName: string }[]) 
   URL.revokeObjectURL(url);
 }
 
-export default function DocumentResultCardUI({ card, onPreview }: Props) {
+function statusBadge(status?: "ok" | "warn" | "error") {
+  if (!status) return null;
+  if (status === "ok") {
+    return <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-ok-fg)]"><Icon name="CheckCircle2" size={11} /> 問題なし</span>;
+  }
+  if (status === "warn") {
+    return <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-warn-fg)]"><Icon name="AlertTriangle" size={11} /> 要確認</span>;
+  }
+  return <span className="inline-flex items-center gap-1 text-[10px] text-red-600"><Icon name="AlertCircle" size={11} /> 要修正</span>;
+}
+
+function severityDot(sev: CheckIssue["severity"]) {
+  const color = sev === "error" ? "bg-red-500" : sev === "warn" ? "bg-[var(--color-warn-fg)]" : "bg-[var(--color-accent)]";
+  return <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${color}`} />;
+}
+
+function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: Props["onPreview"] }) {
+  const ext = doc.fileName.split(".").pop()?.toLowerCase() || "";
+  const iconName = ext === "pdf" ? "FileType" : ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" : "FileText";
+  const hasIssues = !!(doc.issues && doc.issues.length > 0);
+
   return (
-    <div className="rounded-lg border border-green-200 bg-green-50 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-xs font-medium text-green-700">✅ 書類を生成しました</p>
+    <div className={`rounded-lg border ${hasIssues ? "border-[var(--color-border)]" : "border-[var(--color-border-soft)]"} bg-[var(--color-panel)] overflow-hidden`}>
+      <div className="flex items-center gap-2 px-3 py-2">
+        <Icon name={iconName} size={14} className="text-[var(--color-fg-muted)] shrink-0" />
+        <span className="flex-1 text-[13px] text-[var(--color-fg)] font-medium truncate">{doc.name}</span>
+        {statusBadge(doc.checkStatus)}
+        <button
+          onClick={() => onPreview?.({ docxBase64: doc.docxBase64, fileName: doc.fileName })}
+          className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
+          title="プレビュー"
+        >
+          <Icon name="Eye" size={12} />
+        </button>
+        <button
+          onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
+          className="inline-flex items-center gap-1 text-[11px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+          title="ダウンロード"
+        >
+          <Icon name="Download" size={12} />
+        </button>
+      </div>
+      {hasIssues && (
+        <div className="px-3 pb-2.5 pt-0.5 border-t border-[var(--color-border-soft)] bg-[var(--color-warn-bg)]/30">
+          <ul className="space-y-1.5 mt-2">
+            {doc.issues!.map((iss, i) => (
+              <li key={i} className="flex items-start gap-2 text-[12px]">
+                {severityDot(iss.severity)}
+                <div className="flex-1 leading-relaxed">
+                  <span className="text-[var(--color-fg)]">{iss.problem}</span>
+                  {iss.expected && (
+                    <span className="text-[var(--color-fg-muted)]"> （原本: {iss.expected}）</span>
+                  )}
+                  {iss.aspect && (
+                    <span className="ml-2 text-[10.5px] text-[var(--color-fg-subtle)]">[{iss.aspect}]</span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function DocumentResultCardUI({ card, onPreview }: Props) {
+  const totalIssues = card.documents.reduce((sum, d) => sum + (d.issues?.length || 0), 0);
+  const hasChecked = card.documents.some(d => d.checkStatus !== undefined);
+  const anyError = card.documents.some(d => d.checkStatus === "error");
+  const anyWarn = card.documents.some(d => d.checkStatus === "warn");
+
+  const headerBg = !hasChecked
+    ? "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]"
+    : anyError
+      ? "bg-red-50 text-red-700"
+      : anyWarn
+        ? "bg-[var(--color-warn-bg)] text-[var(--color-warn-fg)]"
+        : "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]";
+  const headerIcon = !hasChecked ? "CheckCircle2" : anyError ? "AlertCircle" : anyWarn ? "AlertTriangle" : "CheckCircle2";
+  const headerLabel = !hasChecked
+    ? "書類を生成しました"
+    : totalIssues === 0
+      ? "全書類、原本と一致"
+      : `${totalIssues}件 要確認`;
+
+  return (
+    <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] overflow-hidden">
+      <div className={`px-4 py-2.5 text-xs font-medium border-b border-[var(--color-border-soft)] flex items-center justify-between ${headerBg}`}>
+        <span className="inline-flex items-center gap-1.5">
+          <Icon name={headerIcon} size={14} /> {headerLabel}
+        </span>
         {card.documents.length > 1 && (
           <button
             onClick={() => downloadAllZip(card.documents)}
-            className="rounded-lg bg-green-600 px-3 py-1 text-[10px] font-medium text-white hover:bg-green-700"
+            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90"
           >
-            すべてZIPでDL
+            <Icon name="Download" size={11} /> すべてZIP
           </button>
         )}
       </div>
-      <div className="space-y-1">
+      <div className="p-3 space-y-1.5">
         {card.documents.map((doc, i) => (
-          <div key={i} className="flex items-center gap-2 rounded bg-white px-3 py-2 border border-gray-200">
-            <span className="text-xs">📄</span>
-            <span className="flex-1 text-xs text-gray-800 font-medium truncate">{doc.name}</span>
-            <button
-              onClick={() => onPreview?.({ docxBase64: doc.docxBase64, fileName: doc.fileName })}
-              className="text-[10px] text-blue-500 hover:text-blue-700 shrink-0"
-            >
-              プレビュー
-            </button>
-            <button
-              onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
-              className="text-[10px] text-gray-500 hover:text-gray-700 shrink-0"
-            >
-              DL
-            </button>
-          </div>
+          <DocumentRow key={i} doc={doc} onPreview={onPreview} />
         ))}
       </div>
+      {card.checkSummary && (
+        <div className="px-4 py-2 border-t border-[var(--color-border-soft)] text-[11px] text-[var(--color-fg-muted)] bg-[var(--color-bg)]">
+          {card.checkSummary}
+        </div>
+      )}
     </div>
   );
 }

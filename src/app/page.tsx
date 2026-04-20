@@ -7,6 +7,7 @@ import ChatWorkflow from "@/components/ChatWorkflow";
 import CompanyProfile from "@/components/CompanyProfile";
 import SettingsView from "@/components/SettingsView";
 import ChatWindow from "@/components/chat/ChatWindow";
+import { Icon } from "@/components/ui/Icon";
 
 type MainView = "chat" | "profile" | "search" | "settings";
 
@@ -109,42 +110,56 @@ export default function Home() {
   return (
     <main className="flex h-screen flex-col">
       {/* ヘッダー */}
-      <div className="flex items-center border-b border-gray-200 bg-white">
+      <div className="flex items-center border-b border-[var(--color-border)] bg-[var(--color-bg)]">
         <div className="px-4 shrink-0">
           <img src="/logo.png" alt="Recast" className="h-10" />
         </div>
 
         <div className="flex-1" />
 
-        {/* 基本情報ボタン */}
-        <button
-          onClick={() => setView(view === "profile" ? "chat" : "profile")}
-          className={`px-4 py-3 text-sm font-medium transition-colors ${
-            view === "profile" ? "border-b-2 border-blue-500 text-blue-600" : "text-gray-500 hover:text-gray-700"
-          }`}
-        >
-          基本情報
-        </button>
+        {/* タブ: チャット / 基本情報 */}
+        <nav className="flex items-center gap-1">
+          <button
+            onClick={() => setView("chat")}
+            className={`px-3.5 h-8 rounded-full text-[13px] transition-colors ${
+              view === "chat" || view === "search"
+                ? "bg-[var(--color-panel)] shadow-sm text-[var(--color-fg)] font-medium"
+                : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            }`}
+          >
+            チャット
+          </button>
+          <button
+            onClick={() => setView("profile")}
+            className={`px-3.5 h-8 rounded-full text-[13px] transition-colors ${
+              view === "profile"
+                ? "bg-[var(--color-panel)] shadow-sm text-[var(--color-fg)] font-medium"
+                : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            }`}
+          >
+            基本情報
+          </button>
+        </nav>
 
         {/* 右端: 横断検索・設定 */}
         <div className="flex items-center gap-1 px-3 shrink-0">
           <button
             onClick={() => setView(view === "search" ? "chat" : "search")}
             className={`rounded-lg p-2 transition-colors ${
-              view === "search" ? "bg-blue-100 text-blue-600" : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              view === "search" ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
             }`}
             title="横断検索"
           >
-            🔍
+            <Icon name="Search" size={14} />
           </button>
           <button
             onClick={() => setView(view === "settings" ? "chat" : "settings")}
             className={`rounded-lg p-2 transition-colors ${
-              view === "settings" ? "bg-blue-100 text-blue-600" : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              view === "settings" ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
             }`}
             title="設定"
           >
-            ⚙
+            <Icon name="Settings" size={15} />
           </button>
         </div>
       </div>
@@ -165,7 +180,7 @@ export default function Home() {
             />
             <div
               onMouseDown={handleMouseDown}
-              className="w-1.5 cursor-col-resize bg-gray-200 hover:bg-blue-400 active:bg-blue-500 transition-colors"
+              className="w-1 cursor-col-resize bg-[var(--color-border)] hover:bg-[var(--color-accent)] active:bg-[var(--color-accent-fg)] transition-colors"
             />
           </div>
         )}

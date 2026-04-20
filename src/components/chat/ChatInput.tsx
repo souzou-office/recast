@@ -36,7 +36,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
   };
 
   return (
-    <div className="border-t border-gray-200 bg-white p-4">
+    <div className="border-t border-[var(--color-border)] bg-[var(--color-panel)] p-4">
       {/* 入力欄 */}
       <div className="flex items-end gap-3">
         <textarea
@@ -47,15 +47,15 @@ export default function ChatInput({ onSend, disabled }: Props) {
           placeholder="メッセージを入力...（Shift+Enterで改行）"
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm
+          className="flex-1 resize-none rounded-xl border border-[var(--color-border)] px-4 py-3 text-sm
                      focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500
-                     disabled:bg-gray-50 disabled:text-gray-400"
+                     disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)]"
         />
         <button
           onClick={handleSubmit}
           disabled={disabled || !input.trim()}
-          className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-medium text-white
-                     hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed
+          className="rounded-xl bg-[var(--color-fg)] px-5 py-3 text-sm font-medium text-white
+                     hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed
                      transition-colors"
         >
           送信

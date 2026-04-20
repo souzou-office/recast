@@ -34,8 +34,8 @@ export default function ActionCardRenderer({ card, onAction, company, thread, on
         <button
           onClick={() => onAction({ accepted: true } as Partial<ActionCard>)}
           disabled={card.accepted}
-          className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-            card.accepted ? "bg-gray-100 text-gray-400" : "bg-blue-600 text-white hover:bg-blue-700"
+          className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+            card.accepted ? "bg-[var(--color-hover)] text-[var(--color-fg-subtle)]" : "bg-[var(--color-fg)] text-[var(--color-bg)] hover:opacity-90"
           }`}
         >
           {card.accepted ? "チェック中..." : "チェックする"}

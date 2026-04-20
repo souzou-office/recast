@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { Company, ChatThread } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface ThreadSummary {
   id: string;
@@ -95,38 +96,38 @@ export default function ChatSidebar({
   }
 
   return (
-    <aside className="flex-1 min-w-0 border-r border-gray-200 bg-gray-50 flex flex-col overflow-hidden">
+    <aside className="flex-1 min-w-0 border-r border-[var(--color-border)] bg-[var(--color-sidebar)] flex flex-col overflow-hidden">
       {/* 会社セレクター */}
-      <div className="border-b border-gray-200 p-2">
+      <div className="border-b border-[var(--color-border)] p-2">
         <button
           onClick={() => setCompanySearchOpen(!companySearchOpen)}
-          className="w-full flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs hover:border-blue-400 transition-colors"
+          className="w-full flex items-center gap-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] px-2.5 py-1.5 text-xs hover:border-[var(--color-fg-subtle)] transition-colors"
         >
-          <span className="flex-1 truncate text-left text-gray-700">
+          <span className="flex-1 truncate text-left text-[var(--color-fg)]">
             {company ? company.name : "会社を選択"}
           </span>
-          <span className="text-gray-400 text-[10px]">{companySearchOpen ? "▲" : "▼"}</span>
+          <Icon name={companySearchOpen ? "ChevronUp" : "ChevronDown"} size={13} className="text-[var(--color-fg-subtle)]" />
         </button>
         {companySearchOpen && (
-          <div className="mt-1 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
+          <div className="mt-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg overflow-hidden">
             <input
               type="text"
               value={companySearch}
               onChange={e => setCompanySearch(e.target.value)}
               placeholder="検索..."
               autoFocus
-              className="w-full border-b border-gray-100 px-2.5 py-1.5 text-xs focus:outline-none"
+              className="w-full border-b border-[var(--color-border-soft)] px-2.5 py-1.5 text-xs focus:outline-none bg-transparent"
             />
             <ul className="max-h-[250px] overflow-y-auto py-0.5">
               {filteredCompanies.length === 0 ? (
-                <li className="px-2.5 py-1.5 text-[10px] text-gray-400">見つかりません</li>
+                <li className="px-2.5 py-1.5 text-[10px] text-[var(--color-fg-subtle)]">見つかりません</li>
               ) : (
                 filteredCompanies.map(c => (
                   <li key={c.id}>
                     <button
                       onClick={() => { onSelectCompany(c.id); setCompanySearchOpen(false); setCompanySearch(""); }}
                       className={`w-full px-2.5 py-1 text-left text-xs transition-colors ${
-                        c.id === selectedCompanyId ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
+                        c.id === selectedCompanyId ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" : "text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
                       }`}
                     >
                       {c.name}
@@ -143,57 +144,65 @@ export default function ChatSidebar({
       <div className="p-2">
         <button
           onClick={onNewThread}
-          className="w-full rounded-lg border border-dashed border-gray-300 py-2 text-xs text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
+          className="w-full rounded-lg border border-dashed border-[var(--color-border)] py-2 text-xs text-[var(--color-fg-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] hover:bg-[var(--color-panel)]/40 transition-colors"
         >
-          + 新規チャット
+          <span className="inline-flex items-center justify-center gap-1.5"><Icon name="Plus" size={14} /> 新規チャット</span>
         </button>
       </div>
 
       {/* チャット履歴 */}
       <div className="flex-1 overflow-y-auto px-2">
         {!company ? (
-          <p className="text-[10px] text-gray-400 py-4 text-center">会社を選択してください</p>
+          <p className="text-[10px] text-[var(--color-fg-subtle)] py-4 text-center">会社を選択してください</p>
         ) : threads.length === 0 ? (
-          <p className="text-[10px] text-gray-400 py-4 text-center">チャットがありません</p>
+          <p className="text-[10px] text-[var(--color-fg-subtle)] py-4 text-center">チャットがありません</p>
         ) : (
           Object.entries(grouped).map(([group, items]) => (
-            <div key={group} className="mb-2">
-              <p className="text-[9px] text-gray-400 uppercase tracking-wider px-1 mb-1">{group}</p>
-              {items.map(t => (
-                <div
-                  key={t.id}
-                  className={`group rounded-lg px-2 py-1.5 mb-0.5 cursor-pointer transition-colors ${
-                    t.id === selectedThreadId ? "bg-blue-100 text-blue-700" : "hover:bg-gray-100 text-gray-700"
-                  }`}
-                >
-                  {editingId === t.id ? (
-                    <input
-                      type="text"
-                      value={editName}
-                      onChange={e => setEditName(e.target.value)}
-                      onBlur={() => handleRename(t.id)}
-                      onKeyDown={e => { if (e.key === "Enter") handleRename(t.id); if (e.key === "Escape") setEditingId(null); }}
-                      autoFocus
-                      className="w-full text-xs border-b border-blue-400 outline-none bg-transparent"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-1" onClick={() => onSelectThread(t.id)}>
-                      <span className="text-xs">💬</span>
-                      <span className="flex-1 text-xs truncate">{t.displayName}</span>
-                      <div className="hidden group-hover:flex items-center gap-1">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setEditingId(t.id); setEditName(t.displayName); }}
-                          className="text-[10px] text-gray-400 hover:text-blue-600 px-1 py-0.5 rounded hover:bg-blue-50"
-                        >編集</button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}
-                          className="text-[10px] text-gray-400 hover:text-red-600 px-1 py-0.5 rounded hover:bg-red-50"
-                        >削除</button>
-                      </div>
+            <div key={group} className="mb-4">
+              <p className="text-[10.5px] font-serif italic text-[var(--color-fg-subtle)] px-2 pt-1 pb-1.5">{group}</p>
+              {items.map(t => {
+                const active = t.id === selectedThreadId;
+                return (
+                  <div
+                    key={t.id}
+                    className={`group flex items-stretch rounded-lg mb-0.5 cursor-pointer transition-colors ${
+                      active ? "bg-[var(--color-panel)]" : "hover:bg-[var(--color-panel)]/50"
+                    }`}
+                  >
+                    <div className={`w-0.5 self-stretch rounded-full ${active ? "bg-[var(--color-accent)]" : "bg-transparent"}`} />
+                    <div className="flex-1 min-w-0 px-2 py-1.5">
+                      {editingId === t.id ? (
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={e => setEditName(e.target.value)}
+                          onBlur={() => handleRename(t.id)}
+                          onKeyDown={e => { if (e.key === "Enter") handleRename(t.id); if (e.key === "Escape") setEditingId(null); }}
+                          autoFocus
+                          className="w-full text-xs border-b border-[var(--color-accent)] outline-none bg-transparent"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-1.5" onClick={() => onSelectThread(t.id)}>
+                          <Icon name="MessageSquare" size={13} className="text-[var(--color-fg-subtle)] shrink-0" />
+                          <span className={`flex-1 text-xs truncate ${active ? "text-[var(--color-fg)] font-medium" : "text-[var(--color-fg-muted)]"}`}>{t.displayName}</span>
+                          <div className="hidden group-hover:flex items-center gap-0.5">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setEditingId(t.id); setEditName(t.displayName); }}
+                              className="p-0.5 rounded text-[var(--color-fg-subtle)] hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+                              title="編集"
+                            ><Icon name="Pencil" size={11} /></button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}
+                              className="p-0.5 rounded text-[var(--color-fg-subtle)] hover:text-red-600 hover:bg-red-50"
+                              title="削除"
+                            ><Icon name="Trash2" size={11} /></button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           ))
         )}

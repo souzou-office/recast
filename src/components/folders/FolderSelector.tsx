@@ -37,15 +37,15 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="mb-4 text-lg font-semibold text-gray-900">
+      <div className="w-full max-w-md rounded-2xl bg-[var(--color-panel)] p-6 shadow-xl">
+        <h3 className="mb-4 text-lg font-semibold text-[var(--color-fg)]">
           フォルダを追加
         </h3>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* プロバイダー選択 */}
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
+            <label className="mb-1 block text-sm font-medium text-[var(--color-fg)]">
               参照先
             </label>
             <div className="flex gap-2">
@@ -56,8 +56,8 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
                   onClick={() => { setProvider(p); setPath(""); }}
                   className={`flex-1 rounded-lg border px-3 py-2 text-sm transition-colors ${
                     provider === p
-                      ? "border-blue-500 bg-blue-50 text-blue-700"
-                      : "border-gray-300 text-gray-600 hover:bg-gray-50"
+                      ? "border-blue-500 bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]"
+                      : "border-[var(--color-border)] text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                   }`}
                 >
                   {p === "google" ? "Google Drive" : p === "dropbox" ? "Dropbox" : "ローカル"}
@@ -68,7 +68,7 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
 
           {/* 表示名 */}
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
+            <label className="mb-1 block text-sm font-medium text-[var(--color-fg)]">
               表示名
             </label>
             <input
@@ -76,14 +76,14 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="例: 定款、今月の請求書"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+              className="w-full rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm
                          focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
           {/* フォルダ選択 */}
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
+            <label className="mb-1 block text-sm font-medium text-[var(--color-fg)]">
               フォルダ
             </label>
             {provider === "local" ? (
@@ -93,14 +93,14 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
                   value={path}
                   onChange={(e) => setPath(e.target.value)}
                   placeholder="例: C:/Users/.../Dropbox/定款"
-                  className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono
+                  className="flex-1 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm font-mono
                              focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <button
                   type="button"
                   onClick={() => setShowBrowser(true)}
-                  className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm
-                             text-gray-600 hover:bg-gray-100 transition-colors"
+                  className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm
+                             text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
                 >
                   参照
                 </button>
@@ -110,8 +110,8 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
                 <button
                   type="button"
                   onClick={() => setShowBrowser(true)}
-                  className="w-full rounded-lg border border-dashed border-gray-300 px-3 py-3 text-sm
-                             text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
+                  className="w-full rounded-lg border border-dashed border-[var(--color-border)] px-3 py-3 text-sm
+                             text-[var(--color-fg-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
                 >
                   {path
                     ? `選択済み: ${name || path}`
@@ -123,7 +123,7 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
 
           {/* 種類 */}
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
+            <label className="mb-1 block text-sm font-medium text-[var(--color-fg)]">
               種類
             </label>
             <div className="flex gap-4">
@@ -134,7 +134,7 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
                   value="common"
                   checked={type === "common"}
                   onChange={() => setType("common")}
-                  className="text-blue-600"
+                  className="text-[var(--color-accent)]"
                 />
                 共通フォルダ
               </label>
@@ -145,12 +145,12 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
                   value="jobs"
                   checked={type === "jobs"}
                   onChange={() => setType("jobs")}
-                  className="text-blue-600"
+                  className="text-[var(--color-accent)]"
                 />
                 個別フォルダ
               </label>
             </div>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-[var(--color-fg-muted)]">
               共通: 常にAIが参照 / 個別: 有効時のみ参照
             </p>
           </div>
@@ -159,7 +159,7 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-100
+              className="rounded-lg px-4 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]
                          transition-colors"
             >
               キャンセル
@@ -167,8 +167,8 @@ export default function FolderSelector({ onAdd, onClose }: Props) {
             <button
               type="submit"
               disabled={!name.trim() || !path.trim()}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white
-                         hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed
+              className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
+                         hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed
                          transition-colors"
             >
               追加

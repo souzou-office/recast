@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ClarificationCard, ActionCard } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: ClarificationCard;
@@ -32,67 +33,74 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
   };
 
   return (
-    <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-amber-200 bg-amber-50"}`}>
-      <p className="text-xs font-medium text-gray-600 mb-3">{card.questions.length}点確認があります</p>
-      <div className="space-y-4">
+    <div className={`rounded-2xl border overflow-hidden ${isLocked ? "bg-[var(--color-hover)] border-[var(--color-border)]" : "border-[var(--color-border)] bg-[var(--color-panel)]"}`}>
+      <div className="px-4 py-2.5 bg-[var(--color-warn-bg)] text-[var(--color-warn-fg)] text-[12.5px] font-medium border-b border-[var(--color-border-soft)] inline-flex items-center gap-1.5 w-full">
+        <Icon name="AlertTriangle" size={14} />
+        {card.questions.length}点確認があります
+      </div>
+      <div className="p-4 space-y-5">
         {card.questions.map((q, qi) => (
           <div key={q.id}>
-            <p className="text-xs font-medium text-gray-700 mb-1">
-              Q{qi + 1}. 【{q.placeholder}】— {q.question}
+            <p className="text-[13.5px] font-medium text-[var(--color-fg)] mb-2 leading-relaxed">
+              Q{qi + 1}. <span className="text-[var(--color-fg-muted)]">【{q.placeholder}】</span> {q.question}
             </p>
-            <div className="space-y-1 ml-4">
+            <div className="space-y-1.5 ml-4">
               {q.options.map(opt => (
-                <label key={opt.id} className="flex items-center gap-2 text-xs cursor-pointer">
+                <label key={opt.id} className="flex items-start gap-2.5 cursor-pointer">
                   <input
                     type="radio"
                     name={q.id}
                     checked={answers[q.id]?.optionId === opt.id}
                     onChange={() => setAnswers(prev => ({ ...prev, [q.id]: { optionId: opt.id } }))}
                     disabled={isLocked}
-                    className="w-3.5 h-3.5"
+                    className="w-4 h-4 mt-0.5"
                   />
-                  <span className="text-gray-700">{opt.label}</span>
-                  <span className="text-[10px] text-gray-400">({opt.source})</span>
+                  <span className="flex-1">
+                    <span className="text-[13px] text-[var(--color-fg)]">{opt.label}</span>
+                    {opt.source && (
+                      <span className="ml-2 text-[11.5px] text-[var(--color-fg-subtle)]">{opt.source}</span>
+                    )}
+                  </span>
                 </label>
               ))}
-              <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <label className="flex items-center gap-2.5 cursor-pointer">
                 <input
                   type="radio"
                   name={q.id}
                   checked={answers[q.id]?.optionId === "_manual"}
                   onChange={() => setAnswers(prev => ({ ...prev, [q.id]: { optionId: "_manual", manual: "" } }))}
                   disabled={isLocked}
-                  className="w-3.5 h-3.5"
+                  className="w-4 h-4"
                 />
-                <span className="text-gray-700">手動入力</span>
+                <span className="text-[13px] text-[var(--color-fg)]">手動入力</span>
               </label>
               {answers[q.id]?.optionId === "_manual" && !isLocked && (
                 <input
                   type="text"
                   value={answers[q.id]?.manual || ""}
                   onChange={e => setAnswers(prev => ({ ...prev, [q.id]: { optionId: "_manual", manual: e.target.value } }))}
-                  className="ml-6 rounded border border-gray-300 px-2 py-1 text-xs w-48 focus:border-blue-500 focus:outline-none"
+                  className="ml-6 rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-[13px] w-64 focus:border-[var(--color-accent)] focus:outline-none bg-[var(--color-panel)]"
                   placeholder="値を入力"
                 />
               )}
             </div>
           </div>
         ))}
+        {!isLocked && (
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              onClick={submit}
+              disabled={!allAnswered}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-accent)] px-4 py-2 text-[12.5px] font-medium text-white hover:bg-[var(--color-accent-fg)] disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)] disabled:cursor-not-allowed"
+            >
+              生成する <Icon name="ArrowRight" size={13} />
+            </button>
+            {!allAnswered && (
+              <span className="text-[11.5px] text-[var(--color-fg-muted)]">すべての質問に回答してください</span>
+            )}
+          </div>
+        )}
       </div>
-      {!isLocked && (
-        <div className="flex items-center gap-2 mt-3">
-          <button
-            onClick={submit}
-            disabled={!allAnswered}
-            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            生成する →
-          </button>
-          {!allAnswered && (
-            <span className="text-[10px] text-gray-500">すべての質問に回答してください</span>
-          )}
-        </div>
-      )}
     </div>
   );
 }
