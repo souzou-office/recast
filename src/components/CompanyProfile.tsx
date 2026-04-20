@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import type { Company } from "@/types";
-import ProfileTemplateModal from "./ProfileTemplateModal";
 import ProfileSourceModal from "./ProfileSourceModal";
 import FilePreview from "./FilePreview";
 
@@ -175,7 +174,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [showJson, setShowJson] = useState(false);
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
-  const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showSourceModal, setShowSourceModal] = useState(false);
   const [availableSources, setAvailableSources] = useState<{ path: string; name: string; folder: string }[]>([]);
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
@@ -249,7 +247,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
 
   const profileContent = (
     <div className="h-full overflow-y-auto bg-[var(--color-bg)]">
-      <div className="max-w-3xl mx-auto px-10 py-10">
+      <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto px-10 py-10">
         {/* ヘッダー */}
         <div className="mb-8">
           <div className="flex items-start justify-between">
@@ -267,12 +265,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowTemplateModal(true)}
-                className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
-              >
-                抽出項目
-              </button>
               <button
                 onClick={() => setShowSourceModal(true)}
                 className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
@@ -461,10 +453,9 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   if (!viewerFile) {
     return (
       <>
-        <div className="h-full flex justify-center">
-          <div className="w-full max-w-4xl">{profileContent}</div>
+        <div className="h-full">
+          {profileContent}
         </div>
-        {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
         {showSourceModal && company && <ProfileSourceModal company={company} onClose={() => setShowSourceModal(false)} onSaved={onUpdate} />}
       </>
     );
@@ -481,7 +472,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
         fileName={viewerFile.name}
         onClose={() => setViewerFile(null)}
       />
-      {showTemplateModal && <ProfileTemplateModal onClose={() => setShowTemplateModal(false)} />}
     </div>
   );
 }
