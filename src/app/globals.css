@@ -1,2 +1,87 @@
+/* src/app/globals.css — そのまま貼り替える(Tailwind v4) */
+
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+@theme {
+  /* Fonts — next/font から注入された CSS変数を参照 */
+  --font-sans:  var(--font-noto-sans-jp), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-fraunces), var(--font-noto-serif-jp), "Noto Serif JP", serif;
+  --font-mono:  "JetBrains Mono", ui-monospace, monospace;
+
+  /* Surfaces — 温かみのあるオフホワイト系 */
+  --color-bg:          #faf9f7;
+  --color-panel:       #ffffff;
+  --color-sidebar:     #f5f3ef;
+  --color-hover:       #f0eee9;
+
+  /* Borders */
+  --color-border:      #ebe9e4;
+  --color-border-soft: #f2f1ed;
+
+  /* Text */
+  --color-fg:          #1a1a1a;
+  --color-fg-muted:    #6b6862;
+  --color-fg-subtle:   #a09c94;
+
+  /* Accent (tempered blue) */
+  --color-accent:      #2563eb;
+  --color-accent-soft: #eff4fe;
+  --color-accent-fg:   #1d4ed8;
+
+  /* Status */
+  --color-ok-bg:       #ecfdf5;
+  --color-ok-fg:       #065f46;
+  --color-warn-bg:     #fdf6e3;
+  --color-warn-fg:     #92400e;
+
+  /* Radius */
+  --radius-card: 1rem;
+  --radius-pill: 9999px;
+}
+
+/* Dark mode — <html class="dark"> を付けると有効 */
+.dark {
+  --color-bg:          #1c1b19;
+  --color-panel:       #252421;
+  --color-sidebar:     #181715;
+  --color-hover:       #2a2824;
+  --color-border:      #39362f;
+  --color-border-soft: #2e2c27;
+  --color-fg:          #f5f2eb;
+  --color-fg-muted:    #a8a196;
+  --color-fg-subtle:   #6b655c;
+  --color-accent:      #7fa6ff;
+  --color-accent-soft: #27314a;
+  --color-accent-fg:   #a9c1ff;
+  --color-ok-bg:       #1f2e26;
+  --color-ok-fg:       #86efac;
+  --color-warn-bg:     #33281a;
+  --color-warn-fg:     #fbbf24;
+}
+
+/* ─── base layer ──────────────────────────────────────── */
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* チャット本文マークダウン用 prose 調整 */
+.prose-recast {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--color-fg);
+}
+.prose-recast p { margin: 0.5em 0; }
+.prose-recast strong { font-weight: 500; color: var(--color-fg); }
+.prose-recast em { font-style: normal; font-weight: 500; color: var(--color-fg); }
+.prose-recast code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-hover);
+}
