@@ -390,9 +390,11 @@ function FilePickerOverlay({
                 <li key={`file-${i}`}>
                   <label className={`flex items-center gap-2 px-3 py-1.5 text-sm rounded-lg cursor-pointer ${isSelected ? "bg-[var(--color-accent-soft)]" : "hover:bg-[var(--color-hover)]"}`}>
                     <input type="checkbox" checked={isSelected} onChange={() => toggleFile(f)} />
-                    <span className="text-[var(--color-fg-muted)]">
-                      {f.mimeType.includes("pdf") ? "📄" : f.mimeType.includes("word") || f.mimeType.includes("document") ? "📝" : f.mimeType.includes("sheet") || f.mimeType.includes("excel") ? "📊" : "📎"}
-                    </span>
+                    <Icon
+                      name={f.mimeType.includes("pdf") ? "FileType" : f.mimeType.includes("word") || f.mimeType.includes("document") ? "FileText" : f.mimeType.includes("sheet") || f.mimeType.includes("excel") ? "FileSpreadsheet" : "File"}
+                      size={13}
+                      className="text-[var(--color-fg-muted)] shrink-0"
+                    />
                     <span className="text-[var(--color-fg)]">{f.name}</span>
                   </label>
                 </li>

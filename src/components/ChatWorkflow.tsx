@@ -581,7 +581,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       <div className={`flex flex-col ${previewFile ? "flex-1 min-w-0" : "w-full"}`}>
       {/* メッセージ一覧 */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto px-10 py-10">
+        <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto px-10 py-10">
           {/* 案件名ヘッダ */}
           <div className="mb-8">
             <h1 className="font-serif text-[26px] font-semibold tracking-tight mb-1 text-[var(--color-fg)]">
@@ -665,7 +665,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
       {/* 入力欄 */}
       <div className="px-10 py-5 bg-[var(--color-bg)]">
-        <div className="max-w-2xl mx-auto">
+        <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto">
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex items-end gap-2 px-4 py-3 focus-within:border-[var(--color-accent)]/40">
             <textarea
               ref={textareaRef}

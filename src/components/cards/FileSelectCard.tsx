@@ -142,6 +142,11 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
     }
 
     // ファイル
+    const ext = node.name.split(".").pop()?.toLowerCase() || "";
+    const fileIcon: "FileType" | "FileSpreadsheet" | "FileText" | "File" =
+      ext === "pdf" ? "FileType" :
+      ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" :
+      ["doc", "docx"].includes(ext) ? "FileText" : "File";
     return (
       <label key={node.path} className="flex items-center gap-2 rounded px-2 py-0.5 hover:bg-[var(--color-panel)] cursor-pointer" style={{ marginLeft: depth * 16 }}>
         <input
@@ -151,6 +156,7 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
           disabled={isLocked}
           className="w-3.5 h-3.5"
         />
+        <Icon name={fileIcon} size={12} className="text-[var(--color-fg-muted)] shrink-0" />
         <span className={`text-xs flex-1 ${files[node.fileIndex].enabled ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)] line-through"}`}>{node.name}</span>
       {onPreview && (
         <button

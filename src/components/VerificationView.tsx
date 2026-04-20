@@ -21,12 +21,12 @@ interface FolderData {
   subfolders: { name: string; path: string }[];
 }
 
-function fileIcon(name: string): string {
+function fileIconName(name: string): "FileText" | "FileSpreadsheet" | "FileType" | "File" {
   const ext = name.split(".").pop()?.toLowerCase() || "";
-  if (ext === "pdf") return "pdf";
-  if (["doc", "docx"].includes(ext)) return "📝";
-  if (["xls", "xlsx"].includes(ext)) return "📊";
-  return "file";
+  if (ext === "pdf") return "FileType";
+  if (["doc", "docx"].includes(ext)) return "FileText";
+  if (["xls", "xlsx", "xlsm", "csv"].includes(ext)) return "FileSpreadsheet";
+  return "File";
 }
 
 export default function VerificationView({ company, caseRoom, onUpdate }: Props) {
@@ -357,7 +357,7 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
                   isSelected ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                 }`}
               >
-                <span className="text-[10px]">{fileIcon(f.name)}</span>
+                <Icon name={fileIconName(f.name)} size={12} className="text-[var(--color-fg-muted)] shrink-0" />
                 <span className="truncate">{f.name}</span>
                 {isSelected && <span className="ml-auto text-[9px] text-[var(--color-accent)]">✓</span>}
               </button>
@@ -464,7 +464,7 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
                   <ul className="space-y-0.5">
                     {selectedFiles.map(f => (
                       <li key={f.id} className="flex items-center gap-1 rounded bg-[var(--color-panel)] px-2 py-1.5 border border-[var(--color-border)]">
-                        <span className="text-[10px]">{fileIcon(f.name)}</span>
+                        <Icon name={fileIconName(f.name)} size={12} className="text-[var(--color-fg-muted)] shrink-0" />
                         <span className="text-xs text-[var(--color-fg)] flex-1 truncate">{f.name}</span>
                         <button onClick={() => removeFile(f.id)} className="text-[10px] text-red-400 hover:text-red-600 shrink-0">×</button>
                       </li>

@@ -54,9 +54,12 @@ export default function DocumentResultCardUI({ card, onPreview }: Props) {
         )}
       </div>
       <div className="p-3 space-y-1">
-        {card.documents.map((doc, i) => (
+        {card.documents.map((doc, i) => {
+          const ext = doc.fileName.split(".").pop()?.toLowerCase() || "";
+          const iconName = ext === "pdf" ? "FileType" : ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" : "FileText";
+          return (
           <div key={i} className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-2">
-            <Icon name="FileText" size={13} className="text-[var(--color-fg-muted)] shrink-0" />
+            <Icon name={iconName} size={13} className="text-[var(--color-fg-muted)] shrink-0" />
             <span className="flex-1 text-xs text-[var(--color-fg)] font-medium truncate">{doc.name}</span>
             <button
               onClick={() => onPreview?.({ docxBase64: doc.docxBase64, fileName: doc.fileName })}
@@ -71,7 +74,8 @@ export default function DocumentResultCardUI({ card, onPreview }: Props) {
               <Icon name="Download" size={12} /> DL
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
