@@ -36,6 +36,7 @@ export const OFFICE_MIME_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",      // .xlsx
   "application/vnd.ms-excel",                                                // .xls
+  "application/vnd.ms-excel.sheet.macroEnabled.12",                          // .xlsm
 ]);
 
 // Google Docs系エクスポート先
@@ -56,6 +57,7 @@ const EXT_TO_MIME: Record<string, string> = {
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".xls": "application/vnd.ms-excel",
+  ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
   ".txt": "text/plain",
   ".csv": "text/csv",
   ".json": "application/json",
@@ -189,10 +191,11 @@ export async function parseBuffer(buffer: Buffer, name: string, filePath: string
     return parseDocx(buffer, name, filePath);
   }
 
-  // XLSX / XLS
+  // XLSX / XLS / XLSM
   if (
     mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-    mimeType === "application/vnd.ms-excel"
+    mimeType === "application/vnd.ms-excel" ||
+    mimeType === "application/vnd.ms-excel.sheet.macroEnabled.12"
   ) {
     return parseSpreadsheet(buffer, name, filePath);
   }
