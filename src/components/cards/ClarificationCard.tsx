@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ClarificationCard, ActionCard } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: ClarificationCard;
@@ -32,12 +33,15 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
   };
 
   return (
-    <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-amber-200 bg-amber-50"}`}>
-      <p className="text-xs font-medium text-gray-600 mb-3">{card.questions.length}点確認があります</p>
-      <div className="space-y-4">
+    <div className={`rounded-2xl border overflow-hidden ${isLocked ? "bg-[var(--color-hover)] border-[var(--color-border)]" : "border-[var(--color-border)] bg-[var(--color-panel)]"}`}>
+      <div className="px-4 py-2.5 bg-[var(--color-warn-bg)] text-[var(--color-warn-fg)] text-xs font-medium border-b border-[var(--color-border-soft)] inline-flex items-center gap-1.5 w-full">
+        <Icon name="AlertTriangle" size={13} />
+        {card.questions.length}点確認があります
+      </div>
+      <div className="p-4 space-y-4">
         {card.questions.map((q, qi) => (
           <div key={q.id}>
-            <p className="text-xs font-medium text-gray-700 mb-1">
+            <p className="text-xs font-medium text-[var(--color-fg)] mb-1.5">
               Q{qi + 1}. 【{q.placeholder}】— {q.question}
             </p>
             <div className="space-y-1 ml-4">
@@ -51,8 +55,8 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
                     disabled={isLocked}
                     className="w-3.5 h-3.5"
                   />
-                  <span className="text-gray-700">{opt.label}</span>
-                  <span className="text-[10px] text-gray-400">({opt.source})</span>
+                  <span className="text-[var(--color-fg)]">{opt.label}</span>
+                  <span className="text-[10px] text-[var(--color-fg-subtle)]">({opt.source})</span>
                 </label>
               ))}
               <label className="flex items-center gap-2 text-xs cursor-pointer">
@@ -64,35 +68,35 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
                   disabled={isLocked}
                   className="w-3.5 h-3.5"
                 />
-                <span className="text-gray-700">手動入力</span>
+                <span className="text-[var(--color-fg)]">手動入力</span>
               </label>
               {answers[q.id]?.optionId === "_manual" && !isLocked && (
                 <input
                   type="text"
                   value={answers[q.id]?.manual || ""}
                   onChange={e => setAnswers(prev => ({ ...prev, [q.id]: { optionId: "_manual", manual: e.target.value } }))}
-                  className="ml-6 rounded border border-gray-300 px-2 py-1 text-xs w-48 focus:border-blue-500 focus:outline-none"
+                  className="ml-6 rounded-lg border border-[var(--color-border)] px-2.5 py-1 text-xs w-48 focus:border-[var(--color-accent)] focus:outline-none bg-[var(--color-panel)]"
                   placeholder="値を入力"
                 />
               )}
             </div>
           </div>
         ))}
+        {!isLocked && (
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={submit}
+              disabled={!allAnswered}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90 disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)] disabled:cursor-not-allowed"
+            >
+              生成する <Icon name="ArrowRight" size={12} />
+            </button>
+            {!allAnswered && (
+              <span className="text-[10px] text-[var(--color-fg-muted)]">すべての質問に回答してください</span>
+            )}
+          </div>
+        )}
       </div>
-      {!isLocked && (
-        <div className="flex items-center gap-2 mt-3">
-          <button
-            onClick={submit}
-            disabled={!allAnswered}
-            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            生成する →
-          </button>
-          {!allAnswered && (
-            <span className="text-[10px] text-gray-500">すべての質問に回答してください</span>
-          )}
-        </div>
-      )}
     </div>
   );
 }

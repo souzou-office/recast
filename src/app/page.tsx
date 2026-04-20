@@ -117,15 +117,29 @@ export default function Home() {
 
         <div className="flex-1" />
 
-        {/* 基本情報ボタン */}
-        <button
-          onClick={() => setView(view === "profile" ? "chat" : "profile")}
-          className={`px-4 py-3 text-sm font-medium transition-colors ${
-            view === "profile" ? "border-b-2 border-blue-500 text-blue-600" : "text-gray-500 hover:text-gray-700"
-          }`}
-        >
-          基本情報
-        </button>
+        {/* タブ: チャット / 基本情報 */}
+        <nav className="flex items-center gap-1">
+          <button
+            onClick={() => setView("chat")}
+            className={`px-3.5 h-8 rounded-full text-[13px] transition-colors ${
+              view === "chat" || view === "search"
+                ? "bg-[var(--color-panel)] shadow-sm text-[var(--color-fg)] font-medium"
+                : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            }`}
+          >
+            チャット
+          </button>
+          <button
+            onClick={() => setView("profile")}
+            className={`px-3.5 h-8 rounded-full text-[13px] transition-colors ${
+              view === "profile"
+                ? "bg-[var(--color-panel)] shadow-sm text-[var(--color-fg)] font-medium"
+                : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            }`}
+          >
+            基本情報
+          </button>
+        </nav>
 
         {/* 右端: 横断検索・設定 */}
         <div className="flex items-center gap-1 px-3 shrink-0">
@@ -166,7 +180,7 @@ export default function Home() {
             />
             <div
               onMouseDown={handleMouseDown}
-              className="w-1.5 cursor-col-resize bg-gray-200 hover:bg-blue-400 active:bg-blue-500 transition-colors"
+              className="w-1 cursor-col-resize bg-[var(--color-border)] hover:bg-[var(--color-accent)] active:bg-[var(--color-accent-fg)] transition-colors"
             />
           </div>
         )}

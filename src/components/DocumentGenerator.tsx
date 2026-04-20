@@ -76,8 +76,8 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
 
   if (!company) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <p className="text-sm text-gray-400">サイドバーから会社を選択してください</p>
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
+        <p className="text-sm text-[var(--color-fg-subtle)]">サイドバーから会社を選択してください</p>
       </div>
     );
   }
@@ -196,7 +196,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
   if (!templateBasePath) {
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="text-center text-gray-400">
+        <div className="text-center text-[var(--color-fg-subtle)]">
           <p className="text-3xl mb-2">📝</p>
           <p className="text-sm">設定で書類テンプレートフォルダを指定してください</p>
         </div>
@@ -207,17 +207,17 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
   return (
     <div className="flex h-full overflow-hidden">
       <div className={`flex flex-col overflow-hidden ${previewFileId || viewingDoc ? "flex-1 min-w-0" : "w-full"} transition-all`}>
-        <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+        <div className="border-b border-[var(--color-border)] px-6 py-3 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
-            <span className={`rounded px-2 py-0.5 text-[10px] ${hasMasterSheet ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+            <h2 className="text-sm font-bold text-[var(--color-fg)]">{company.name}</h2>
+            <span className={`rounded px-2 py-0.5 text-[10px] ${hasMasterSheet ? "bg-green-100 text-[var(--color-ok-fg)]" : "bg-[var(--color-hover)] text-[var(--color-fg-muted)]"}`}>
               案件整理 {hasMasterSheet ? "✓" : "未生成"}
             </span>
           </div>
           {viewingDoc && (
             <button
               onClick={() => setViewingDoc(null)}
-              className="text-xs text-blue-500 hover:text-blue-700"
+              className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
             >
               一覧に戻る
             </button>
@@ -230,12 +230,12 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
           {result ? (
             <>
               {generating ? (
-                <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                <div className="text-sm text-[var(--color-fg)] whitespace-pre-wrap leading-relaxed">
                   {result}<span className="animate-pulse">▍</span>
                 </div>
               ) : (
-                <div className="prose prose-sm max-w-none text-gray-800
-                                prose-headings:text-gray-900 prose-headings:font-semibold
+                <div className="prose prose-sm max-w-none text-[var(--color-fg)]
+                                prose-headings:text-[var(--color-fg)] prose-headings:font-semibold
                                 prose-h2:text-base prose-h2:mt-3 prose-h2:mb-1">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{result}</ReactMarkdown>
                 </div>
@@ -243,13 +243,13 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
             </>
           ) : (
             <div>
-              <h2 className="text-lg font-bold text-gray-800 mb-4">書類を生成する</h2>
+              <h2 className="text-lg font-bold text-[var(--color-fg)] mb-4">書類を生成する</h2>
 
               {/* 保存済みドキュメント */}
               {savedDocs.length > 0 && (
                 <div className="mb-6">
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-xs font-semibold text-gray-500">生成済み書類</h3>
+                    <h3 className="text-xs font-semibold text-[var(--color-fg-muted)]">生成済み書類</h3>
                     {deleteChecked.size > 0 && (
                       <button
                         onClick={async () => {
@@ -289,7 +289,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
                   </div>
                   <div className="space-y-1">
                     {savedDocs.map((doc, i) => (
-                      <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2">
+                      <div key={i} className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-3 py-2">
                         <input
                           type="checkbox"
                           checked={deleteChecked.has(i)}
@@ -304,12 +304,12 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
                           onClick={() => setViewingDoc(doc)}
                           className="flex-1 text-left"
                         >
-                          <span className="text-sm text-gray-800 font-medium">{doc.templateName}</span>
-                          <span className="text-[10px] text-gray-400 ml-2">{new Date(doc.createdAt).toLocaleString("ja-JP")}</span>
+                          <span className="text-sm text-[var(--color-fg)] font-medium">{doc.templateName}</span>
+                          <span className="text-[10px] text-[var(--color-fg-subtle)] ml-2">{new Date(doc.createdAt).toLocaleString("ja-JP")}</span>
                         </button>
                         <button
                           onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
-                          className="text-[10px] text-blue-500 hover:text-blue-700 shrink-0"
+                          className="text-[10px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] shrink-0"
                         >
                           DL
                         </button>
@@ -323,11 +323,11 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
               {savedDocs.length === 0 && (
                 <>
               {!hasMasterSheet && (
-                <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mb-4">
+                <p className="text-xs text-[var(--color-warn-fg)] bg-[var(--color-warn-bg)] rounded-lg px-3 py-2 mb-4">
                   案件整理を先に実行してください。
                 </p>
               )}
-              <h3 className="text-xs font-semibold text-gray-500 mb-2">テンプレートから生成</h3>
+              <h3 className="text-xs font-semibold text-[var(--color-fg-muted)] mb-2">テンプレートから生成</h3>
               <div className="grid grid-cols-1 gap-3">
                 {templateFolders.map(tf => {
                   const isSelected = selectedTemplate?.path === tf.path;
@@ -335,21 +335,21 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
                     <div
                       key={tf.path}
                       className={`rounded-xl border-2 cursor-pointer transition-all ${
-                        isSelected ? "border-blue-500 bg-blue-50 shadow-sm" : "border-gray-200 hover:border-blue-300"
+                        isSelected ? "border-blue-500 bg-[var(--color-accent-soft)] shadow-sm" : "border-[var(--color-border)] hover:border-[var(--color-accent)]/30"
                       }`}
                       onClick={() => setSelectedTemplate(isSelected ? null : tf)}
                     >
                       <div className="px-5 py-4 flex items-center justify-between">
-                        <h3 className={`text-base font-bold ${isSelected ? "text-blue-700" : "text-gray-800"}`}>{tf.name}</h3>
-                        <span className="text-[10px] text-gray-400">{tf.files.length}ファイル</span>
+                        <h3 className={`text-base font-bold ${isSelected ? "text-[var(--color-accent-fg)]" : "text-[var(--color-fg)]"}`}>{tf.name}</h3>
+                        <span className="text-[10px] text-[var(--color-fg-subtle)]">{tf.files.length}ファイル</span>
                       </div>
                       {isSelected && (
                         <>
-                          <div className="border-t border-blue-200 px-5 py-3">
+                          <div className="border-t border-[var(--color-accent-soft)] px-5 py-3">
                             {tf.files.map(f => (
                               <button key={f.path}
                                 onClick={(e) => { e.stopPropagation(); setPreviewFileId(f.path); }}
-                                className="block text-xs text-blue-600 hover:text-blue-800 hover:underline py-0.5"
+                                className="block text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] hover:underline py-0.5"
                               >📄 {f.name}</button>
                             ))}
                           </div>
@@ -357,7 +357,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
                             <button
                               onClick={(e) => { e.stopPropagation(); handleGenerate(); }}
                               disabled={generating || !hasMasterSheet}
-                              className="w-full rounded-lg bg-blue-600 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:bg-gray-300"
+                              className="w-full rounded-lg bg-[var(--color-fg)] py-3 text-sm font-bold text-white hover:opacity-90 disabled:bg-gray-300"
                             >
                               {generating ? "生成中..." : "この書式で書類を生成"}
                             </button>
@@ -368,7 +368,7 @@ export default function DocumentGenerator({ company, caseRoom, onUpdate }: Props
                   );
                 })}
                 {templateFolders.length === 0 && (
-                  <p className="text-sm text-gray-400 py-4 text-center">テンプレートフォルダにフォルダがありません</p>
+                  <p className="text-sm text-[var(--color-fg-subtle)] py-4 text-center">テンプレートフォルダにフォルダがありません</p>
                 )}
               </div>
                 </>

@@ -159,25 +159,25 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
       onMouseDown={handleDragStart}
       className="w-1.5 shrink-0 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-gray-200"
     />
-    <div className="flex flex-col border-l border-gray-200" style={{ width: `${width}%` }}>
-      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2 bg-gray-50">
-        <span className="text-xs text-gray-600 truncate font-medium">{fileName}</span>
+    <div className="flex flex-col border-l border-[var(--color-border)]" style={{ width: `${width}%` }}>
+      <div className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-2 bg-[var(--color-hover)]">
+        <span className="text-xs text-[var(--color-fg-muted)] truncate font-medium">{fileName}</span>
         <div className="flex items-center gap-2 shrink-0">
-          <button onClick={handleDownload} className="text-[10px] text-blue-500 hover:text-blue-700">
+          <button onClick={handleDownload} className="text-[10px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]">
             ダウンロード
           </button>
-          <button onClick={onClose} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+          <button onClick={onClose} className="text-xs text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]">x</button>
         </div>
       </div>
-      <div className="flex-1 overflow-hidden bg-gray-100">
+      <div className="flex-1 overflow-hidden bg-[var(--color-hover)]">
         {loading ? (
-          <p className="text-sm text-gray-400 animate-pulse p-4">変換中...</p>
+          <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse p-4">変換中...</p>
         ) : blobUrl?.startsWith("html:") ? (
-          <iframe srcDoc={blobUrl.slice(5)} className="w-full h-full border-0 bg-white" />
+          <iframe srcDoc={blobUrl.slice(5)} className="w-full h-full border-0 bg-[var(--color-panel)]" />
         ) : blobUrl ? (
           <iframe src={blobUrl} className="w-full h-full border-0" />
         ) : (
-          <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono leading-relaxed p-4 overflow-y-auto h-full bg-white">{textContent}</pre>
+          <pre className="text-xs text-[var(--color-fg)] whitespace-pre-wrap font-mono leading-relaxed p-4 overflow-y-auto h-full bg-[var(--color-panel)]">{textContent}</pre>
         )}
       </div>
     </div>

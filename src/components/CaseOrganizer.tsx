@@ -27,8 +27,8 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
 
   if (!company) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <p className="text-sm text-gray-400">サイドバーから会社を選択してください</p>
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
+        <p className="text-sm text-[var(--color-fg-subtle)]">サイドバーから会社を選択してください</p>
       </div>
     );
   }
@@ -149,8 +149,8 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
     <div id="main-content-area" className="flex h-full overflow-hidden">
       <div className={`flex flex-col overflow-hidden ${previewFileId ? "flex-1 min-w-0" : "w-full"} transition-all`}>
         {/* ヘッダー */}
-        <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
+        <div className="border-b border-[var(--color-border)] px-6 py-3 flex items-center justify-between">
+          <h2 className="text-sm font-bold text-[var(--color-fg)]">{company.name}</h2>
           <div className="flex items-center gap-2">
             {displayResult && !isLoading && (
               <button
@@ -194,19 +194,19 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
           {displayResult ? (
             <>
               {isLoading && (
-                <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                <div className="text-sm text-[var(--color-fg)] whitespace-pre-wrap leading-relaxed">
                   {result}
                   <span className="animate-pulse">▍</span>
                 </div>
               )}
               {!isLoading && (
-                <div className="prose prose-sm max-w-none text-gray-800
-                                prose-headings:text-gray-900 prose-headings:font-semibold
+                <div className="prose prose-sm max-w-none text-[var(--color-fg)]
+                                prose-headings:text-[var(--color-fg)] prose-headings:font-semibold
                                 prose-h2:text-base prose-h2:mt-3 prose-h2:mb-1
                                 prose-p:leading-snug prose-p:my-0.5
                                 prose-table:border-collapse prose-table:w-full prose-table:my-0.5
-                                prose-th:border prose-th:border-gray-300 prose-th:bg-gray-50 prose-th:px-2 prose-th:py-1 prose-th:text-left prose-th:text-xs
-                                prose-td:border prose-td:border-gray-300 prose-td:px-2 prose-td:py-1 prose-td:text-sm
+                                prose-th:border prose-th:border-[var(--color-border)] prose-th:bg-[var(--color-hover)] prose-th:px-2 prose-th:py-1 prose-th:text-left prose-th:text-xs
+                                prose-td:border prose-td:border-[var(--color-border)] prose-td:px-2 prose-td:py-1 prose-td:text-sm
                                 prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
@@ -223,9 +223,9 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
                               <button
                                 key={i}
                                 onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
-                                className="ml-2 inline-flex items-center gap-0.5 text-[10px] font-normal text-blue-500 hover:text-blue-700 align-middle"
+                                className="ml-2 inline-flex items-center gap-0.5 text-[10px] font-normal text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] align-middle"
                               >
-                                📄{f.name}
+                                {f.name}
                               </button>
                             ))}
                           </h2>
@@ -240,8 +240,8 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
 
               {/* 参照元資料 */}
               {(sourceFiles.length > 0 || caseRoom?.masterSheet?.sourceFiles || company.masterSheet?.sourceFiles) && !isLoading && (
-                <div className="mt-4 border-t border-gray-100 pt-3">
-                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-gray-400">参照元資料</p>
+                <div className="mt-4 border-t border-[var(--color-border-soft)] pt-3">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-fg-subtle)]">参照元資料</p>
                   <div className="flex flex-wrap gap-1.5">
                     {(sourceFiles.length > 0 ? sourceFiles : caseRoom?.masterSheet?.sourceFiles || company.masterSheet?.sourceFiles || []).map((f, i) => (
                       <button
@@ -249,11 +249,11 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
                         onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
                         className={`rounded-lg px-2.5 py-1 text-xs transition-colors ${
                           previewFileId === f.id
-                            ? "bg-blue-100 text-blue-700"
-                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                            ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]"
+                            : "bg-[var(--color-hover)] text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                         }`}
                       >
-                        📄 {f.name}
+                        {f.name}
                       </button>
                     ))}
                   </div>
@@ -264,11 +264,11 @@ export default function CaseOrganizer({ company, caseRoom, visible, onUpdate }: 
             <div className="flex h-full items-center justify-center">
               <div className="text-center">
                 <p className="text-3xl mb-4">📋</p>
-                <p className="text-sm text-gray-500 mb-4">サイドバーで選択したフォルダの資料を<br />AIが自動で抽出・整理します</p>
+                <p className="text-sm text-[var(--color-fg-muted)] mb-4">サイドバーで選択したフォルダの資料を<br />AIが自動で抽出・整理します</p>
                 <button
                   onClick={handleExecute}
                   disabled={isLoading}
-                  className="rounded-lg bg-blue-600 px-8 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+                  className="rounded-lg bg-[var(--color-fg)] px-8 py-3 text-sm font-bold text-white hover:opacity-90 disabled:bg-gray-300 transition-colors"
                 >
                   {isLoading ? "整理中..." : "案件を整理"}
                 </button>

@@ -1,6 +1,7 @@
 "use client";
 
 import type { DocumentResultCard } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: DocumentResultCard;
@@ -23,7 +24,6 @@ function downloadDocx(base64: string, fileName: string) {
 }
 
 async function downloadAllZip(docs: { docxBase64: string; fileName: string }[]) {
-  // PizZipで全ファイルをまとめて1つのzipにしてダウンロード
   const PizZip = (await import("pizzip")).default;
   const zip = new PizZip();
   for (const d of docs) {
@@ -39,34 +39,36 @@ async function downloadAllZip(docs: { docxBase64: string; fileName: string }[]) 
 
 export default function DocumentResultCardUI({ card, onPreview }: Props) {
   return (
-    <div className="rounded-lg border border-green-200 bg-green-50 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-xs font-medium text-green-700">✅ 書類を生成しました</p>
+    <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] overflow-hidden">
+      <div className="px-4 py-2.5 bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)] text-xs font-medium border-b border-[var(--color-border-soft)] flex items-center justify-between">
+        <span className="inline-flex items-center gap-1.5">
+          <Icon name="CheckCircle2" size={14} /> 書類を生成しました
+        </span>
         {card.documents.length > 1 && (
           <button
             onClick={() => downloadAllZip(card.documents)}
-            className="rounded-lg bg-green-600 px-3 py-1 text-[10px] font-medium text-white hover:bg-green-700"
+            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-ok-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-ok-bg)] hover:opacity-90"
           >
-            すべてZIPでDL
+            <Icon name="Download" size={11} /> すべてZIP
           </button>
         )}
       </div>
-      <div className="space-y-1">
+      <div className="p-3 space-y-1">
         {card.documents.map((doc, i) => (
-          <div key={i} className="flex items-center gap-2 rounded bg-white px-3 py-2 border border-gray-200">
-            <span className="text-xs">📄</span>
-            <span className="flex-1 text-xs text-gray-800 font-medium truncate">{doc.name}</span>
+          <div key={i} className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-2">
+            <Icon name="FileText" size={13} className="text-[var(--color-fg-muted)] shrink-0" />
+            <span className="flex-1 text-xs text-[var(--color-fg)] font-medium truncate">{doc.name}</span>
             <button
               onClick={() => onPreview?.({ docxBase64: doc.docxBase64, fileName: doc.fileName })}
-              className="text-[10px] text-blue-500 hover:text-blue-700 shrink-0"
+              className="inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] shrink-0"
             >
-              プレビュー
+              <Icon name="Eye" size={12} /> プレビュー
             </button>
             <button
               onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
-              className="text-[10px] text-gray-500 hover:text-gray-700 shrink-0"
+              className="inline-flex items-center gap-1 text-[10px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] shrink-0"
             >
-              DL
+              <Icon name="Download" size={12} /> DL
             </button>
           </div>
         ))}

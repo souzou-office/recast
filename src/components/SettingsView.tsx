@@ -6,6 +6,7 @@ import ProfileTemplateModal from "./ProfileTemplateModal";
 import DocumentTemplateModal from "./DocumentTemplateModal";
 import CaseTemplateEditor from "./CaseTemplateEditor";
 
+import { Icon } from "./ui/Icon";
 type SettingsSection = "basepath" | "templatepath" | "common" | "case-templates" | "profile-items" | "doc-templates";
 
 interface BrowseDir {
@@ -161,8 +162,8 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
   return (
     <div className="flex h-full">
       {/* 左: メニュー */}
-      <div className="w-48 border-r border-gray-200 bg-gray-50 p-4">
-        <h2 className="text-sm font-bold text-gray-800 mb-4">設定</h2>
+      <div className="w-48 border-r border-[var(--color-border)] bg-[var(--color-hover)] p-4">
+        <h2 className="text-sm font-bold text-[var(--color-fg)] mb-4">設定</h2>
         <nav className="space-y-1">
           {sections.map(s => (
             <button
@@ -170,8 +171,8 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
               onClick={() => setSection(s.id)}
               className={`w-full text-left rounded-lg px-3 py-2 text-sm transition-colors ${
                 section === s.id
-                  ? "bg-blue-100 text-blue-700 font-medium"
-                  : "text-gray-600 hover:bg-gray-100"
+                  ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)] font-medium"
+                  : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
               }`}
             >
               {s.label}
@@ -185,23 +186,23 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
         {section === "basepath" && (
           <div className="flex flex-col h-full">
             <div className="px-6 pt-6 pb-3">
-              <h2 className="text-lg font-semibold text-gray-900 mb-1">ベースフォルダ</h2>
-              <p className="text-xs text-gray-500">
+              <h2 className="text-lg font-semibold text-[var(--color-fg)] mb-1">ベースフォルダ</h2>
+              <p className="text-xs text-[var(--color-fg-muted)]">
                 会社フォルダが入っている親フォルダを選択してください（複数可）。直下の各フォルダが会社として自動登録されます。
               </p>
               {/* 選択済みパス一覧 */}
               {selectedPaths.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {selectedPaths.map(p => (
-                    <div key={p} className="flex items-center gap-2 rounded bg-blue-50 px-2 py-1">
-                      <span className="text-xs text-blue-700 truncate flex-1">{p}</span>
+                    <div key={p} className="flex items-center gap-2 rounded bg-[var(--color-accent-soft)] px-2 py-1">
+                      <span className="text-xs text-[var(--color-accent-fg)] truncate flex-1">{p}</span>
                       <button onClick={() => handleRemovePath(p)} className="text-xs text-red-400 hover:text-red-600 shrink-0 px-2 py-0.5 rounded hover:bg-red-50">削除</button>
                     </div>
                   ))}
                   <button
                     onClick={handleSavePaths}
                     disabled={saving}
-                    className="mt-1 rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300"
+                    className="mt-1 rounded-lg bg-[var(--color-fg)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
                   >
                     {saving ? "反映中..." : "保存して会社を更新"}
                   </button>
@@ -210,19 +211,19 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
             </div>
 
             {/* パンくず */}
-            <div className="flex flex-wrap items-center gap-1 border-y border-gray-100 px-6 py-2 bg-gray-50">
+            <div className="flex flex-wrap items-center gap-1 border-y border-[var(--color-border-soft)] px-6 py-2 bg-[var(--color-hover)]">
               <button
                 onClick={() => navigateBreadcrumb(-1)}
-                className={`text-xs ${breadcrumbs.length === 0 ? "text-gray-700 font-medium" : "text-blue-600 hover:text-blue-800"}`}
+                className={`text-xs ${breadcrumbs.length === 0 ? "text-[var(--color-fg)] font-medium" : "text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"}`}
               >
                 PC
               </button>
               {breadcrumbs.map((bc, i) => (
                 <span key={bc.path} className="flex items-center gap-1">
-                  <span className="text-gray-300 text-xs">/</span>
+                  <span className="text-[var(--color-fg-subtle)] text-xs">/</span>
                   <button
                     onClick={() => navigateBreadcrumb(i)}
-                    className={`text-xs truncate max-w-[120px] ${i === breadcrumbs.length - 1 ? "text-gray-700 font-medium" : "text-blue-600 hover:text-blue-800"}`}
+                    className={`text-xs truncate max-w-[120px] ${i === breadcrumbs.length - 1 ? "text-[var(--color-fg)] font-medium" : "text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"}`}
                   >
                     {bc.name}
                   </button>
@@ -232,7 +233,7 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
                 <button
                   onClick={() => handleAddPath(browseCurrent)}
                   disabled={selectedPaths.includes(browseCurrent)}
-                  className="ml-auto rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+                  className="ml-auto rounded-lg bg-[var(--color-fg)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300 transition-colors"
                 >
                   {selectedPaths.includes(browseCurrent) ? "追加済み" : "このフォルダを追加"}
                 </button>
@@ -242,14 +243,14 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
             {/* フォルダ一覧 */}
             <div className="flex-1 overflow-y-auto px-6 py-2">
               {browseLoading ? (
-                <p className="py-4 text-center text-sm text-gray-400">読み込み中...</p>
+                <p className="py-4 text-center text-sm text-[var(--color-fg-subtle)]">読み込み中...</p>
               ) : (
                 <ul>
                   {browseParent !== null && (
                     <li>
                       <button
                         onClick={navigateUp}
-                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-blue-600 hover:bg-blue-50"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
                       >
                         <span>↑</span> 上の階層へ
                       </button>
@@ -259,15 +260,15 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
                     <li key={dir.path}>
                       <button
                         onClick={() => navigateTo(dir.path, dir.name)}
-                        className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
                       >
-                        <span className="text-yellow-500 shrink-0">&#128193;</span>
+                        <Icon name="Folder" size={13} className="text-[var(--color-fg-muted)] shrink-0" />
                         <span className="truncate">{dir.name}</span>
                       </button>
                     </li>
                   ))}
                   {browseDirs.length === 0 && !browseLoading && (
-                    <li className="py-4 text-center text-sm text-gray-400">フォルダがありません</li>
+                    <li className="py-4 text-center text-sm text-[var(--color-fg-subtle)]">フォルダがありません</li>
                   )}
                 </ul>
               )}
@@ -275,11 +276,11 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
 
             {/* 登録済み会社 */}
             {companies.length > 0 && (
-              <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 max-h-40 overflow-y-auto">
-                <p className="text-[10px] text-gray-400 mb-1">登録済み会社（{companies.length}社）</p>
+              <div className="border-t border-[var(--color-border)] px-6 py-3 bg-[var(--color-hover)] max-h-40 overflow-y-auto">
+                <p className="text-[10px] text-[var(--color-fg-subtle)] mb-1">登録済み会社（{companies.length}社）</p>
                 <div className="flex flex-wrap gap-1">
                   {companies.map(c => (
-                    <span key={c.id} className="text-[11px] text-gray-600 bg-white rounded px-2 py-0.5 border border-gray-200">
+                    <span key={c.id} className="text-[11px] text-[var(--color-fg-muted)] bg-[var(--color-panel)] rounded px-2 py-0.5 border border-[var(--color-border)]">
                       {c.name}
                     </span>
                   ))}
@@ -292,24 +293,24 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
         {section === "templatepath" && (
           <div className="flex flex-col h-full">
             <div className="px-6 pt-6 pb-3">
-              <h2 className="text-lg font-semibold text-gray-900 mb-1">書類テンプレートフォルダ</h2>
-              <p className="text-xs text-gray-500">
+              <h2 className="text-lg font-semibold text-[var(--color-fg)] mb-1">書類テンプレートフォルダ</h2>
+              <p className="text-xs text-[var(--color-fg-muted)]">
                 書類の雛形フォルダを選択してください。各サブフォルダが書類テンプレートになります。
               </p>
               {config?.templateBasePath && (
                 <div className="mt-2 flex items-center gap-2">
-                  <span className="text-xs text-gray-500">現在:</span>
-                  <span className="text-xs font-medium text-blue-600 truncate">{config.templateBasePath}</span>
+                  <span className="text-xs text-[var(--color-fg-muted)]">現在:</span>
+                  <span className="text-xs font-medium text-[var(--color-accent)] truncate">{config.templateBasePath}</span>
                 </div>
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-1 border-y border-gray-100 px-6 py-2 bg-gray-50">
-              <button onClick={() => { navigateBreadcrumb(-1); }} className="text-xs text-blue-600 hover:text-blue-800">PC</button>
+            <div className="flex flex-wrap items-center gap-1 border-y border-[var(--color-border-soft)] px-6 py-2 bg-[var(--color-hover)]">
+              <button onClick={() => { navigateBreadcrumb(-1); }} className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]">PC</button>
               {breadcrumbs.map((bc, i) => (
                 <span key={bc.path} className="flex items-center gap-1">
-                  <span className="text-gray-300 text-xs">/</span>
-                  <button onClick={() => navigateBreadcrumb(i)} className="text-xs text-blue-600 hover:text-blue-800 truncate max-w-[120px]">{bc.name}</button>
+                  <span className="text-[var(--color-fg-subtle)] text-xs">/</span>
+                  <button onClick={() => navigateBreadcrumb(i)} className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] truncate max-w-[120px]">{bc.name}</button>
                 </span>
               ))}
               {browseCurrent && (
@@ -325,7 +326,7 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
                     setSaving(false);
                   }}
                   disabled={saving}
-                  className="ml-auto rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300"
+                  className="ml-auto rounded-lg bg-[var(--color-fg)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
                 >
                   {saving ? "設定中..." : "このフォルダに設定"}
                 </button>
@@ -334,16 +335,16 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
 
             <div className="flex-1 overflow-y-auto px-6 py-2">
               {browseLoading ? (
-                <p className="py-4 text-center text-sm text-gray-400">読み込み中...</p>
+                <p className="py-4 text-center text-sm text-[var(--color-fg-subtle)]">読み込み中...</p>
               ) : (
                 <ul>
                   {browseParent !== null && (
-                    <li><button onClick={navigateUp} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 w-full text-left">↑ 上の階層へ</button></li>
+                    <li><button onClick={navigateUp} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] w-full text-left">↑ 上の階層へ</button></li>
                   )}
                   {browseDirs.map(dir => (
                     <li key={dir.path}>
-                      <button onClick={() => navigateTo(dir.path, dir.name)} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 w-full text-left">
-                        <span className="text-yellow-500 shrink-0">&#128193;</span><span className="truncate">{dir.name}</span>
+                      <button onClick={() => navigateTo(dir.path, dir.name)} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-[var(--color-fg)] hover:bg-[var(--color-hover)] w-full text-left">
+                        <Icon name="Folder" size={13} className="text-[var(--color-fg-muted)] shrink-0" /><span className="truncate">{dir.name}</span>
                       </button>
                     </li>
                   ))}
@@ -355,8 +356,8 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
 
         {section === "common" && (
           <div className="p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-2">共通フォルダパターン</h2>
-            <p className="text-xs text-gray-500 mb-4">
+            <h2 className="text-lg font-semibold text-[var(--color-fg)] mb-2">共通フォルダパターン</h2>
+            <p className="text-xs text-[var(--color-fg-muted)] mb-4">
               フォルダ名がこのパターンに一致するサブフォルダは自動的に「共通」に分類されます
             </p>
             <div className="flex gap-2 mb-4">
@@ -366,21 +367,21 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
                 onChange={e => setPatternInput(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && handleAddPattern()}
                 placeholder="例: 定款"
-                className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                className="flex-1 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               />
               <button
                 onClick={handleAddPattern}
                 disabled={!patternInput.trim()}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300"
+                className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:bg-gray-300"
               >
                 追加
               </button>
             </div>
             <div className="flex flex-wrap gap-2">
               {(config?.defaultCommonPatterns || []).map(p => (
-                <span key={p} className="inline-flex items-center gap-1 rounded-full bg-green-100 px-3 py-1 text-xs text-green-700">
+                <span key={p} className="inline-flex items-center gap-1 rounded-full bg-green-100 px-3 py-1 text-xs text-[var(--color-ok-fg)]">
                   {p}
-                  <button onClick={() => handleRemovePattern(p)} className="text-green-500 hover:text-red-500">×</button>
+                  <button onClick={() => handleRemovePattern(p)} className="text-[var(--color-ok-fg)] hover:text-red-500">×</button>
                 </span>
               ))}
             </div>

@@ -58,17 +58,17 @@ export default function ProfileTemplateModal({ onClose, inline }: Props) {
   };
 
   const content = (
-      <div className={inline ? "w-full h-full flex flex-col" : "w-full max-w-lg rounded-2xl bg-white shadow-xl max-h-[80vh] flex flex-col"}>
-        <div className="border-b border-gray-200 px-5 py-4">
-          <h3 className="text-lg font-semibold text-gray-900">基本情報 抽出項目設定</h3>
-          <p className="mt-1 text-xs text-gray-500">
+      <div className={inline ? "w-full h-full flex flex-col" : "w-full max-w-lg rounded-2xl bg-[var(--color-panel)] shadow-xl max-h-[80vh] flex flex-col"}>
+        <div className="border-b border-[var(--color-border)] px-5 py-4">
+          <h3 className="text-lg font-semibold text-[var(--color-fg)]">基本情報 抽出項目設定</h3>
+          <p className="mt-1 text-xs text-[var(--color-fg-muted)]">
             基本情報を生成する際に抽出する項目を設定します
           </p>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
           {loading ? (
-            <p className="text-sm text-gray-400 text-center py-4">読み込み中...</p>
+            <p className="text-sm text-[var(--color-fg-subtle)] text-center py-4">読み込み中...</p>
           ) : (
             <>
               {items.map((item, i) => (
@@ -89,11 +89,11 @@ export default function ProfileTemplateModal({ onClose, inline }: Props) {
                     setDragOverIndex(null);
                   }}
                   className={`flex items-center gap-2 rounded-lg px-3 py-2 cursor-grab active:cursor-grabbing transition-colors ${
-                    dragOverIndex === i ? "bg-blue-50 border border-blue-200" : "bg-gray-50"
+                    dragOverIndex === i ? "bg-[var(--color-accent-soft)] border border-[var(--color-accent-soft)]" : "bg-[var(--color-hover)]"
                   } ${dragIndex === i ? "opacity-50" : ""}`}
                 >
-                  <span className="text-gray-300 text-sm cursor-grab">⠿</span>
-                  <span className="flex-1 text-sm text-gray-700">{item}</span>
+                  <span className="text-[var(--color-fg-subtle)] text-sm cursor-grab">⠿</span>
+                  <span className="flex-1 text-sm text-[var(--color-fg)]">{item}</span>
                   <button
                     onClick={() => removeItem(i)}
                     className="text-xs text-red-400 hover:text-red-600"
@@ -110,12 +110,12 @@ export default function ProfileTemplateModal({ onClose, inline }: Props) {
                   onChange={e => setNewItem(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && addItem()}
                   placeholder="項目名を入力（例: 代表者の住所）"
-                  className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
+                  className="flex-1 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm focus:border-[var(--color-accent)] focus:outline-none"
                 />
                 <button
                   onClick={addItem}
                   disabled={!newItem.trim()}
-                  className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+                  className="rounded-lg bg-[var(--color-fg)] px-3 py-2 text-sm text-white hover:opacity-90 disabled:bg-gray-300 transition-colors"
                 >
                   追加
                 </button>
@@ -124,16 +124,16 @@ export default function ProfileTemplateModal({ onClose, inline }: Props) {
           )}
         </div>
 
-        <div className="flex justify-end gap-3 border-t border-gray-200 px-5 py-4">
+        <div className="flex justify-end gap-3 border-t border-[var(--color-border)] px-5 py-4">
           <button
             onClick={onClose}
-            className="rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+            className="rounded-lg px-4 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
           >
             キャンセル
           </button>
           <button
             onClick={save}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-colors"
           >
             保存
           </button>

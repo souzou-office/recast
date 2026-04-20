@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { FileSelectCard, ActionCard } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: FileSelectCard;
@@ -111,7 +112,7 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
 
       return (
         <div key={node.path} style={{ marginLeft: depth * 16 }}>
-          <div className="flex items-center gap-1 rounded hover:bg-white px-1 py-0.5">
+          <div className="flex items-center gap-1 rounded hover:bg-[var(--color-panel)] px-1 py-0.5">
             <input
               type="checkbox"
               checked={allEnabled}
@@ -123,11 +124,12 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
             <button
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFolder(node.path); }}
               type="button"
-              className="flex items-center gap-1 text-xs font-medium text-gray-700 hover:text-blue-600 cursor-pointer"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-fg)] hover:text-[var(--color-accent-fg)] cursor-pointer"
             >
-              <span className="text-[10px]">{isOpen ? "▼" : "▶"}</span>
-              <span>📁 {node.name}</span>
-              <span className="text-[9px] text-gray-400">({childFileIndices.length})</span>
+              <Icon name={isOpen ? "ChevronDown" : "ChevronRight"} size={12} className="text-[var(--color-fg-subtle)]" />
+              <Icon name={isOpen ? "FolderOpen" : "Folder"} size={13} className="text-[var(--color-fg-muted)]" />
+              <span>{node.name}</span>
+              <span className="text-[9px] text-[var(--color-fg-subtle)]">({childFileIndices.length})</span>
             </button>
           </div>
           {isOpen && (
@@ -141,7 +143,7 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
 
     // ファイル
     return (
-      <label key={node.path} className="flex items-center gap-2 rounded px-2 py-0.5 hover:bg-white cursor-pointer" style={{ marginLeft: depth * 16 }}>
+      <label key={node.path} className="flex items-center gap-2 rounded px-2 py-0.5 hover:bg-[var(--color-panel)] cursor-pointer" style={{ marginLeft: depth * 16 }}>
         <input
           type="checkbox"
           checked={files[node.fileIndex].enabled}
@@ -149,27 +151,28 @@ export default function FileSelectCardUI({ card, onAction, onPreview }: Props) {
           disabled={isLocked}
           className="w-3.5 h-3.5"
         />
-        <span className={`text-xs flex-1 ${files[node.fileIndex].enabled ? "text-gray-700" : "text-gray-400 line-through"}`}>{node.name}</span>
+        <span className={`text-xs flex-1 ${files[node.fileIndex].enabled ? "text-[var(--color-fg)]" : "text-[var(--color-fg-subtle)] line-through"}`}>{node.name}</span>
       {onPreview && (
         <button
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPreview({ filePath: node.path, fileName: node.name }); }}
-          className="text-[9px] text-blue-400 hover:text-blue-600 shrink-0 ml-1"
-        >👁</button>
+          className="text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] shrink-0 ml-1"
+          title="プレビュー"
+        ><Icon name="Eye" size={12} /></button>
       )}
       </label>
     );
   };
 
   return (
-    <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
-      <p className="text-xs font-medium text-gray-600 mb-2">使用するファイルを確認してください</p>
+    <div className={`rounded-2xl border p-4 ${isLocked ? "bg-[var(--color-hover)] border-[var(--color-border)]" : "border-[var(--color-accent-soft)] bg-[var(--color-accent-soft)]"}`}>
+      <p className="text-xs font-medium text-[var(--color-fg-muted)] mb-2">使用するファイルを確認してください</p>
       <div className="max-h-72 overflow-y-auto mb-2">
         {tree.map(node => renderNode(node, 0))}
       </div>
       {!isLocked && (
         <button
           onClick={confirm}
-          className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          className="rounded-full bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
         >
           これで進める
         </button>

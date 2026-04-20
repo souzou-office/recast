@@ -75,23 +75,23 @@ export default function ProfileSourceModal({ company, onClose, onSaved }: Props)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="w-[560px] max-h-[80vh] rounded-lg bg-white shadow-xl flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+      <div className="w-[560px] max-h-[80vh] rounded-lg bg-[var(--color-panel)] shadow-xl flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="border-b border-[var(--color-border)] px-4 py-3 flex items-center justify-between">
           <h3 className="text-sm font-medium">基本情報の参照ファイル</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+          <button onClick={onClose} className="text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] text-xl leading-none">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-4 text-xs">
           {loading ? (
-            <p className="text-gray-500">読込中...</p>
+            <p className="text-[var(--color-fg-muted)]">読込中...</p>
           ) : files.length === 0 ? (
-            <p className="text-gray-500">共通フォルダにファイルがありません</p>
+            <p className="text-[var(--color-fg-muted)]">共通フォルダにファイルがありません</p>
           ) : (
             <>
               <div className="flex items-center gap-2 mb-3 pb-2 border-b">
-                <button onClick={allToggle} className="text-blue-600 hover:underline">
+                <button onClick={allToggle} className="text-[var(--color-accent)] hover:underline">
                   {selected.size === files.length ? "全解除" : "全選択"}
                 </button>
-                <span className="text-gray-400">{selected.size} / {files.length} 選択中</span>
+                <span className="text-[var(--color-fg-subtle)]">{selected.size} / {files.length} 選択中</span>
               </div>
               {Object.entries(grouped).map(([folder, rows]) => {
                 const folderPaths = rows.map(r => r.path);
@@ -113,7 +113,7 @@ export default function ProfileSourceModal({ company, onClose, onSaved }: Props)
                 };
                 return (
                   <div key={folder} className="mb-3">
-                    <label className="flex items-center gap-2 cursor-pointer mb-1 hover:bg-gray-50 px-1 py-0.5 rounded">
+                    <label className="flex items-center gap-2 cursor-pointer mb-1 hover:bg-[var(--color-hover)] px-1 py-0.5 rounded">
                       <input
                         type="checkbox"
                         checked={allInFolderSelected}
@@ -121,12 +121,12 @@ export default function ProfileSourceModal({ company, onClose, onSaved }: Props)
                         onChange={toggleFolder}
                         className="w-3.5 h-3.5"
                       />
-                      <span className="text-[10px] font-medium text-gray-600">📁 {folder}</span>
-                      <span className="text-[10px] text-gray-400">({folderSelectedCount}/{folderPaths.length})</span>
+                      <span className="text-[10px] font-medium text-[var(--color-fg-muted)]">📁 {folder}</span>
+                      <span className="text-[10px] text-[var(--color-fg-subtle)]">({folderSelectedCount}/{folderPaths.length})</span>
                     </label>
                     <div className="space-y-0.5 ml-6">
                       {rows.map(r => (
-                        <label key={r.path} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                        <label key={r.path} className="flex items-center gap-2 cursor-pointer hover:bg-[var(--color-hover)] px-1 py-0.5 rounded">
                           <input
                             type="checkbox"
                             checked={selected.has(r.path)}
@@ -143,14 +143,14 @@ export default function ProfileSourceModal({ company, onClose, onSaved }: Props)
             </>
           )}
         </div>
-        <div className="border-t border-gray-200 px-4 py-3 flex items-center justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-1.5 text-xs text-gray-600 hover:bg-gray-100">
+        <div className="border-t border-[var(--color-border)] px-4 py-3 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg border border-[var(--color-border)] px-4 py-1.5 text-xs text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]">
             キャンセル
           </button>
           <button
             onClick={save}
             disabled={saving || loading}
-            className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-gray-300"
+            className="rounded-lg bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
           >
             {saving ? "保存中..." : "保存"}
           </button>

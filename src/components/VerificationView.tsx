@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import MessageBubble from "./chat/MessageBubble";
 import FilePreview from "./FilePreview";
 
+import { Icon } from "./ui/Icon";
 interface Props {
   company: Company | null;
   caseRoom?: CaseRoom;
@@ -22,10 +23,10 @@ interface FolderData {
 
 function fileIcon(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() || "";
-  if (ext === "pdf") return "📄";
+  if (ext === "pdf") return "pdf";
   if (["doc", "docx"].includes(ext)) return "📝";
   if (["xls", "xlsx"].includes(ext)) return "📊";
-  return "📎";
+  return "file";
 }
 
 export default function VerificationView({ company, caseRoom, onUpdate }: Props) {
@@ -42,8 +43,8 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
 
   if (!company) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <p className="text-sm text-gray-400">サイドバーから会社を選択してください</p>
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
+        <p className="text-sm text-[var(--color-fg-subtle)]">サイドバーから会社を選択してください</p>
       </div>
     );
   }
@@ -302,11 +303,11 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
         Object.entries(sourceLinks).find(([k]) => k.includes(cleanText) || cleanText.includes(k))?.[1];
       return (
         <div className="flex flex-wrap items-center gap-2 mt-3 mb-1">
-          <h2 {...props} className="text-base font-semibold text-gray-900 m-0">{children}</h2>
+          <h2 {...props} className="text-base font-semibold text-[var(--color-fg)] m-0">{children}</h2>
           {files?.map((f, i) => (
             <button key={`${f.id}-${i}`} onClick={() => setPreviewFileId(previewFileId === f.id ? null : f.id)}
               className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors ${
-                previewFileId === f.id ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                previewFileId === f.id ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" : "bg-[var(--color-hover)] text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
               }`}>📄 {f.name}</button>
           ))}
         </div>
@@ -317,10 +318,10 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
   // 再帰フォルダツリー
   const renderTree = (folderPath: string, depth: number = 0) => {
     const data = folderData[folderPath];
-    if (!data) return <p className="text-[10px] text-gray-400 py-1 pl-2">読み込み中...</p>;
+    if (!data) return <p className="text-[10px] text-[var(--color-fg-subtle)] py-1 pl-2">読み込み中...</p>;
 
     return (
-      <ul className={depth > 0 ? "ml-3 border-l border-gray-200 pl-2" : ""}>
+      <ul className={depth > 0 ? "ml-3 border-l border-[var(--color-border)] pl-2" : ""}>
         {data.subfolders.map(sf => {
           const isOpen = expandedFolders.has(sf.path);
           const hasAnySelected = folderData[sf.path]?.files.some(f => selectedFiles.some(s => s.id === f.path));
@@ -329,14 +330,14 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => toggleFolder(sf.path)}
-                  className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-gray-700 hover:bg-gray-100"
+                  className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
                 >
-                  <span className="text-[11px]">{isOpen ? "📂" : "📁"}</span>
+                  <span className="text-[11px]"><Icon name={isOpen ? "FolderOpen" : "Folder"} size={12} className="text-[var(--color-fg-muted)]" /></span>
                   <span className="truncate">{sf.name}</span>
                 </button>
                 <button
                   onClick={() => { loadFolder(sf.path); setTimeout(() => addAllFilesInFolder(sf.path), 500); }}
-                  className="text-[9px] text-blue-500 hover:text-blue-700 shrink-0 px-1"
+                  className="text-[9px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] shrink-0 px-1"
                   title="フォルダ内を全選択"
                 >
                   全選択
@@ -353,12 +354,12 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
               <button
                 onClick={(e) => handleFileClick(f, e, data.files)}
                 className={`w-full flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-left transition-colors ${
-                  isSelected ? "bg-blue-50 text-blue-700" : "text-gray-600 hover:bg-gray-50"
+                  isSelected ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                 }`}
               >
                 <span className="text-[10px]">{fileIcon(f.name)}</span>
                 <span className="truncate">{f.name}</span>
-                {isSelected && <span className="ml-auto text-[9px] text-blue-500">✓</span>}
+                {isSelected && <span className="ml-auto text-[9px] text-[var(--color-accent)]">✓</span>}
               </button>
             </li>
           );
@@ -372,14 +373,14 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
       {/* 左: ファイル選択 + チャット */}
       <div className={`flex flex-col ${previewFileId ? "flex-1 min-w-0" : "w-full"} transition-all`}>
         {/* ヘッダー */}
-        <div className="border-b border-gray-200 px-6 py-3 flex items-center justify-between">
+        <div className="border-b border-[var(--color-border)] px-6 py-3 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-bold text-gray-900">{company.name}</h2>
+            <h2 className="text-sm font-bold text-[var(--color-fg)]">{company.name}</h2>
             <div className="flex gap-2 mt-1">
-              <span className={`rounded px-2 py-0.5 text-[10px] ${hasProfile ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+              <span className={`rounded px-2 py-0.5 text-[10px] ${hasProfile ? "bg-green-100 text-[var(--color-ok-fg)]" : "bg-[var(--color-hover)] text-[var(--color-fg-muted)]"}`}>
                 基本情報 {hasProfile ? "✓" : "未生成"}
               </span>
-              <span className={`rounded px-2 py-0.5 text-[10px] ${hasMasterSheet ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+              <span className={`rounded px-2 py-0.5 text-[10px] ${hasMasterSheet ? "bg-green-100 text-[var(--color-ok-fg)]" : "bg-[var(--color-hover)] text-[var(--color-fg-muted)]"}`}>
                 案件整理 {hasMasterSheet ? "✓" : "未生成"}
               </span>
             </div>
@@ -401,7 +402,7 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
             <button
               onClick={handleVerify}
               disabled={chatLoading || (!hasProfile && !hasMasterSheet) || selectedFiles.length === 0}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+              className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:bg-gray-300 transition-colors"
             >
               {chatLoading ? "突合せ中..." : `突合せ実行${selectedFiles.length > 0 ? `（${selectedFiles.length}件）` : ""}`}
             </button>
@@ -413,29 +414,29 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
           {chatMessages.length === 0 && (
             <div className="flex h-full">
               {/* 左: フォルダブラウザ */}
-              <div className="w-1/2 border-r border-gray-200 overflow-y-auto p-3">
-                <p className="text-[10px] text-gray-400 mb-2">突合せ対象のファイルを選択（クリックで追加）</p>
+              <div className="w-1/2 border-r border-[var(--color-border)] overflow-y-auto p-3">
+                <p className="text-[10px] text-[var(--color-fg-subtle)] mb-2">突合せ対象のファイルを選択（クリックで追加）</p>
                 {browseRoot === "checked" ? (
                   <ul>
                     {checkedSubfolders.map(sf => (
                       <li key={sf.id}>
                         <button
                           onClick={() => toggleFolder(sf.id)}
-                          className="w-full flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-gray-800 font-medium hover:bg-gray-100"
+                          className="w-full flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-[var(--color-fg)] font-medium hover:bg-[var(--color-hover)]"
                         >
-                          <span className="text-[11px]">{expandedFolders.has(sf.id) ? "📂" : "📁"}</span>
+                          <span className="text-[11px]"><Icon name={expandedFolders.has(sf.id) ? "FolderOpen" : "Folder"} size={12} className="text-[var(--color-fg-muted)]" /></span>
                           {sf.name}
                         </button>
                         {expandedFolders.has(sf.id) && renderTree(sf.id, 1)}
                       </li>
                     ))}
                     {checkedSubfolders.length === 0 && (
-                      <li className="text-[10px] text-gray-400 py-4 text-center">サイドバーでフォルダにチェックを入れてください</li>
+                      <li className="text-[10px] text-[var(--color-fg-subtle)] py-4 text-center">サイドバーでフォルダにチェックを入れてください</li>
                     )}
-                    <li className="mt-2 border-t border-gray-100 pt-2">
+                    <li className="mt-2 border-t border-[var(--color-border-soft)] pt-2">
                       <button
                         onClick={() => { setBrowseRoot(company.id); loadFolder(company.id); setExpandedFolders(prev => new Set([...prev, company.id])); }}
-                        className="text-[10px] text-blue-500 hover:text-blue-700"
+                        className="text-[10px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
                       >
                         ↑ 会社フォルダ全体を表示
                       </button>
@@ -445,7 +446,7 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
                   <>
                     <button
                       onClick={() => setBrowseRoot("checked")}
-                      className="text-[10px] text-blue-500 hover:text-blue-700 mb-2"
+                      className="text-[10px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] mb-2"
                     >
                       ↓ チェック済みフォルダに戻る
                     </button>
@@ -455,16 +456,16 @@ export default function VerificationView({ company, caseRoom, onUpdate }: Props)
               </div>
 
               {/* 右: 選択済みファイル */}
-              <div className="w-1/2 overflow-y-auto p-3 bg-gray-50">
-                <p className="text-[10px] text-gray-400 mb-2">選択済み（{selectedFiles.length}件）</p>
+              <div className="w-1/2 overflow-y-auto p-3 bg-[var(--color-hover)]">
+                <p className="text-[10px] text-[var(--color-fg-subtle)] mb-2">選択済み（{selectedFiles.length}件）</p>
                 {selectedFiles.length === 0 ? (
-                  <p className="text-xs text-gray-400 py-8 text-center">左からファイルを選択してください</p>
+                  <p className="text-xs text-[var(--color-fg-subtle)] py-8 text-center">左からファイルを選択してください</p>
                 ) : (
                   <ul className="space-y-0.5">
                     {selectedFiles.map(f => (
-                      <li key={f.id} className="flex items-center gap-1 rounded bg-white px-2 py-1.5 border border-gray-200">
+                      <li key={f.id} className="flex items-center gap-1 rounded bg-[var(--color-panel)] px-2 py-1.5 border border-[var(--color-border)]">
                         <span className="text-[10px]">{fileIcon(f.name)}</span>
-                        <span className="text-xs text-gray-700 flex-1 truncate">{f.name}</span>
+                        <span className="text-xs text-[var(--color-fg)] flex-1 truncate">{f.name}</span>
                         <button onClick={() => removeFile(f.id)} className="text-[10px] text-red-400 hover:text-red-600 shrink-0">×</button>
                       </li>
                     ))}

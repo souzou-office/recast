@@ -35,8 +35,8 @@ export default function CheckItems({ company }: Props) {
 
   if (!company) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <p className="text-sm text-gray-400">サイドバーから会社を選択してください</p>
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
+        <p className="text-sm text-[var(--color-fg-subtle)]">サイドバーから会社を選択してください</p>
       </div>
     );
   }
@@ -74,27 +74,27 @@ export default function CheckItems({ company }: Props) {
   }, {} as Record<string, CheckItem[]>);
 
   return (
-    <div className="h-full overflow-y-auto bg-gray-50">
+    <div className="h-full overflow-y-auto bg-[var(--color-hover)]">
       <div className="mx-auto max-w-5xl px-6 py-6">
         {/* ヘッダー */}
         <div className="mb-5">
           <div className="flex items-start justify-between">
             <div>
-              <h2 className="text-xl font-bold text-gray-900">{company.name}</h2>
+              <h2 className="text-xl font-bold text-[var(--color-fg)]">{company.name}</h2>
               {result && (
                 <div className="mt-1">
-                  <span className="inline-block rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                  <span className="inline-block rounded bg-[var(--color-accent-soft)] px-2 py-0.5 text-xs font-medium text-[var(--color-accent-fg)]">
                     {result.caseType}
                   </span>
-                  <p className="text-sm text-gray-600 mt-1">{result.summary}</p>
+                  <p className="text-sm text-[var(--color-fg-muted)] mt-1">{result.summary}</p>
                 </div>
               )}
             </div>
             <button
               onClick={runCheck}
               disabled={loading || activeJobs.length === 0}
-              className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white
-                         hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              className="shrink-0 rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
+                         hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? "読み取り中..." : result ? "再読み取り" : "指示書を読み取り"}
             </button>
@@ -115,21 +115,21 @@ export default function CheckItems({ company }: Props) {
                 <span className="animate-bounce text-blue-400" style={{ animationDelay: "0.15s" }}>●</span>
                 <span className="animate-bounce text-blue-400" style={{ animationDelay: "0.3s" }}>●</span>
               </div>
-              <p className="text-sm text-gray-500">指示書と基本情報を照合中...</p>
+              <p className="text-sm text-[var(--color-fg-muted)]">指示書と基本情報を照合中...</p>
             </div>
           </div>
         )}
 
         {!loading && !result && (
-          <div className="rounded-xl border-2 border-dashed border-gray-300 p-12 text-center bg-white">
+          <div className="rounded-xl border-2 border-dashed border-[var(--color-border)] p-12 text-center bg-[var(--color-panel)]">
             <p className="text-4xl mb-4">&#128269;</p>
-            <p className="text-gray-500 mb-2">
+            <p className="text-[var(--color-fg-muted)] mb-2">
               {activeJobs.length === 0
                 ? "サイドバーで案件フォルダを有効にしてください"
                 : "「指示書を読み取り」で案件の確認事項を一覧表示します"}
             </p>
             {activeJobs.length > 0 && (
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-[var(--color-fg-subtle)]">
                 対象案件: {activeJobs.map(s => s.name).join(", ")}
               </p>
             )}
@@ -140,24 +140,24 @@ export default function CheckItems({ company }: Props) {
           <div className="space-y-4">
             {/* スケジュール */}
             {result.schedule.length > 0 && (
-              <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
+              <div className="rounded-xl bg-[var(--color-panel)] shadow-sm border border-[var(--color-border)] overflow-hidden">
                 <div className="bg-orange-50 border-b border-orange-200 px-4 py-2.5">
                   <h3 className="text-sm font-semibold text-orange-700">スケジュール</h3>
                 </div>
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50">
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">イベント</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 w-40">日付</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">備考</th>
+                    <tr className="border-b border-[var(--color-border)] bg-[var(--color-hover)]">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-fg-muted)]">イベント</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-fg-muted)] w-40">日付</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-fg-muted)]">備考</th>
                     </tr>
                   </thead>
                   <tbody>
                     {result.schedule.map((s, i) => (
-                      <tr key={i} className="border-b border-gray-100 last:border-0">
-                        <td className="px-4 py-2.5 text-sm text-gray-800">{s.event}</td>
-                        <td className="px-4 py-2.5 text-sm font-medium text-gray-900">{s.date}</td>
-                        <td className="px-4 py-2.5 text-sm text-gray-600">{s.note || ""}</td>
+                      <tr key={i} className="border-b border-[var(--color-border-soft)] last:border-0">
+                        <td className="px-4 py-2.5 text-sm text-[var(--color-fg)]">{s.event}</td>
+                        <td className="px-4 py-2.5 text-sm font-medium text-[var(--color-fg)]">{s.date}</td>
+                        <td className="px-4 py-2.5 text-sm text-[var(--color-fg-muted)]">{s.note || ""}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -167,29 +167,29 @@ export default function CheckItems({ company }: Props) {
 
             {/* 確認事項（カテゴリ別） */}
             {groupedItems && Object.entries(groupedItems).map(([category, items]) => (
-              <div key={category} className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
-                <div className="bg-gray-50 border-b border-gray-200 px-4 py-2.5">
-                  <h3 className="text-sm font-semibold text-gray-700">{category}</h3>
+              <div key={category} className="rounded-xl bg-[var(--color-panel)] shadow-sm border border-[var(--color-border)] overflow-hidden">
+                <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-2.5">
+                  <h3 className="text-sm font-semibold text-[var(--color-fg)]">{category}</h3>
                 </div>
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50/50">
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 w-48">確認項目</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 w-24">確認元</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">結果</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 w-40">注意事項</th>
+                    <tr className="border-b border-[var(--color-border)] bg-[var(--color-hover)]/50">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-fg-muted)] w-48">確認項目</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-fg-muted)] w-24">確認元</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-fg-muted)]">結果</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-[var(--color-fg-muted)] w-40">注意事項</th>
                     </tr>
                   </thead>
                   <tbody>
                     {items.map((item, i) => (
-                      <tr key={i} className="border-b border-gray-100 last:border-0">
-                        <td className="px-4 py-3 text-sm font-medium text-gray-800 align-top">{item.item}</td>
+                      <tr key={i} className="border-b border-[var(--color-border-soft)] last:border-0">
+                        <td className="px-4 py-3 text-sm font-medium text-[var(--color-fg)] align-top">{item.item}</td>
                         <td className="px-4 py-3 align-top">
-                          <span className="inline-block rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
+                          <span className="inline-block rounded bg-[var(--color-hover)] px-1.5 py-0.5 text-xs text-[var(--color-fg-muted)]">
                             {item.source}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-800 align-top whitespace-pre-wrap">{item.result}</td>
+                        <td className="px-4 py-3 text-sm text-[var(--color-fg)] align-top whitespace-pre-wrap">{item.result}</td>
                         <td className="px-4 py-3 text-xs text-orange-600 align-top">{item.note || ""}</td>
                       </tr>
                     ))}

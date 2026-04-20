@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import type { ChatThread, ThreadMessage, ActionCard, Company, ClarificationCard } from "@/types";
 import ActionCardRenderer from "./cards/ActionCardRenderer";
 import FilePreview from "./FilePreview";
+import { Icon } from "./ui/Icon";
 
 interface Props {
   company: Company | null;
@@ -342,7 +343,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               // 出典情報をメッセージに含める（見出し横にファイル名）
               let enrichedText = fullText;
               for (const [heading, files] of Object.entries(links)) {
-                const fileLinks = (files as { id: string; name: string }[]).map(f => `📄${f.name}`).join(" ");
+                const fileLinks = (files as { id: string; name: string }[]).map(f => f.name).join(" / ");
                 if (fileLinks) {
                   enrichedText = enrichedText.replace(
                     new RegExp(`(## ${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`),
@@ -557,18 +558,18 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
   if (!company) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
-        <p className="text-sm text-gray-400">サイドバーから会社を選択してください</p>
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
+        <p className="text-sm text-[var(--color-fg-subtle)]">サイドバーから会社を選択してください</p>
       </div>
     );
   }
 
   if (!thread) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-50">
+      <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
         <div className="text-center">
-          <p className="text-3xl mb-3">💬</p>
-          <p className="text-sm text-gray-500">チャットを選択するか、新規作成してください</p>
+          <Icon name="MessageSquare" size={36} className="mx-auto mb-3 text-[var(--color-fg-subtle)]" />
+          <p className="text-sm text-[var(--color-fg-muted)]">チャットを選択するか、新規作成してください</p>
         </div>
       </div>
     );
@@ -579,42 +580,51 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       {/* 左: チャット */}
       <div className={`flex flex-col ${previewFile ? "flex-1 min-w-0" : "w-full"}`}>
       {/* メッセージ一覧 */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-3xl mx-auto space-y-4">
-          {thread.messages.map((msg, i) => (
-            <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                msg.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-white border border-gray-200 text-gray-800"
-              }`}>
-                {msg.role === "assistant" ? (
-                  <div className="prose prose-sm max-w-none">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                    {loading && i === thread.messages.length - 1 && !msg.content && (
-                      <div className="flex items-center gap-2 text-gray-400">
-                        <span className="animate-spin text-sm">⏳</span>
-                        <span className="text-xs animate-pulse">考え中...</span>
-                      </div>
-                    )}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-10 py-10">
+          {thread.messages.map((msg, i) => {
+            const goBack = () => {
+              for (const m of thread.messages) {
+                const idx = (m.cards || []).findIndex(c => c.type === "folder-select");
+                if (idx >= 0) {
+                  handleCardAction(m.id, idx, { selectedPath: undefined } as Partial<ActionCard>);
+                  return;
+                }
+              }
+            };
+            if (msg.role === "user") {
+              // ユーザー発言は黒背景の吹き出し（右寄せ）
+              return (
+                <div key={msg.id} className="flex justify-end mb-10">
+                  <div className="max-w-[70%] rounded-2xl px-4 py-3 text-[14px] leading-relaxed bg-[var(--color-fg)] text-[var(--color-bg)]">
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
                   </div>
-                ) : (
-                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                )}
-                {/* アクションカード */}
-                {msg.cards?.map((card, ci) => {
-                  // フォルダ選択カードへ戻るハンドラを用意
-                  const goBack = () => {
-                    for (const m of thread.messages) {
-                      const idx = (m.cards || []).findIndex(c => c.type === "folder-select");
-                      if (idx >= 0) {
-                        handleCardAction(m.id, idx, { selectedPath: undefined } as Partial<ActionCard>);
-                        return;
-                      }
-                    }
-                  };
-                  return (
-                    <div key={ci} className="mt-3">
+                </div>
+              );
+            }
+            // AIメッセージ: 吹き出し廃止。アバター + フローテキスト
+            return (
+              <article key={msg.id} className="mb-10">
+                <header className="flex items-center gap-2.5 mb-3">
+                  <div
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold text-white shrink-0"
+                    style={{ background: "linear-gradient(135deg, #fbbf24, #d97706)" }}
+                  >
+                    R
+                  </div>
+                  <span className="font-serif text-[12px] font-medium">recast</span>
+                </header>
+                <div className="pl-8 text-[14px] leading-[1.75] text-[var(--color-fg)] prose-recast max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  {loading && i === thread.messages.length - 1 && !msg.content && (
+                    <div className="flex items-center gap-2 text-[var(--color-fg-subtle)]">
+                      <Icon name="Loader2" size={14} className="animate-spin" />
+                      <span className="text-xs animate-pulse">考え中...</span>
+                    </div>
+                  )}
+                  {/* アクションカード */}
+                  {msg.cards?.map((card, ci) => (
+                    <div key={ci} className="mt-3 not-prose">
                       <ActionCardRenderer
                         card={card}
                         onAction={(data) => handleCardAction(msg.id, ci, data)}
@@ -624,32 +634,28 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                         onGoBackToFolder={goBack}
                       />
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-          {/* 考え中表示 */}
-          {loading && (
-            <div className="flex justify-start">
-              <div className="rounded-2xl px-4 py-3 bg-white border border-gray-200">
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.15s]" />
-                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.3s]" />
-                  </div>
-                  <span className="text-xs text-gray-400">処理中...</span>
+                  ))}
                 </div>
+              </article>
+            );
+          })}
+          {/* 考え中表示（末尾） */}
+          {loading && (
+            <div className="flex items-center gap-2 pl-8 text-[var(--color-fg-subtle)]">
+              <div className="flex gap-1">
+                <span className="w-2 h-2 bg-[var(--color-fg-subtle)] rounded-full animate-bounce" />
+                <span className="w-2 h-2 bg-[var(--color-fg-subtle)] rounded-full animate-bounce [animation-delay:0.15s]" />
+                <span className="w-2 h-2 bg-[var(--color-fg-subtle)] rounded-full animate-bounce [animation-delay:0.3s]" />
               </div>
+              <span className="text-xs">処理中...</span>
             </div>
           )}
         </div>
       </div>
 
       {/* 入力欄 */}
-      <div className="border-t border-gray-200 bg-white p-4">
-        <div className="max-w-3xl mx-auto flex items-end gap-3">
+      <div className="border-t border-[var(--color-border)] bg-[var(--color-bg)] p-4">
+        <div className="max-w-2xl mx-auto flex items-end gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-sm px-3 py-2 focus-within:border-[var(--color-fg-subtle)]">
           <textarea
             ref={textareaRef}
             value={input}
@@ -658,14 +664,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             placeholder="メッセージを入力...（Shift+Enterで改行）"
             disabled={loading}
             rows={1}
-            className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50"
+            className="flex-1 resize-none bg-transparent text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)] focus:outline-none py-1.5 disabled:opacity-50"
           />
           <button
             onClick={handleSend}
             disabled={loading || !input.trim()}
-            className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-[var(--color-bg)] hover:opacity-90 disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)] disabled:cursor-not-allowed transition-colors"
           >
-            送信
+            <Icon name="ArrowUp" size={14} className="text-[var(--color-bg)]" />
           </button>
         </div>
       </div>

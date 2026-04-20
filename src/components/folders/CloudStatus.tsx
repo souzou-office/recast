@@ -32,19 +32,19 @@ export default function CloudStatus() {
   return (
     <div className="space-y-2">
       {/* Google Drive */}
-      <div className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
-        <span className="text-xs text-gray-600">Google Drive</span>
+      <div className="flex items-center justify-between rounded-lg bg-[var(--color-panel)] px-3 py-2">
+        <span className="text-xs text-[var(--color-fg-muted)]">Google Drive</span>
         {status.google ? (
           <button
             onClick={() => handleDisconnect("google")}
-            className="text-xs text-green-600 hover:text-red-500 transition-colors"
+            className="text-xs text-[var(--color-ok-fg)] hover:text-red-500 transition-colors"
           >
             接続中
           </button>
         ) : (
           <a
             href="/api/auth/google"
-            className="text-xs text-blue-600 hover:text-blue-800 transition-colors"
+            className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] transition-colors"
           >
             接続
           </a>
@@ -52,19 +52,19 @@ export default function CloudStatus() {
       </div>
 
       {/* Dropbox */}
-      <div className="flex items-center justify-between rounded-lg bg-white px-3 py-2">
-        <span className="text-xs text-gray-600">Dropbox</span>
+      <div className="flex items-center justify-between rounded-lg bg-[var(--color-panel)] px-3 py-2">
+        <span className="text-xs text-[var(--color-fg-muted)]">Dropbox</span>
         {status.dropbox ? (
           <button
             onClick={() => handleDisconnect("dropbox")}
-            className="text-xs text-green-600 hover:text-red-500 transition-colors"
+            className="text-xs text-[var(--color-ok-fg)] hover:text-red-500 transition-colors"
           >
             接続中
           </button>
         ) : (
           <a
             href="/api/auth/dropbox"
-            className="text-xs text-blue-600 hover:text-blue-800 transition-colors"
+            className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] transition-colors"
           >
             接続
           </a>

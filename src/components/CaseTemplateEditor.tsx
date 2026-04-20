@@ -129,13 +129,13 @@ export default function CaseTemplateEditor() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">案件整理テンプレート</h2>
-          <p className="text-xs text-gray-500">案件整理で使うチェック項目のテンプレートを管理します</p>
+          <h2 className="text-lg font-semibold text-[var(--color-fg)]">案件整理テンプレート</h2>
+          <p className="text-xs text-[var(--color-fg-muted)]">案件整理で使うチェック項目のテンプレートを管理します</p>
         </div>
         <button
           onClick={startNew}
           disabled={editingId !== null}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300"
+          className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:bg-gray-300"
         >
           + 新規作成
         </button>
@@ -143,29 +143,29 @@ export default function CaseTemplateEditor() {
 
       {/* 編集フォーム */}
       {editingId && (
-        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+        <div className="mb-4 rounded-lg border border-[var(--color-accent-soft)] bg-[var(--color-accent-soft)] p-4">
           <div className="flex gap-2 mb-3">
             <input
               type="text"
               value={editName}
               onChange={e => setEditName(e.target.value)}
               placeholder="テンプレート名（例: 役員辞任）"
-              className="flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              className="flex-1 rounded border border-[var(--color-border)] px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
             />
             <button
               onClick={generateItems}
               disabled={generating || !editName.trim()}
-              className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:bg-gray-100 disabled:text-gray-400 shrink-0"
+              className="rounded-lg border border-[var(--color-accent)]/30 bg-[var(--color-panel)] px-3 py-2 text-xs font-medium text-[var(--color-accent-fg)] hover:bg-[var(--color-accent-soft)] disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)] shrink-0"
             >
               {generating ? "生成中..." : "AIで生成"}
             </button>
           </div>
 
-          <p className="text-[10px] text-gray-500 mb-2">確認項目（Enterで追加、空でBackspaceで削除）</p>
+          <p className="text-[10px] text-[var(--color-fg-muted)] mb-2">確認項目（Enterで追加、空でBackspaceで削除）</p>
           <div className="space-y-1 mb-3">
             {editItems.map((item, i) => (
               <div key={i} className="flex items-center gap-2">
-                <span className="text-[10px] text-gray-400 w-5 text-right shrink-0">{i + 1}.</span>
+                <span className="text-[10px] text-[var(--color-fg-subtle)] w-5 text-right shrink-0">{i + 1}.</span>
                 <input
                   data-item-input
                   type="text"
@@ -173,25 +173,25 @@ export default function CaseTemplateEditor() {
                   onChange={e => updateItem(i, e.target.value)}
                   onKeyDown={e => handleItemKeyDown(e, i)}
                   placeholder="確認項目を入力"
-                  className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                  className="flex-1 rounded border border-[var(--color-border)] px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
                 />
                 <button
                   onClick={() => removeItem(i)}
-                  className="text-gray-400 hover:text-red-500 text-xs shrink-0"
+                  className="text-[var(--color-fg-subtle)] hover:text-red-500 text-xs shrink-0"
                 >
                   ×
                 </button>
               </div>
             ))}
           </div>
-          <button onClick={addItem} className="text-xs text-blue-500 hover:text-blue-700 mb-3">+ 項目を追加</button>
+          <button onClick={addItem} className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] mb-3">+ 項目を追加</button>
 
           <div className="flex gap-2">
             <button onClick={save} disabled={saving || !editName.trim() || editItems.filter(s => s.trim()).length === 0}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-300">
+              className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:bg-gray-300">
               {saving ? "保存中..." : "保存"}
             </button>
-            <button onClick={cancel} className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100">
+            <button onClick={cancel} className="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]">
               キャンセル
             </button>
           </div>
@@ -201,23 +201,23 @@ export default function CaseTemplateEditor() {
       {/* テンプレート一覧 */}
       <div className="space-y-2">
         {templates.map(t => (
-          <div key={t.id} className="rounded-lg border border-gray-200 p-4">
+          <div key={t.id} className="rounded-lg border border-[var(--color-border)] p-4">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-sm font-bold text-gray-800">{t.name}</h3>
+              <h3 className="text-sm font-bold text-[var(--color-fg)]">{t.name}</h3>
               <div className="flex gap-2">
-                <button onClick={() => startEdit(t)} className="text-xs text-blue-500 hover:text-blue-700">編集</button>
+                <button onClick={() => startEdit(t)} className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]">編集</button>
                 <button onClick={() => remove(t.id)} className="text-xs text-red-400 hover:text-red-600">削除</button>
               </div>
             </div>
             <ul className="space-y-0.5">
               {t.items.map((item, i) => (
-                <li key={i} className="text-xs text-gray-600">{i + 1}. {item}</li>
+                <li key={i} className="text-xs text-[var(--color-fg-muted)]">{i + 1}. {item}</li>
               ))}
             </ul>
           </div>
         ))}
         {templates.length === 0 && (
-          <p className="text-sm text-gray-400 py-8 text-center">テンプレートがありません</p>
+          <p className="text-sm text-[var(--color-fg-subtle)] py-8 text-center">テンプレートがありません</p>
         )}
       </div>
     </div>

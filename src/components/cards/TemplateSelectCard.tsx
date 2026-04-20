@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { TemplateSelectCard, ActionCard } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: TemplateSelectCard;
@@ -14,17 +15,17 @@ export default function TemplateSelectCardUI({ card, onAction, onGoBackToFolder 
   const [selected, setSelected] = useState<string | undefined>(card.selectedPath);
 
   return (
-    <div className={`rounded-lg border p-3 ${confirmed ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
+    <div className={`rounded-2xl border p-4 ${confirmed ? "bg-[var(--color-hover)] border-[var(--color-border)]" : "border-[var(--color-accent-soft)] bg-[var(--color-accent-soft)]"}`}>
       <div className="flex items-center justify-between mb-2">
-        <p className="text-xs font-medium text-gray-600">
+        <p className="text-xs font-medium text-[var(--color-fg-muted)]">
           {card.selectedPath && !confirmed ? "テンプレートを推奨しました。変更もできます" : "書類テンプレートを選んでください"}
         </p>
         {!confirmed && onGoBackToFolder && (
           <button
             onClick={onGoBackToFolder}
-            className="text-[10px] text-blue-500 hover:text-blue-700"
+            className="inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
           >
-            ← フォルダを選び直す
+            <Icon name="ArrowLeft" size={11} /> フォルダを選び直す
           </button>
         )}
       </div>
@@ -34,12 +35,12 @@ export default function TemplateSelectCardUI({ card, onAction, onGoBackToFolder 
             key={t.path}
             onClick={() => !confirmed && setSelected(t.path)}
             disabled={confirmed}
-            className={`rounded-lg px-4 py-2 text-xs font-medium transition-colors ${
+            className={`rounded-full px-4 py-2 text-xs font-medium transition-colors ${
               selected === t.path
-                ? "bg-blue-600 text-white"
+                ? "bg-[var(--color-fg)] text-[var(--color-bg)]"
                 : confirmed
-                  ? "bg-gray-100 text-gray-400"
-                  : "bg-white border border-gray-200 text-gray-700 hover:border-blue-400"
+                  ? "bg-[var(--color-hover)] text-[var(--color-fg-subtle)]"
+                  : "bg-[var(--color-panel)] border border-[var(--color-border)] text-[var(--color-fg)] hover:border-[var(--color-accent)]"
             }`}
           >
             {t.name}
@@ -49,7 +50,7 @@ export default function TemplateSelectCardUI({ card, onAction, onGoBackToFolder 
       {!confirmed && selected && (
         <button
           onClick={() => { setConfirmed(true); onAction({ selectedPath: selected } as Partial<ActionCard>); }}
-          className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          className="rounded-full bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
         >
           このテンプレートで生成
         </button>

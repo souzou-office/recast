@@ -46,9 +46,9 @@ function nextRole(current: SubfolderRole): SubfolderRole {
 }
 
 function roleBadge(role: SubfolderRole) {
-  if (role === "common") return { label: "共通", cls: "bg-green-100 text-green-700" };
-  if (role === "job") return { label: "案件", cls: "bg-blue-100 text-blue-700" };
-  return { label: "除外", cls: "bg-gray-100 text-gray-400" };
+  if (role === "common") return { label: "共通", cls: "bg-green-100 text-[var(--color-ok-fg)]" };
+  if (role === "job") return { label: "案件", cls: "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" };
+  return { label: "除外", cls: "bg-[var(--color-hover)] text-[var(--color-fg-subtle)]" };
 }
 
 export default function FileSidebar({
@@ -147,13 +147,13 @@ export default function FileSidebar({
   // 再帰的フォルダツリー
   const renderTree = (folderPath: string, depth: number = 0) => {
     const data = folderData[folderPath];
-    if (!data) return <p className="text-[10px] text-gray-400 py-1 pl-2">読み込み中...</p>;
+    if (!data) return <p className="text-[10px] text-[var(--color-fg-subtle)] py-1 pl-2">読み込み中...</p>;
 
     const ownerSub = findOwnerSub(folderPath);
     const disabledSet = new Set(ownerSub?.disabledFiles || []);
 
     return (
-      <ul className={depth > 0 ? "ml-3 border-l border-gray-200 pl-2" : ""}>
+      <ul className={depth > 0 ? "ml-3 border-l border-[var(--color-border)] pl-2" : ""}>
         {data.subfolders.map(sf => {
           const isExpanded = expandedFolders.has(sf.path);
           const isFolderDisabled = disabledSet.has(sf.path);
@@ -178,8 +178,8 @@ export default function FileSidebar({
                 />
                 <button
                   onClick={() => toggleFolder(sf.path)}
-                  className={`flex-1 flex items-center gap-1 rounded px-1 py-0.5 text-xs text-left hover:bg-gray-100 ${
-                    isFolderDisabled ? "text-gray-400" : "text-gray-700"
+                  className={`flex-1 flex items-center gap-1 rounded px-1 py-0.5 text-xs text-left hover:bg-[var(--color-hover)] ${
+                    isFolderDisabled ? "text-[var(--color-fg-subtle)]" : "text-[var(--color-fg)]"
                   }`}
                 >
                   <span className="text-[10px]">{isExpanded ? "📂" : "📁"}</span>
@@ -204,52 +204,52 @@ export default function FileSidebar({
                 className="shrink-0 w-3 h-3"
               />
               <span className="text-[10px] shrink-0">{fileIcon(f.name)}</span>
-              <span className={`text-[11px] truncate ${isDisabled ? "text-gray-400 line-through" : "text-gray-600"}`}>
+              <span className={`text-[11px] truncate ${isDisabled ? "text-[var(--color-fg-subtle)] line-through" : "text-[var(--color-fg-muted)]"}`}>
                 {f.name}
               </span>
             </li>
           );
         })}
         {data.files.length === 0 && data.subfolders.length === 0 && (
-          <li className="text-[10px] text-gray-400 py-1 pl-2">空</li>
+          <li className="text-[10px] text-[var(--color-fg-subtle)] py-1 pl-2">空</li>
         )}
       </ul>
     );
   };
 
   return (
-    <aside className="shrink-0 border-r border-gray-200 bg-gray-50 flex flex-col overflow-hidden" style={{ width: "100%" }}>
+    <aside className="shrink-0 border-r border-[var(--color-border)] bg-[var(--color-hover)] flex flex-col overflow-hidden" style={{ width: "100%" }}>
       {/* 会社セレクター */}
-      <div className="border-b border-gray-200 p-2">
+      <div className="border-b border-[var(--color-border)] p-2">
         <button
           onClick={() => setCompanySearchOpen(!companySearchOpen)}
-          className="w-full flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs hover:border-blue-400 transition-colors"
+          className="w-full flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-2.5 py-1.5 text-xs hover:border-[var(--color-accent)] transition-colors"
         >
-          <span className="flex-1 truncate text-left text-gray-700">
+          <span className="flex-1 truncate text-left text-[var(--color-fg)]">
             {company ? company.name : "会社を選択"}
           </span>
-          <span className="text-gray-400 text-[10px]">{companySearchOpen ? "▲" : "▼"}</span>
+          <span className="text-[var(--color-fg-subtle)] text-[10px]">{companySearchOpen ? "▲" : "▼"}</span>
         </button>
         {companySearchOpen && (
-          <div className="mt-1 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
+          <div className="mt-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg overflow-hidden">
             <input
               type="text"
               value={companySearch}
               onChange={e => setCompanySearch(e.target.value)}
               placeholder="検索..."
               autoFocus
-              className="w-full border-b border-gray-100 px-2.5 py-1.5 text-xs focus:outline-none"
+              className="w-full border-b border-[var(--color-border-soft)] px-2.5 py-1.5 text-xs focus:outline-none"
             />
             <ul className="max-h-[250px] overflow-y-auto py-0.5">
               {filteredCompanies.length === 0 ? (
-                <li className="px-2.5 py-1.5 text-[10px] text-gray-400">見つかりません</li>
+                <li className="px-2.5 py-1.5 text-[10px] text-[var(--color-fg-subtle)]">見つかりません</li>
               ) : (
                 filteredCompanies.map(c => (
                   <li key={c.id}>
                     <button
                       onClick={() => { onSelectCompany(c.id); setCompanySearchOpen(false); setCompanySearch(""); }}
                       className={`w-full px-2.5 py-1 text-left text-xs transition-colors ${
-                        c.id === selectedCompanyId ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
+                        c.id === selectedCompanyId ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]" : "text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
                       }`}
                     >
                       {c.name}
@@ -265,9 +265,9 @@ export default function FileSidebar({
       {/* ファイルツリー */}
       <div className="flex-1 p-2 overflow-y-auto">
         {!company ? (
-          <p className="text-[10px] text-gray-400 py-4 text-center">会社を選択してください</p>
+          <p className="text-[10px] text-[var(--color-fg-subtle)] py-4 text-center">会社を選択してください</p>
         ) : company.subfolders.length === 0 ? (
-          <p className="text-[10px] text-gray-400 py-4 text-center">サブフォルダなし</p>
+          <p className="text-[10px] text-[var(--color-fg-subtle)] py-4 text-center">サブフォルダなし</p>
         ) : (() => {
           // サブフォルダを親フォルダでグルーピング
           const companyPath = company.id;
@@ -302,13 +302,13 @@ export default function FileSidebar({
                           return next;
                         });
                       }}
-                      className="w-full flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-gray-700 hover:bg-white font-medium"
+                      className="w-full flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left text-[var(--color-fg)] hover:bg-[var(--color-panel)] font-medium"
                     >
-                      <span className="text-[10px] text-gray-400">{isParentExpanded ? "▼" : "▶"}</span>
+                      <span className="text-[10px] text-[var(--color-fg-subtle)]">{isParentExpanded ? "▼" : "▶"}</span>
                       <span className="truncate">{parentName}</span>
                     </button>
                     {isParentExpanded && (
-                      <ul className="ml-3 border-l border-gray-200 pl-1 space-y-0.5">
+                      <ul className="ml-3 border-l border-[var(--color-border)] pl-1 space-y-0.5">
                         {subs.map(sub => renderSubfolder(sub))}
                       </ul>
                     )}
@@ -328,17 +328,17 @@ export default function FileSidebar({
                     <button
                       onClick={() => onToggleJob(sub.id, !sub.active)}
                       className={`shrink-0 w-3 h-3 rounded-full border-2 transition-colors ${
-                        sub.active ? "bg-blue-500 border-blue-500" : "bg-white border-gray-300"
+                        sub.active ? "bg-[var(--color-accent)] border-blue-500" : "bg-[var(--color-panel)] border-[var(--color-border)]"
                       }`}
                     />
                   )}
                   <button
                     onClick={() => toggleFolder(sub.id)}
                     className={`flex-1 flex items-center gap-1 rounded px-1.5 py-1 text-xs text-left transition-colors ${
-                      sub.role === "none" ? "text-gray-400" : "text-gray-700 hover:bg-white"
+                      sub.role === "none" ? "text-[var(--color-fg-subtle)]" : "text-[var(--color-fg)] hover:bg-[var(--color-panel)]"
                     }`}
                   >
-                    <span className="text-[10px] text-gray-400">{isExpanded ? "▼" : "▶"}</span>
+                    <span className="text-[10px] text-[var(--color-fg-subtle)]">{isExpanded ? "▼" : "▶"}</span>
                     <span className="truncate">{sub.name}</span>
                   </button>
                   <button

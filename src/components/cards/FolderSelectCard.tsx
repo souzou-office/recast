@@ -1,6 +1,7 @@
 "use client";
 
 import type { FolderSelectCard, ActionCard } from "@/types";
+import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: FolderSelectCard;
@@ -11,8 +12,8 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
   const isLocked = !!card.selectedPath;
 
   return (
-    <div className={`rounded-lg border p-3 ${isLocked ? "bg-gray-50 border-gray-200" : "border-blue-200 bg-blue-50"}`}>
-      <p className="text-xs font-medium text-gray-600 mb-2">案件フォルダを選んでください</p>
+    <div className={`rounded-2xl border p-4 ${isLocked ? "bg-[var(--color-hover)] border-[var(--color-border)]" : "border-[var(--color-accent-soft)] bg-[var(--color-accent-soft)]"}`}>
+      <p className="text-xs font-medium text-[var(--color-fg-muted)] mb-2">案件フォルダを選んでください</p>
       <div className="space-y-1">
         {card.folders.map(f => (
           <button
@@ -21,15 +22,15 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
             disabled={isLocked}
             className={`w-full flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-left transition-colors ${
               card.selectedPath === f.path
-                ? "bg-blue-100 text-blue-700 border border-blue-300"
+                ? "bg-[var(--color-panel)] text-[var(--color-accent-fg)] border border-[var(--color-accent)]/30"
                 : isLocked
-                  ? "text-gray-400"
-                  : "hover:bg-white text-gray-700"
+                  ? "text-[var(--color-fg-subtle)]"
+                  : "hover:bg-[var(--color-panel)] text-[var(--color-fg)]"
             }`}
           >
-            <span>📁</span>
+            <Icon name={card.selectedPath === f.path ? "FolderOpen" : "Folder"} size={13} className="text-[var(--color-fg-muted)] shrink-0" />
             <span className="flex-1 truncate">{f.name}</span>
-            <span className="text-[10px] text-gray-400">{f.fileCount}ファイル</span>
+            <span className="text-[10px] text-[var(--color-fg-subtle)]">{f.fileCount}ファイル</span>
           </button>
         ))}
       </div>

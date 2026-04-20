@@ -62,27 +62,27 @@ export default function TemplateSelectModal({ onExecute, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">案件を整理</h3>
+      <div className="w-full max-w-md rounded-2xl bg-[var(--color-panel)] p-6 shadow-xl">
+        <h3 className="text-lg font-semibold text-[var(--color-fg)] mb-1">案件を整理</h3>
         {jobNames.length > 0 && (
-          <p className="text-xs text-gray-400 mb-4">
+          <p className="text-xs text-[var(--color-fg-subtle)] mb-4">
             対象: {jobNames.join(", ")}
           </p>
         )}
 
         {loading ? (
-          <p className="text-sm text-gray-400 py-4 text-center">読み込み中...</p>
+          <p className="text-sm text-[var(--color-fg-subtle)] py-4 text-center">読み込み中...</p>
         ) : (
           <>
             <div className="mb-4">
-              <label className="mb-1 block text-sm font-medium text-gray-700">
+              <label className="mb-1 block text-sm font-medium text-[var(--color-fg)]">
                 テンプレート
               </label>
               <div className="flex gap-2">
                 <select
                   value={selected}
                   onChange={e => setSelected(e.target.value)}
-                  className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm
+                  className="flex-1 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm
                              focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
                   {templates.map(t => (
@@ -94,14 +94,14 @@ export default function TemplateSelectModal({ onExecute, onClose }: Props) {
                 {selectedTemplate && (
                   <button
                     onClick={() => setEditing(selectedTemplate)}
-                    className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-xs text-gray-600 hover:bg-gray-100 transition-colors"
+                    className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
                   >
                     編集
                   </button>
                 )}
               </div>
               {suggested && (
-                <p className="mt-1 text-xs text-blue-600">
+                <p className="mt-1 text-xs text-[var(--color-accent)]">
                   案件名から「{suggested.name}」を推定しました
                 </p>
               )}
@@ -109,12 +109,12 @@ export default function TemplateSelectModal({ onExecute, onClose }: Props) {
 
             {/* 確認項目プレビュー */}
             {selectedTemplate && (
-              <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3 max-h-48 overflow-y-auto">
-                <p className="text-[10px] font-semibold text-gray-500 uppercase mb-2">確認項目（{selectedTemplate.items.length}件）</p>
+              <div className="mb-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-hover)] p-3 max-h-48 overflow-y-auto">
+                <p className="text-[10px] font-semibold text-[var(--color-fg-muted)] uppercase mb-2">確認項目（{selectedTemplate.items.length}件）</p>
                 <ul className="space-y-1">
                   {selectedTemplate.items.map((item, i) => (
-                    <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
-                      <span className="text-gray-400 mt-0.5">&#8226;</span>
+                    <li key={i} className="text-xs text-[var(--color-fg-muted)] flex items-start gap-1.5">
+                      <span className="text-[var(--color-fg-subtle)] mt-0.5">&#8226;</span>
                       <span>{typeof item === "string" ? item : item}</span>
                     </li>
                   ))}
@@ -129,7 +129,7 @@ export default function TemplateSelectModal({ onExecute, onClose }: Props) {
                   name: "",
                   items: [],
                 })}
-                className="text-xs text-blue-600 hover:text-blue-800"
+                className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
               >
                 + 新しいテンプレートを作成
               </button>
@@ -138,15 +138,15 @@ export default function TemplateSelectModal({ onExecute, onClose }: Props) {
             <div className="flex justify-end gap-3 mt-3">
               <button
                 onClick={onClose}
-                className="rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 transition-colors"
+                className="rounded-lg px-4 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
               >
                 キャンセル
               </button>
               <button
                 onClick={() => selected && onExecute(selected)}
                 disabled={!selected}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white
-                           hover:bg-blue-700 disabled:bg-gray-300 transition-colors"
+                className="rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
+                           hover:opacity-90 disabled:bg-gray-300 transition-colors"
               >
                 実行
               </button>
