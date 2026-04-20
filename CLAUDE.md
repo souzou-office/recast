@@ -213,6 +213,71 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 ### その他
 - プロンプトテンプレートのカスタマイズUI
 
+## 2026-04-20 UI刷新 + 要確認ループ設計（ui/phase1-tokens-fonts ブランチ）
+
+### UI刷新（Option B デザイン適用）
+- デザイントークン化: globals.css + next/font（Noto Sans JP / Noto Serif JP / Fraunces）
+- 絵文字 → Lucide アイコンに全域置換（`src/components/ui/Icon.tsx` ラッパー）
+- カード群刷新: FolderSelect / TemplateSelect / FileSelect / Clarification / DocumentResult
+  - rounded-2xl + アイコン + Pill ボタン、文字サイズを 13px で統一
+- MessageBubble: AI 吹き出し廃止 → フロー型（アバター+pl-8）、User のみ黒背景吹き出し
+- ChatInput: max-w-2xl の丸角カード、accent 青の Send ボタン (9x9 rounded-xl)
+- Header: タブ型（チャット/基本情報）。タブは白背景+shadow-sm
+- Sidebar: スレッド選択は左1pxアクセントバー+白背景
+- 幅はコンテナ比率 65%（モック artboard の比率を再現、min-w 560 / max-w 1100）
+- 行間: body 1.6 / p 1.7 / h 1.3、.prose-recast に表・見出し・リスト・引用スタイル追加
+- 基本情報タブ: max-w-3xl → w-[65%]、Serif 26px 見出し、rounded-2xl カード
+  - 左ラベル列 w-[180px] 固定 + break-words（長いラベルで列がバラつくのを解消）
+  - 株主リスト等の一覧を「カード表示」で描画（列数揃うと合計行はインライン）
+- FilePreview: .docx/.docm をクライアント側 docx-preview でレンダリング（LibreOffice 不要、数十ms）
+
+### 要確認を構造的に減らす流れ
+旧: clarify が AI 判断で質問を作る → 聞き漏らし → 生成書類に（要確認）残留
+
+新:
+1. 案件整理（execute）が `| 項目 | 値 | 根拠 |` 形式の表を出す
+2. 値が `*要確認*` になった行を**機械的にパース** → `knownMissing: string[]`
+3. clarify は `knownMissing` を必ず質問に含める（AI 判断より優先）
+4. 回答 → produce → 要確認ゼロで書類生成
+
+### テンプレごとのラベルキャッシュ（`.labels.json`）
+- 旧: ハイライト周辺文字列から機械ラベル合成 → 「令和8年1（日付）」「甲の（日付）」等のゴミラベル量産
+- 中間: 汎用カテゴリ集約（「取締役決定書に記載の日付」等）→ 項目が粗すぎて取りこぼし（払込金額・資本金・資本準備金・口座情報が (要確認) に）
+- 新: **Haiku がテンプレを1度解析**して各★に「意味ラベル＋記載形式＋推定出典」を付与
+  - `src/lib/template-labels.ts`
+  - 例: `{ label: "取締役決定書の作成日", format: "令和○年○月○日", sourceHint: "案件スケジュール表" }`
+  - `<template>.labels.json` として隣に保存、sha256 で変更検知
+  - 初回のみ数秒コスト、以降はキャッシュヒットでゼロコスト
+- execute route は書類別の「項目・形式・出典候補」を AI に渡す
+
+### 書類生成カードに検査結果をインライン統合
+- 旧: `check-result` カードが別に出る（使われない情報カード化）
+- 新: `document-result` カード内で書類ごとに ✅/🟡/🔴 バッジ + 問題内容を直下表示
+  - verify が JSON で per-document issues を返す
+  - マッチは fileName / baseName 複数パターン対応
+  - 既存スレッドでも thread.checkResult から自動マージ
+
+### 基本情報の扱い改善
+- 抽出項目の固定リスト廃止 → 「資料にあるものを全部」方針
+  - `株主構成` にメールアドレス等、資料に書いてある情報が自動で入る
+  - 「抽出項目」ボタンは削除
+- 案件整理で `📇基本情報` を根拠として表示可能に（execute に profile.structured を参照データで添付）
+- xlsm の MIME マッピング追加（過去バグ: 拡張子対応のみで中身パース不能だった）
+
+### その他改善
+- `/api/workspace/profile/sources` が 3.3s → 91ms（中身パース廃止、listFiles のみ）
+- 書類生成: 分割スロット（住所2段等）で 要確認 を出さず空文字を返す指示追加
+- 要確認 を赤文字で表示（WarnHighlightMarkdown ラッパー）
+
+## 未完了・残タスク（次回）
+
+1. **チャット駆動の修正ループ**: 「代表取締役は三上春香にして」みたいな自然言語で修正 → labels.json / confirmedAnswers 自動更新 → 該当書類再生成
+2. **書類生成カードでの個別修正**: issue 行に「[修正する]」ボタン → チャット prefill
+3. **readAllFilesInFolder の並列化**: 現在は直列。Promise.all で 3-5 倍速化
+4. **produce 側でも `.labels.json` を使う**: 現在は execute のみ。produce が label を受け取ればさらに精度向上
+5. **dead code 整理**: FileSidebar / folders/* は未使用
+6. **ProfileTemplateModal 削除**: 「抽出項目」廃止に合わせて
+
 ## 設計判断の変更履歴
 
 - **ファイルアクセス**: Google Drive API → **Local-First**（ローカルfs直接読み取り）
