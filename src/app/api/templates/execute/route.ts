@@ -69,90 +69,87 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  // テンプレートが指定されていれば、必要な「記載項目」を抽出して渡す（値は渡さない）
+  // テンプレートから「必要な項目ラベル」を抽出して JSON キーとして AI に渡す。
+  // テンプレ本文は送らない（AI はラベル一覧だけ見て、案件資料から値を拾う）。
   let templateContext = "";
+  const requiredLabels = new Set<string>();
   if (templateFolderPath) {
     try {
       const templateFiles = await readAllFilesInFolder(templateFolderPath);
-      const itemsByFile: string[] = [];
 
       for (const tf of templateFiles) {
         if (tf.base64) continue;
         const ext = tf.name.toLowerCase().split(".").pop() || "";
         if (!["docx", "doc", "xlsx", "xls"].includes(ext)) continue;
 
-        // プレースホルダーから項目名を抽出（簡易版）
-        const phNames: string[] = [];
+        // プレースホルダー方式: 【X】 / {{X}} の X をそのままラベルに
         const phPatterns = [/【([^】]+)】/g, /\{\{([^}]+)\}\}/g, /｛｛([^｝]+)｝｝/g];
         for (const re of phPatterns) {
           let m;
           while ((m = re.exec(tf.content)) !== null) {
             const name = m[1].trim();
-            if (!name.startsWith("#") && !name.startsWith("/") && !phNames.includes(name)) {
-              phNames.push(name);
-            }
+            if (name.startsWith("#") || name.startsWith("/")) continue;
+            requiredLabels.add(name);
           }
         }
-        if (phNames.length > 0) {
-          itemsByFile.push(`- ${tf.name}: ${phNames.join(", ")}`);
-          continue;
-        }
 
-        // ハイライトテンプレの場合、ファイルを読んでマーク付きフィールドの「周辺文脈」から項目名を推定
+        // ハイライト方式: 各フィールドの周辺文脈から「ラベル（型）」を作る
         if (ext === "docx") {
           try {
             const buf = await import("fs/promises").then(fs => fs.readFile(tf.path));
             const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
             const fields = extractMarkedFields(buf);
-            if (fields.length > 0) {
-              // 周辺文脈（段落全体）から「○○: 値」の形を抽出してラベル化
-              const labelSet = new Set<string>();
-              for (const f of fields) {
-                const ctx = (f.context || "").replace(/\s+/g, " ").trim();
-                const val = f.originalValue;
-                // ctx の中の val 位置を取得して前後を切り出す
-                const idx = ctx.indexOf(val);
-                const before = idx >= 0 ? ctx.slice(Math.max(0, idx - 40), idx).trim() : ctx.slice(0, 30);
-                const after = idx >= 0 ? ctx.slice(idx + val.length, idx + val.length + 20).trim() : "";
-                // 前の文脈から最後の見出し（「項目名：」や「項目名 」）を探す
-                const m = before.match(/[一-龥ぁ-んァ-ヶA-Za-z0-9]+(?=[\s　:：]*$)/);
-                let label = m ? m[0] : before.slice(-20);
-                // よくある後置語を含めて分かりやすく
-                if (after.startsWith("円")) label = (label + "（金額）").trim();
-                else if (after.startsWith("株")) label = (label + "（株数）").trim();
-                else if (after.startsWith("名")) label = (label + "（人数）").trim();
-                else if (/年|月|日/.test(val)) label = label + "（日付）";
-                if (label.length > 30) label = label.slice(-30);
-                if (label.trim()) labelSet.add(label.trim());
-                if (f.comment) labelSet.add(f.comment);
-              }
-              if (labelSet.size > 0) {
-                itemsByFile.push(`- ${tf.name}: ${[...labelSet].join(", ")}`);
-              }
+            for (const f of fields) {
+              if (f.comment) { requiredLabels.add(f.comment); continue; }
+              const ctx = (f.context || "").replace(/\s+/g, " ").trim();
+              const val = f.originalValue;
+              const idx = ctx.indexOf(val);
+              const before = idx >= 0 ? ctx.slice(Math.max(0, idx - 40), idx).trim() : "";
+              const after  = idx >= 0 ? ctx.slice(idx + val.length, idx + val.length + 20).trim() : "";
+              const m = before.match(/[一-龥ぁ-んァ-ヶA-Za-z0-9]+(?=[\s　:：の・]*$)/);
+              let label = m ? m[0] : before.slice(-20);
+              if (after.startsWith("円")) label = label + "（金額）";
+              else if (after.startsWith("株")) label = label + "（株数）";
+              else if (after.startsWith("名")) label = label + "（人数）";
+              else if (/年|月|日/.test(val) && !/人名|氏名|住所/.test(label)) label = label + "（日付）";
+              label = label.trim();
+              if (label.length > 40) label = label.slice(-40);
+              if (label) requiredLabels.add(label);
             }
           } catch { /* ignore */ }
         }
+        // Excel の黄色セルは今はラベル抽出が難しいのでスキップ（プレースホルダーが優先）
       }
 
-      if (itemsByFile.length > 0) {
-        templateContext = `\n## 作成予定の書類と必要な記載項目\n以下の書類を作成する予定です。各書類に必要な項目の種類を示します。これらに該当する情報を案件資料から漏れなく抽出してください。\n${itemsByFile.join("\n")}\n`;
+      if (requiredLabels.size > 0) {
+        const labels = [...requiredLabels].sort();
+        templateContext = `\n## 作成予定の書類に必要な項目（これだけ抽出すればよい）\n以下のラベルが全ての「可変箇所」です。これに対応する値を案件資料から取ってきてください。
+${labels.map(l => `- ${l}`).join("\n")}
+
+**出力方針**: 上記ラベルと同じキーを持つ JSON に近い表形式で整理してください。
+`;
       }
     } catch { /* ignore */ }
   }
 
-  const promptText = `以下の「案件資料」を確認し、今回の手続き・案件に関する情報を抽出・整理してください。
+  const promptText = `以下の「案件資料」を確認し、**上記の「必要な項目」に限定して**値を抽出してください。
 ${templateContext}
 ルール:
-- **出力するのは「案件固有の情報」だけ**（スケジュール、手続内容、指示事項、議案、当事者、対象株式等）
-- **会社の基本情報（商号・本店・事業目的・役員構成等）は出力しない**。それは別管理（基本情報タブ）で扱う
-- **テンプレートが指定されている場合、テンプレートで必要な情報（日付・人名・金額・株数等）を漏れなく抽出する**
-- 各カテゴリは ## 見出しで区切る
-- 結論を簡潔に記載。冗長な説明は不要
-- 一覧系は表形式で簡潔に
-- 日付・金額・人名は正確に転記
-- 矛盾や不整合があれば「⚠ 要確認」として指摘
-- 根拠となるファイル名を各項目に記載
-- 不明・未確認の情報は「*要確認*」とだけ記載
+- **上記のラベル一覧にあるものだけ**を出力する。ラベルに無い情報は出さない（会社の基本情報は除外）
+- 出力は **ラベル名をキーとした表** 形式で、**1ラベル=1行**。同じラベルに複数値あれば配列（[值1, 值2]）にする
+- 日付・金額・人名は資料から**正確に転記**（勝手な変換・概算は禁止）
+- 根拠ファイル名を右端カラムに必ず併記
+- 資料に見つからない項目は値欄を **\`*要確認*\`** にする（省略しない）
+- 矛盾があれば末尾に "## ⚠ 要確認" セクションを追加して列挙
+
+## 出力形式例
+\`\`\`
+| 項目 | 値 | 根拠ファイル |
+|------|-----|-------------|
+| 募集株式の数（株数） | 5,263株 | 10.普通株投資契約書.docx |
+| 募集株式の払込金額（金額） | 475円 | 10.普通株投資契約書.docx |
+| 払込期日（日付） | 2025年1月30日 | 00.増資関連書類、スケジュール.xlsx |
+\`\`\`
 
 ## 案件資料
 ${allTexts.join("\n\n")}`;
