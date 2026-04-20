@@ -9,6 +9,28 @@ import ActionCardRenderer from "./cards/ActionCardRenderer";
 import FilePreview from "./FilePreview";
 import { Icon } from "./ui/Icon";
 
+// 案件整理の出力テキストから「値が *要確認* / （要確認）」になってる行の項目名を抽出
+// 例: | 払込期日 | *要確認* | ─ |  →  "払込期日"
+function extractMissingFromOrganize(organizeText: string): string[] {
+  if (!organizeText) return [];
+  const items: string[] = [];
+  for (const rawLine of organizeText.split("\n")) {
+    const line = rawLine.trim();
+    if (!line.startsWith("|") || !line.includes("|")) continue;
+    const cols = line.split("|").map(s => s.trim()).filter(Boolean);
+    if (cols.length < 2) continue;
+    const value = cols[1] || "";
+    // *要確認* / 要確認 / （要確認） / (要確認) 等を検出
+    if (/(?:^|[*\s（(])要確認(?:[*\s）)]|$)/.test(value)) {
+      const label = cols[0];
+      if (label && !/^項目$|^-+$/.test(label) && !items.includes(label)) {
+        items.push(label);
+      }
+    }
+  }
+  return items;
+}
+
 interface Props {
   company: Company | null;
   threadId: string | null;
@@ -239,6 +261,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
       }
 
+      // 案件整理の *要確認* 項目を再抽出（前と同じ内容だが、前回答後の状態から再確認のため）
+      const organizeMsg = updatedThread.messages.find(m => m.role === "assistant" && (m.content || "").length > 500);
+      const knownMissingContinue = extractMissingFromOrganize(organizeMsg?.content || "");
+
       // もう一度 clarify を呼ぶ
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
@@ -249,6 +275,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           previousQA,
           folderPath: updatedThread.folderPath,
           disabledFiles: updatedThread.disabledFiles,
+          knownMissing: knownMissingContinue,
         }),
       });
       const clarifyData = await clarifyRes.json();
@@ -425,6 +452,11 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         ...currentThread,
         messages: [...currentThread.messages, organizeMsg],
       };
+
+      // 案件整理の出力から *要確認* / （要確認） となった項目を機械的に抽出
+      // これは clarify AI の判断に頼らず、確実に質問する対象
+      const knownMissing = extractMissingFromOrganize(organizeMsg.content);
+
       // 2. 確認質問（clarify）
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
@@ -434,6 +466,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           templateFolderPath: templatePath,
           folderPath: currentThread.folderPath,
           disabledFiles: currentThread.disabledFiles,
+          knownMissing,
         }),
       });
       const clarifyData = await clarifyRes.json();

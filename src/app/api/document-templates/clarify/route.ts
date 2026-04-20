@@ -9,13 +9,15 @@ const client = new Anthropic();
 
 // テンプレートのプレースホルダーに対する確認質問を生成
 // previousQA: これまでのQ&A履歴（ループで再質問する際に含める）
+// knownMissing: 案件整理の出力で「値が *要確認*」になった項目名（必ず質問として出す）
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath, previousQA, folderPath, disabledFiles } = await request.json() as {
+  const { companyId, templateFolderPath, previousQA, folderPath, disabledFiles, knownMissing } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
     previousQA?: { question: string; answer: string }[];
     folderPath?: string;
     disabledFiles?: string[];
+    knownMissing?: string[];
   };
 
   const config = await getWorkspaceConfig();
@@ -112,6 +114,11 @@ export async function POST(request: NextRequest) {
       previousQA.map(qa => `- Q: ${qa.question}\n  A: ${qa.answer}`).join("\n") + "\n"
     : "";
 
+  // 案件整理の出力で *要確認* になっている項目（確実に聞く）
+  const knownMissingBlock = (knownMissing && knownMissing.length > 0)
+    ? `\n## 必ず質問する項目（案件整理で *要確認* になったもの）\n${knownMissing.map(m => `- ${m}`).join("\n")}\n\nこの項目は全て質問リストに含めてください。必要に応じて、資料から推測される候補を options に入れて選択肢として提示します。\n`
+    : "";
+
   // AIにデータ矛盾・不明項目を検出させる
   const prompt = `以下の会社データとプレースホルダー一覧を比較して、確認が必要な項目だけをJSON配列で返してください。
 
@@ -121,6 +128,7 @@ ${memoText ? `## テンプレート注意事項（このテンプレ固有のル
 ${dataContext}
 ${masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
 ${qaBlock}
+${knownMissingBlock}
 ## プレースホルダー一覧
 ${placeholderList}
 
@@ -130,29 +138,24 @@ ${placeholderList}
 - 共通フォルダと案件フォルダの情報が異なっても、それは矛盾ではなく「変更手続き」である
 
 ## ルール
-**質問は「専門家の判断が必要で、データから一意に決まらない」場合だけに絞る**。素人が読んでもわかるような自明なことは聞かない。
 
-### 質問してはいけないもの（これは絶対に聞かない）
-- **会社名・住所・代表者名など、基本情報に明確に記載がある値**
-- プレースホルダー名と基本情報の項目名が一致または明らかに対応するもの（「会社名」「代表取締役」等）
-- 案件整理テキストや議事録に明記されている日付・金額・人名
-- 共通フォルダ（定款・登記簿・株主名簿）に記載されている値
-- 表記ゆれレベルの違い（「株式会社」と「(株)」等はAIが正規化して使う）
-- プレースホルダー名から内容が推測できて、かつ対応データがある場合
+### 必須（必ず質問に含める）
+- **「必ず質問する項目」リスト**: 案件整理で *要確認* となった項目。省略禁止。
 
-### 質問してよいもの
-1. **テンプレート注意事項/共通ルールで明示的に「〜を確認すること」と書かれている項目**
-2. **案件フォルダ内の複数資料間で値が矛盾している**
-3. **複数の解釈が可能**（例: 役員が複数いて手続き対象者が特定できない、日付が複数あってどれを使うか不明）
-4. **テンプレートに必要な値が見つからない**（書類の作成に必要だが、提供された資料のどこにもない情報）
-5. **既に回答された内容を受けて、新たに発生した確認事項**
-6. **確信が持てない値**（推測はできるが間違っていたら書類が無効になるような重要な値）
+### その上で追加してよい質問
+- **テンプレート注意事項/共通ルールで明示的に「〜を確認すること」と書かれている項目**
+- **案件フォルダ内の複数資料間で値が矛盾している**（専門家判断が必要）
+- **複数の解釈が可能**（例: 役員が複数いて手続き対象者が特定できない）
 
-### 判断のコツ
-- 日付（届出日・決議日・就任日等）は**特に重要**。資料から明確に特定できない場合は必ず質問する
-- 人名（誰が辞任するか、誰が就任するか等）も確信がなければ質問する
-- **既に確定した値は再質問しない**
-- 質問が0件なら空配列[]を返す
+### 質問してはいけないもの
+- **「必ず質問する項目」リストに無く、かつ基本情報／案件整理テキストに明確な値がある項目**
+- 表記ゆれレベルの違い（「株式会社」と「(株)」等はAIが正規化する）
+
+### options の生成
+各質問には可能な限り候補を 1〜3 件 options に含める:
+- 案件資料（投資契約書・スケジュール表等）から推測される値を候補に
+- それぞれ source に出典（どのファイルのどこか）を書く
+- 手動入力ができる（フロントエンドが自動で追加）ので、分からなければ空の options でも可
 
 ## 出力形式（JSONのみ）
 [
@@ -223,11 +226,29 @@ ${placeholderList}
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
     const match = text.match(/\[[\s\S]*\]/);
-    if (!match) {
-      return NextResponse.json({ questions: [] });
+    let questions: ClarificationQuestion[] = match ? JSON.parse(match[0]) : [];
+
+    // 安全網: knownMissing にあるのに AI が質問に含め忘れた項目を追加
+    // （AI が ignoring したり整理で名前ブレしたりしても、案件整理で *要確認* だった項目は必ず聞く）
+    if (knownMissing && knownMissing.length > 0) {
+      const answered = new Set((previousQA || []).map(qa => qa.question.replace(/【([^】]+)】.*/, "$1")));
+      for (const missing of knownMissing) {
+        if (answered.has(missing)) continue; // 既に回答済み
+        const exists = questions.some(q =>
+          q.placeholder === missing ||
+          (q.question && q.question.includes(missing))
+        );
+        if (!exists) {
+          questions.push({
+            id: `auto_${questions.length + 1}`,
+            placeholder: missing,
+            question: `${missing} の値を入力してください（案件整理で特定できませんでした）`,
+            options: [],
+          });
+        }
+      }
     }
 
-    const questions: ClarificationQuestion[] = JSON.parse(match[0]);
     return NextResponse.json({ questions });
   } catch {
     return NextResponse.json({ questions: [] });
