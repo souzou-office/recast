@@ -98,25 +98,37 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // ハイライトテンプレの場合、ファイルを読んでマーク付きフィールドを取得
+        // ハイライトテンプレの場合、ファイルを読んでマーク付きフィールドの「周辺文脈」から項目名を推定
         if (ext === "docx") {
           try {
             const buf = await import("fs/promises").then(fs => fs.readFile(tf.path));
             const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
             const fields = extractMarkedFields(buf);
             if (fields.length > 0) {
-              // 値ではなく「項目の種類」を推定して渡す（日付、人名、住所、金額等）
-              const fieldDescs = fields.map(f => {
-                const v = f.originalValue;
-                if (/年.*月.*日|令和|平成/.test(v)) return "日付";
-                if (/都|道|府|県|市|区|町|丁目|番/.test(v)) return "住所";
-                if (/株式会社|有限|合同|組合/.test(v)) return "法人名";
-                if (/[，,]\d{3}/.test(v) || /^\d+$/.test(v.replace(/[，,]/g, ""))) return "数値（株数・金額等）";
-                if (f.comment) return f.comment;
-                return "人名等";
-              });
-              const unique = [...new Set(fieldDescs)];
-              itemsByFile.push(`- ${tf.name}: ${unique.join(", ")}`);
+              // 周辺文脈（段落全体）から「○○: 値」の形を抽出してラベル化
+              const labelSet = new Set<string>();
+              for (const f of fields) {
+                const ctx = (f.context || "").replace(/\s+/g, " ").trim();
+                const val = f.originalValue;
+                // ctx の中の val 位置を取得して前後を切り出す
+                const idx = ctx.indexOf(val);
+                const before = idx >= 0 ? ctx.slice(Math.max(0, idx - 40), idx).trim() : ctx.slice(0, 30);
+                const after = idx >= 0 ? ctx.slice(idx + val.length, idx + val.length + 20).trim() : "";
+                // 前の文脈から最後の見出し（「項目名：」や「項目名 」）を探す
+                const m = before.match(/[一-龥ぁ-んァ-ヶA-Za-z0-9]+(?=[\s　:：]*$)/);
+                let label = m ? m[0] : before.slice(-20);
+                // よくある後置語を含めて分かりやすく
+                if (after.startsWith("円")) label = (label + "（金額）").trim();
+                else if (after.startsWith("株")) label = (label + "（株数）").trim();
+                else if (after.startsWith("名")) label = (label + "（人数）").trim();
+                else if (/年|月|日/.test(val)) label = label + "（日付）";
+                if (label.length > 30) label = label.slice(-30);
+                if (label.trim()) labelSet.add(label.trim());
+                if (f.comment) labelSet.add(f.comment);
+              }
+              if (labelSet.size > 0) {
+                itemsByFile.push(`- ${tf.name}: ${[...labelSet].join(", ")}`);
+              }
             }
           } catch { /* ignore */ }
         }
