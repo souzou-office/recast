@@ -138,7 +138,7 @@ function renderValue(value: string) {
           <table className="w-full text-sm border-separate border-spacing-0">
             <tbody>
               {dataRecords.map((r, i) => (
-                <tr key={i} className={i % 2 === 0 ? "" : "bg-[var(--color-hover)]/40"}>
+                <tr key={i}>
                   {r.fields.map((f, fi) => {
                     // 「ラベル: 値」形式の場合はラベル削除して値のみ
                     const labelMatch = f.match(/^(.+?)[：:](.+)$/);
@@ -414,11 +414,11 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                 <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-2.5">
                   <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">{section.title}</h3>
                 </div>
-                <table className="w-full">
+                <table className="w-full table-fixed">
                   <tbody>
                     {section.rows.map((row, ri) => (
                       <tr key={ri} className="border-b border-[var(--color-border-soft)] last:border-0">
-                        <th className="px-4 py-3 text-left text-sm font-medium text-[var(--color-fg-muted)] w-44 align-top bg-[var(--color-hover)]/50 whitespace-nowrap">
+                        <th className="w-[180px] px-4 py-3 text-left text-[12px] font-medium text-[var(--color-fg-muted)] align-top break-words leading-relaxed">
                           {row.key}
                         </th>
                         <td className="px-4 py-3 text-sm text-[var(--color-fg)] leading-relaxed">
