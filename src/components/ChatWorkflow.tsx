@@ -582,6 +582,16 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       {/* メッセージ一覧 */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-10 py-10">
+          {/* 案件名ヘッダ */}
+          <div className="mb-8">
+            <h1 className="font-serif text-[26px] font-semibold tracking-tight mb-1 text-[var(--color-fg)]">
+              {thread.displayName || "新規チャット"}
+            </h1>
+            <div className="text-[12px] text-[var(--color-fg-muted)]">
+              {company.name}
+              {thread.createdAt && <> · {new Date(thread.createdAt).toLocaleDateString("ja-JP")}</>}
+            </div>
+          </div>
           {thread.messages.map((msg, i) => {
             const goBack = () => {
               for (const m of thread.messages) {
@@ -654,25 +664,28 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       </div>
 
       {/* 入力欄 */}
-      <div className="border-t border-[var(--color-border)] bg-[var(--color-bg)] p-4">
-        <div className="max-w-2xl mx-auto flex items-end gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-sm px-3 py-2 focus-within:border-[var(--color-fg-subtle)]">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-            placeholder="メッセージを入力...（Shift+Enterで改行）"
-            disabled={loading}
-            rows={1}
-            className="flex-1 resize-none bg-transparent text-sm text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)] focus:outline-none py-1.5 disabled:opacity-50"
-          />
-          <button
-            onClick={handleSend}
-            disabled={loading || !input.trim()}
-            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-[var(--color-bg)] hover:opacity-90 disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)] disabled:cursor-not-allowed transition-colors"
-          >
-            <Icon name="ArrowUp" size={14} className="text-[var(--color-bg)]" />
-          </button>
+      <div className="px-10 py-5 bg-[var(--color-bg)]">
+        <div className="max-w-2xl mx-auto">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex items-end gap-2 px-4 py-3 focus-within:border-[var(--color-accent)]/40">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; }}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              placeholder="メッセージを入力..."
+              disabled={loading}
+              rows={1}
+              className="flex-1 resize-none bg-transparent text-[14px] text-[var(--color-fg)] placeholder:text-[var(--color-fg-subtle)] focus:outline-none py-1.5 disabled:opacity-50"
+            />
+            <button
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+              className="w-9 h-9 rounded-xl shrink-0 flex items-center justify-center text-white bg-[var(--color-accent)] hover:bg-[var(--color-accent-fg)] disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)]"
+              aria-label="送信"
+            >
+              <Icon name="Send" size={14} />
+            </button>
+          </div>
         </div>
       </div>
       </div>

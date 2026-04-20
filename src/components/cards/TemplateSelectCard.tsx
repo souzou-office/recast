@@ -15,45 +15,53 @@ export default function TemplateSelectCardUI({ card, onAction, onGoBackToFolder 
   const [selected, setSelected] = useState<string | undefined>(card.selectedPath);
 
   return (
-    <div className={`rounded-2xl border p-4 ${confirmed ? "bg-[var(--color-hover)] border-[var(--color-border)]" : "border-[var(--color-accent-soft)] bg-[var(--color-accent-soft)]"}`}>
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-xs font-medium text-[var(--color-fg-muted)]">
-          {card.selectedPath && !confirmed ? "テンプレートを推奨しました。変更もできます" : "書類テンプレートを選んでください"}
-        </p>
-        {!confirmed && onGoBackToFolder && (
-          <button
-            onClick={onGoBackToFolder}
-            className="inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
-          >
-            <Icon name="ArrowLeft" size={11} /> フォルダを選び直す
-          </button>
-        )}
+    <div className="mt-4 rounded-2xl border p-4 border-[var(--color-border)] bg-[var(--color-panel)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+      <div className="flex items-center gap-2 mb-3">
+        <Icon name="Sparkles" size={13} className="text-[var(--color-accent)]" />
+        <span className="text-[11.5px] font-medium text-[var(--color-fg-muted)]">
+          {card.selectedPath ? "AIが推奨したテンプレート" : "書類テンプレートを選んでください"}
+        </span>
       </div>
-      <div className="flex flex-wrap gap-2 mb-2">
-        {card.templates.map(t => (
-          <button
-            key={t.path}
-            onClick={() => !confirmed && setSelected(t.path)}
-            disabled={confirmed}
-            className={`rounded-full px-4 py-2 text-xs font-medium transition-colors ${
-              selected === t.path
-                ? "bg-[var(--color-fg)] text-[var(--color-bg)]"
-                : confirmed
-                  ? "bg-[var(--color-hover)] text-[var(--color-fg-subtle)]"
-                  : "bg-[var(--color-panel)] border border-[var(--color-border)] text-[var(--color-fg)] hover:border-[var(--color-accent)]"
-            }`}
-          >
-            {t.name}
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-1.5">
+        {card.templates.map(t => {
+          const active = selected === t.path;
+          return (
+            <button
+              key={t.path}
+              onClick={() => !confirmed && setSelected(t.path)}
+              disabled={confirmed}
+              className={`h-9 px-3.5 rounded-full text-[12.5px] transition-colors ${
+                active
+                  ? "bg-[var(--color-fg)] text-[var(--color-bg)] font-medium inline-flex items-center gap-1.5"
+                  : confirmed
+                    ? "border border-[var(--color-border)] text-[var(--color-fg-subtle)]"
+                    : "border border-[var(--color-border)] text-[var(--color-fg)] hover:border-[var(--color-fg-subtle)]"
+              }`}
+            >
+              {active && <Icon name="Check" size={11} className="text-[var(--color-bg)]" />}
+              {t.name}
+            </button>
+          );
+        })}
       </div>
-      {!confirmed && selected && (
-        <button
-          onClick={() => { setConfirmed(true); onAction({ selectedPath: selected } as Partial<ActionCard>); }}
-          className="rounded-full bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
-        >
-          このテンプレートで生成
-        </button>
+      {!confirmed && (
+        <div className="flex items-center gap-2.5 mt-3.5 pt-3.5 border-t border-[var(--color-border-soft)]">
+          <button
+            onClick={() => { if (!selected) return; setConfirmed(true); onAction({ selectedPath: selected } as Partial<ActionCard>); }}
+            disabled={!selected}
+            className="h-9 px-4 rounded-full text-[12.5px] font-medium text-white bg-[var(--color-accent)] hover:bg-[var(--color-accent-fg)] disabled:bg-[var(--color-hover)] disabled:text-[var(--color-fg-subtle)]"
+          >
+            生成を開始
+          </button>
+          {onGoBackToFolder && (
+            <button
+              onClick={onGoBackToFolder}
+              className="text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            >
+              フォルダを選び直す
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

@@ -248,13 +248,13 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const sections = profile?.summary ? parseProfile(profile.summary) : [];
 
   const profileContent = (
-    <div className="h-full overflow-y-auto bg-[var(--color-hover)]">
-      <div className="px-6 py-6">
+    <div className="h-full overflow-y-auto bg-[var(--color-bg)]">
+      <div className="max-w-3xl mx-auto px-10 py-10">
         {/* ヘッダー */}
-        <div className="mb-5">
+        <div className="mb-8">
           <div className="flex items-start justify-between">
             <div>
-              <h2 className="text-xl font-bold text-[var(--color-fg)]">{company.name}</h2>
+              <h2 className="font-serif text-[26px] font-semibold tracking-tight text-[var(--color-fg)]">{company.name}</h2>
               {profile && (
                 <p className="text-xs text-[var(--color-fg-subtle)] mt-1">
                   最終更新: {new Date(profile.updatedAt).toLocaleDateString("ja-JP")}
@@ -311,7 +311,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
 
         {profile && showJson && profile.structured ? (
           <div className="space-y-4">
-            <div className="rounded-xl bg-[var(--color-panel)] shadow-sm border border-[var(--color-border)] overflow-hidden">
+            <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
               <div className="bg-[var(--color-fg)] border-b border-[var(--color-border)] px-4 py-2.5 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-[var(--color-bg)]">Structured JSON</h3>
                 {profileJsonDirty && (
@@ -358,9 +358,9 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
         ) : profile && sections.length > 0 ? (
           <div className="space-y-4">
             {sections.map((section, si) => (
-              <div key={si} className="rounded-xl bg-[var(--color-panel)] shadow-sm border border-[var(--color-border)] overflow-hidden">
+              <div key={si} className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
                 <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-2.5">
-                  <h3 className="text-sm font-semibold text-[var(--color-fg)]">{section.title}</h3>
+                  <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">{section.title}</h3>
                 </div>
                 <table className="w-full">
                   <tbody>
@@ -380,9 +380,9 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             ))}
 
             {/* 元資料リスト */}
-            <div className="rounded-xl bg-[var(--color-panel)] shadow-sm border border-[var(--color-border)] overflow-hidden">
+            <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
               <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-2.5">
-                <h3 className="text-sm font-semibold text-[var(--color-fg)]">参照元資料</h3>
+                <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">参照元資料</h3>
               </div>
               <div className="px-4 py-3">
                 <ul className="space-y-1">
@@ -433,7 +433,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             </div>
           </div>
         ) : profile?.summary ? (
-          <div className="rounded-xl bg-[var(--color-panel)] shadow-sm border border-[var(--color-border)] p-6">
+          <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] p-6">
             <pre className="text-sm text-[var(--color-fg)] whitespace-pre-wrap leading-relaxed">
               {profile.summary}
             </pre>
