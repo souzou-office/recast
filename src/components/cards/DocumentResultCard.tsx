@@ -5,7 +5,13 @@ import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: DocumentResultCard;
-  onPreview?: (file: { filePath?: string; docxBase64?: string; fileName: string }) => void;
+  onPreview?: (file: {
+    filePath?: string;
+    docxBase64?: string;
+    fileName: string;
+    templatePath?: string;
+    filledSlots?: import("@/types").FilledSlot[];
+  }) => void;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -65,7 +71,12 @@ function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: 
         <span className="flex-1 text-[13px] text-[var(--color-fg)] font-medium truncate">{doc.name}</span>
         {statusBadge(doc.checkStatus)}
         <button
-          onClick={() => onPreview?.({ docxBase64: doc.docxBase64, fileName: doc.fileName })}
+          onClick={() => onPreview?.({
+            docxBase64: doc.docxBase64,
+            fileName: doc.fileName,
+            templatePath: doc.templatePath,
+            filledSlots: doc.filledSlots,
+          })}
           className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
           title="プレビュー"
         >

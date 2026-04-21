@@ -1,12 +1,21 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import DocumentValueEditor from "./DocumentValueEditor";
+import type { FilledSlot } from "@/types";
 
 interface Props {
   filePath?: string;
   fileName: string;
   onClose: () => void;
   docxBase64?: string;
+  // 値の編集タブ用（生成済み書類でのみ有効）
+  filledSlots?: FilledSlot[];
+  templatePath?: string;
+  companyId?: string;
+  threadId?: string;
+  verifyIssues?: { docName: string; issues: { aspect: string; problem: string; expected?: string }[] }[];
+  onRegenerated?: (docxBase64: string, filledSlots: FilledSlot[]) => void;
 }
 
 const RAW_VIEWABLE = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".htm"]);
@@ -23,7 +32,10 @@ function base64ToUint8(base64: string): Uint8Array {
   return byteArray;
 }
 
-export default function FilePreview({ filePath, fileName, onClose, docxBase64 }: Props) {
+export default function FilePreview({
+  filePath, fileName, onClose, docxBase64,
+  filledSlots, templatePath, companyId, threadId, verifyIssues, onRegenerated,
+}: Props) {
   const ext = `.${(fileName.split(".").pop() || "").toLowerCase()}`;
   const isRawViewable = RAW_VIEWABLE.has(ext);
   const isBrowserDocx = BROWSER_DOCX.has(ext);
@@ -35,6 +47,10 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
   const [loading, setLoading] = useState(true);
   const [width, setWidth] = useState(50); // パーセント
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // 値の編集タブ
+  const canEdit = !!(filledSlots && templatePath && companyId && onRegenerated);
+  const [activeTab, setActiveTab] = useState<"preview" | "edit">("preview");
 
   const handleDragStart = useCallback(() => {
     const handleMove = (e: MouseEvent) => {
@@ -318,6 +334,44 @@ col{min-width:60px}
           <button onClick={onClose} className="text-xs text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]">x</button>
         </div>
       </div>
+      {canEdit && (
+        <div className="flex items-center gap-0 border-b border-[var(--color-border-soft)] bg-[var(--color-panel)] px-2">
+          <button
+            onClick={() => setActiveTab("preview")}
+            className={`px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
+              activeTab === "preview"
+                ? "border-[var(--color-accent)] text-[var(--color-fg)]"
+                : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
+            }`}
+          >
+            プレビュー
+          </button>
+          <button
+            onClick={() => setActiveTab("edit")}
+            className={`px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
+              activeTab === "edit"
+                ? "border-[var(--color-accent)] text-[var(--color-fg)]"
+                : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
+            }`}
+          >
+            値の編集
+            {filledSlots && <span className="ml-1 text-[10px] text-[var(--color-fg-subtle)]">({filledSlots.length})</span>}
+          </button>
+        </div>
+      )}
+      {canEdit && activeTab === "edit" ? (
+        <div className="flex-1 overflow-hidden">
+          <DocumentValueEditor
+            filledSlots={filledSlots!}
+            templatePath={templatePath!}
+            fileName={fileName}
+            companyId={companyId!}
+            threadId={threadId}
+            verifyIssues={verifyIssues}
+            onRegenerated={onRegenerated!}
+          />
+        </div>
+      ) : (
       <div className="flex-1 overflow-hidden bg-[var(--color-hover)]">
         {showDocxContainer ? (
           <div className="relative w-full h-full">
@@ -336,6 +390,7 @@ col{min-width:60px}
           <pre className="text-xs text-[var(--color-fg)] whitespace-pre-wrap font-mono leading-relaxed p-4 overflow-y-auto h-full bg-[var(--color-panel)]">{textContent}</pre>
         )}
       </div>
+      )}
     </div>
     </>
   );

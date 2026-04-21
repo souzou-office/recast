@@ -89,12 +89,24 @@ export interface MasterSheet {
   createdAt: string;
 }
 
+// 書類に埋めた値（スロット単位）。値の直接編集 UI / 再生成で使う。
+export interface FilledSlot {
+  slotId: number;        // docx-marker-parser / xlsx-marker-parser のスロットID
+  label: string;         // 意味ラベル（例: "代表取締役氏名"、template-labels.ts が付けたもの）
+  value: string;         // 実際に埋めた値
+  format?: string;       // 記載形式ヒント（"令和○年○月○日" 等）
+  sourceHint?: string;   // 推定出典
+  copyIndex?: number;    // 複数部数書類の N 番目（1-indexed）。単一なら省略
+}
+
 export interface GeneratedDocument {
   templateName: string;
+  templatePath?: string; // 元テンプレのファイルパス。再生成で使う（後方互換のため optional）
   docxBase64: string;
   previewHtml: string;
   fileName: string;
   createdAt: string;
+  filledSlots?: FilledSlot[];  // 埋めた値の履歴（直接編集・再生成用）。後方互換で optional
 }
 
 export interface CaseRoom {
@@ -222,6 +234,9 @@ export interface DocumentResultItem {
   // 突合せチェックの結果（runCheck 後に追加）
   checkStatus?: "ok" | "warn" | "error";
   issues?: CheckIssue[];
+  // 値の直接編集・再生成用（後方互換のため optional）
+  templatePath?: string;
+  filledSlots?: FilledSlot[];
 }
 
 export interface DocumentResultCard {
