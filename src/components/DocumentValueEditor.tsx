@@ -134,6 +134,15 @@ export default function DocumentValueEditor({
     <div className="flex flex-col h-full bg-[var(--color-bg)]">
       <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-hover)]">
         <span className="text-xs text-[var(--color-fg-muted)]">値の編集</span>
+        {(() => {
+          const changedCount = filledSlots.filter(s => (values[s.slotId] ?? s.value) !== s.value).length;
+          if (changedCount === 0) return null;
+          return (
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--color-accent-fg)]">
+              ✎ {changedCount} 件変更
+            </span>
+          );
+        })()}
         {candidatesLoading && (
           <span className="text-[10px] text-[var(--color-fg-subtle)] animate-pulse">候補読み込み中...</span>
         )}
@@ -195,45 +204,74 @@ export default function DocumentValueEditor({
                   const flagged = isSlotFlagged(s);
                   return (
                     <div key={`${copyIndex}-${s.slotId}`} className={`rounded-lg border p-2.5 ${
-                      flagged
+                      changed
+                        ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]/30 ring-1 ring-[var(--color-accent)]/30"
+                        : flagged
                         ? "border-red-400 bg-red-50 ring-1 ring-red-200"
                         : "border-[var(--color-border)] bg-[var(--color-panel)]"
                     }`}>
-                      <div className="flex items-center gap-2 mb-1">
-                        {flagged && <span className="text-[11px] text-red-600" title="AIが修正推奨">🔴</span>}
+                      <div className="flex items-center gap-2 mb-1.5">
+                        {flagged && !changed && <span className="text-[11px] text-red-600" title="AIが修正推奨">🔴</span>}
+                        {changed && <span className="text-[11px] text-[var(--color-accent)]" title="変更済み">✎</span>}
                         <span className="text-[11px] font-medium text-[var(--color-fg)]">{s.label}</span>
                         {s.format && <span className="text-[10px] text-[var(--color-fg-subtle)] font-mono">{s.format}</span>}
-                        {changed && <span className="text-[10px] text-[var(--color-accent)]">●変更済み</span>}
                       </div>
-                      <div className="flex items-center gap-1.5 relative">
-                        <input
-                          type="text"
-                          value={current}
-                          onChange={e => handleChange(s.slotId, e.target.value)}
-                          className="flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12px]"
-                        />
-                        {cands.length > 0 && (
-                          <button
-                            onClick={() => setOpenDropdown(openDropdown === s.slotId ? null : s.slotId)}
-                            className="shrink-0 inline-flex items-center gap-0.5 rounded border border-[var(--color-border)] bg-[var(--color-hover)] px-2 py-1 text-[10px] text-[var(--color-fg-muted)] hover:bg-[var(--color-accent-soft)]"
-                          >
-                            候補 {cands.length} <Icon name="ChevronDown" size={10} />
-                          </button>
+
+                      {/* 変更時は 変更前 → 変更後 を明示表示 */}
+                      {changed && (
+                        <div className="mb-1.5 flex items-start gap-1.5 text-[11px] leading-relaxed">
+                          <span className="text-[10px] text-[var(--color-fg-subtle)] w-10 shrink-0 mt-0.5">変更前</span>
+                          <span className="text-[var(--color-fg-subtle)] line-through break-words">{s.value || "(空)"}</span>
+                        </div>
+                      )}
+
+                      <div className="flex items-start gap-1.5">
+                        {changed && (
+                          <span className="text-[10px] text-[var(--color-accent)] font-medium w-10 shrink-0 mt-1.5">変更後</span>
                         )}
-                        {openDropdown === s.slotId && cands.length > 0 && (
-                          <div className="absolute z-10 right-0 top-full mt-1 min-w-[240px] max-w-[360px] rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg">
-                            {cands.map((c, i) => (
-                              <button
-                                key={i}
-                                onClick={() => handleSelectCandidate(s.slotId, c)}
-                                className="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--color-hover)] border-b border-[var(--color-border-soft)] last:border-b-0"
-                              >
-                                <div className="text-[var(--color-fg)] font-medium break-words">{c.value}</div>
-                                <div className="text-[10px] text-[var(--color-fg-subtle)] mt-0.5">{c.source}</div>
-                              </button>
-                            ))}
-                          </div>
-                        )}
+                        <div className="flex-1 flex items-center gap-1.5 relative">
+                          <input
+                            type="text"
+                            value={current}
+                            onChange={e => handleChange(s.slotId, e.target.value)}
+                            className={`flex-1 rounded border px-2 py-1 text-[12px] ${
+                              changed
+                                ? "border-[var(--color-accent)] bg-white font-medium"
+                                : "border-[var(--color-border)] bg-[var(--color-bg)]"
+                            }`}
+                          />
+                          {cands.length > 0 && (
+                            <button
+                              onClick={() => setOpenDropdown(openDropdown === s.slotId ? null : s.slotId)}
+                              className="shrink-0 inline-flex items-center gap-0.5 rounded border border-[var(--color-border)] bg-[var(--color-hover)] px-2 py-1 text-[10px] text-[var(--color-fg-muted)] hover:bg-[var(--color-accent-soft)]"
+                            >
+                              候補 {cands.length} <Icon name="ChevronDown" size={10} />
+                            </button>
+                          )}
+                          {changed && (
+                            <button
+                              onClick={() => handleChange(s.slotId, s.value)}
+                              className="shrink-0 text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] px-1"
+                              title="元の値に戻す"
+                            >
+                              ↶戻す
+                            </button>
+                          )}
+                          {openDropdown === s.slotId && cands.length > 0 && (
+                            <div className="absolute z-10 right-0 top-full mt-1 min-w-[240px] max-w-[360px] rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg">
+                              {cands.map((c, i) => (
+                                <button
+                                  key={i}
+                                  onClick={() => handleSelectCandidate(s.slotId, c)}
+                                  className="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--color-hover)] border-b border-[var(--color-border-soft)] last:border-b-0"
+                                >
+                                  <div className="text-[var(--color-fg)] font-medium break-words">{c.value}</div>
+                                  <div className="text-[10px] text-[var(--color-fg-subtle)] mt-0.5">{c.source}</div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
