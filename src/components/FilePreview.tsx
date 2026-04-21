@@ -76,8 +76,11 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     }
   }, []);
 
-  // xlsx のブラウザ側レンダリング（sheetjs で HTML に変換、セル結合・列幅・簡易スタイル反映）
-  const renderXlsxInBrowserAsHtml = useCallback(async (buffer: Uint8Array): Promise<string> => {
+  // xlsx のブラウザ側レンダリング（sheetjs で HTML に変換）
+  // 現在は生成 xlsx プレビューでは未使用（LibreOffice PDF 変換に移行）。
+  // 将来ブラウザ側描画に戻す可能性に備えて残している。
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _renderXlsxInBrowserAsHtml = useCallback(async (buffer: Uint8Array): Promise<string> => {
     const XLSX = await import("xlsx");
     const wb = XLSX.read(buffer, { type: "array", cellStyles: true });
     const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -164,19 +167,21 @@ col{min-width:60px}
 
     // base64 から直接レンダリング（ファイル種類で分岐）
     if (docxBase64) {
-      // xlsx / xlsm / xls なら sheetjs で HTML 化して iframe 表示
+      // xlsx / xlsm / xls は sheetjs の HTML 表示ではスクロール等が厳しいので、
+      // LibreOffice で PDF に変換して表示する（Word の既存ルートと同じ）。
       if (isExcel) {
-        (async () => {
-          try {
-            const bytes = base64ToUint8(docxBase64);
-            const html = await renderXlsxInBrowserAsHtml(bytes);
-            setBlobUrl("html:" + html);
-          } catch (err) {
-            setTextContent(`プレビューに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
-          } finally {
-            setLoading(false);
-          }
-        })();
+        fetch("/api/workspace/preview-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ base64: docxBase64, fileName }),
+        })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(`PDF 変換失敗 (${res.status})`);
+            const blob = await res.blob();
+            setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
+          })
+          .catch((err) => setTextContent(`プレビューに失敗しました: ${err instanceof Error ? err.message : String(err)}`))
+          .finally(() => setLoading(false));
         return;
       }
       // docx / docm（default） → docx-preview でレンダリング
@@ -264,7 +269,7 @@ col{min-width:60px}
     return () => {
       setBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
     };
-  }, [filePath, docxBase64, isRawViewable, isBrowserDocx, isServerDocx, isExcel, renderDocxInBrowser, renderXlsxInBrowserAsHtml]);
+  }, [filePath, fileName, docxBase64, isRawViewable, isBrowserDocx, isServerDocx, isExcel, renderDocxInBrowser]);
 
   const handleDownload = async () => {
     if (docxBase64) {
