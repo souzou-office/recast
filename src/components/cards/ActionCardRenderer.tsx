@@ -7,6 +7,7 @@ import TemplateSelectCardUI from "./TemplateSelectCard";
 import ClarificationCardUI from "./ClarificationCard";
 import DocumentResultCardUI from "./DocumentResultCard";
 import CheckResultCardUI from "./CheckResultCard";
+import TemplateReviewCardUI from "./TemplateReviewCard";
 
 interface Props {
   card: ActionCard;
@@ -29,6 +30,19 @@ export default function ActionCardRenderer({ card, onAction, company, thread, on
       return <ClarificationCardUI card={card} onAction={onAction} />;
     case "document-result":
       return <DocumentResultCardUI card={card} onPreview={onPreview} />;
+    case "template-review":
+      return (
+        <TemplateReviewCardUI
+          card={card}
+          onReview={() => {
+            // グローバルイベントで設定タブ→テンプレート解釈を開く
+            window.dispatchEvent(new CustomEvent("recast:open-settings", {
+              detail: { section: "template-labels", templateFolderPath: card.folderPath },
+            }));
+          }}
+          onProceed={() => onAction({ acknowledged: true } as Partial<ActionCard>)}
+        />
+      );
     case "check-prompt":
       return (
         <button

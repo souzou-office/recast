@@ -22,6 +22,19 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
   const [saving, setSaving] = useState(false);
   const [patternInput, setPatternInput] = useState("");
 
+  // 他画面から「テンプレ解釈を開いて」と要求された場合、該当セクションに遷移
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("recast-settings-target");
+      if (!raw) return;
+      const target = JSON.parse(raw) as { section?: string };
+      if (target.section === "template-labels" || target.section === "basepath" || target.section === "templatepath" || target.section === "common") {
+        setSection(target.section as SettingsSection);
+      }
+      sessionStorage.removeItem("recast-settings-target");
+    } catch { /* ignore */ }
+  }, []);
+
   // フォルダブラウザ
   const [browseDirs, setBrowseDirs] = useState<BrowseDir[]>([]);
   const [browseParent, setBrowseParent] = useState<string | null>(null);

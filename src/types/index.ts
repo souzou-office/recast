@@ -231,6 +231,17 @@ export interface DocumentResultCard {
   checkedAt?: string;           // ISO datetime
 }
 
+// 新規テンプレ解釈生成済みの通知カード（初回テンプレ使用時のみ表示）
+export interface TemplateReviewCard {
+  type: "template-review";
+  folderPath: string;      // テンプレフォルダパス（[確認する] で設定タブを開く際に使う）
+  templateName: string;    // 表示用のフォルダ名
+  totalFiles: number;      // フォルダ内のテンプレファイル数
+  newlyGenerated: number;  // 今回新規生成された数
+  files: { name: string; slotCount: number; wasNew: boolean }[];
+  acknowledged?: boolean;  // [このまま実行] か [確認して実行] が押されたら true
+}
+
 export interface CheckPromptCard {
   type: "check-prompt";
   accepted?: boolean;
@@ -247,6 +258,7 @@ export type ActionCard =
   | TemplateSelectCard
   | ClarificationCard
   | DocumentResultCard
+  | TemplateReviewCard
   | CheckPromptCard
   | CheckResultCard;
 

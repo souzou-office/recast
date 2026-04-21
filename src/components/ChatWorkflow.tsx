@@ -213,6 +213,25 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     else if (card?.type === "file-select") action = "files-confirmed";
     else if (card?.type === "template-select") action = "template-selected";
     else if (card?.type === "check-prompt") action = "check-accepted";
+    else if (card?.type === "template-review" && (cardData as { acknowledged?: boolean }).acknowledged) {
+      // [このまま実行] 押下 → カードを acknowledged にして保留中のワークフローを継続
+      const updatedCard = { ...card, acknowledged: true };
+      const updatedMessages = thread.messages.map(m => {
+        if (m.id !== messageId) return m;
+        const newCards = (m.cards || []).map((c, i) => i === cardIndex ? (updatedCard as ActionCard) : c);
+        return { ...m, cards: newCards };
+      });
+      const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+      setThread(updatedThread);
+      await fetch(`/api/chat-threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, messages: updatedThread.messages }),
+      });
+      await runWorkflow(updatedThread, card.folderPath);
+      setLoading(false);
+      return;
+    }
     else if (card?.type === "clarification") {
       // 確認質問に回答 → 回答を反映してもう一度 clarify を呼ぶ
       // 新たな確認事項があれば次のカードを出す、無ければ書類生成に進む
@@ -330,7 +349,49 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
         // テンプレート選択後→案件整理+書類生成をSSEで実行
         if (action === "template-selected" && "selectedPath" in cardData && cardData.selectedPath) {
-          await runWorkflow(result.thread, cardData.selectedPath as string);
+          const templatePath = cardData.selectedPath as string;
+          // テンプレの解釈ラベルを確認。未生成のファイルがあれば AI に生成させて、
+          // 新規生成があればレビューカードを挟む（初回だけ）。
+          let shouldAutoProceed = true;
+          try {
+            const ensureRes = await fetch("/api/template-labels/ensure", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ folderPath: templatePath }),
+            });
+            if (ensureRes.ok) {
+              const data = await ensureRes.json();
+              if (data.newlyGenerated > 0) {
+                const reviewMsg: ThreadMessage = {
+                  id: `msg_${Date.now()}`,
+                  role: "assistant",
+                  content: "テンプレート解釈を生成しました。",
+                  cards: [{
+                    type: "template-review",
+                    folderPath: templatePath,
+                    templateName: templatePath.split(/[\\/]/).pop() || templatePath,
+                    totalFiles: data.totalFiles,
+                    newlyGenerated: data.newlyGenerated,
+                    files: (data.files || []).map((f: { name: string; slotCount: number; wasNew: boolean }) => ({
+                      name: f.name, slotCount: f.slotCount, wasNew: f.wasNew,
+                    })),
+                  }],
+                  timestamp: new Date().toISOString(),
+                };
+                setThread(prev => prev ? { ...prev, messages: [...prev.messages, reviewMsg] } : prev);
+                await fetch(`/api/chat-threads/${result.thread.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ companyId: company.id, message: reviewMsg }),
+                });
+                shouldAutoProceed = false;
+              }
+            }
+          } catch { /* ensure 失敗時は従来どおり実行 */ }
+
+          if (shouldAutoProceed) {
+            await runWorkflow(result.thread, templatePath);
+          }
         }
         // チェック実行
         if (action === "check-accepted") {
