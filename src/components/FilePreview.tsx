@@ -146,11 +146,12 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     }
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+/* iframe のネイティブスクロール (html 要素) に任せる。body に overflow を書くと逆に阻害される */
 html,body{margin:0;padding:0;background:#fff;color:#111}
-body{padding:12px;font:12px -apple-system,system-ui,sans-serif;overflow:auto}
+body{padding:12px;font:12px -apple-system,system-ui,sans-serif}
 h3{margin:16px 8px 4px;font:600 13px -apple-system,system-ui,sans-serif;color:#555}
-/* table-layout:fixed だと列幅を超えたセルが省略される。auto にして、列幅は colgroup の指定を最小値として扱う */
-table{border-collapse:collapse;margin:0 8px 16px;table-layout:auto}
+/* width:max-content でテーブルが列幅の合計分まで広がる → viewport を超えれば iframe が横スクロール */
+table{border-collapse:collapse;margin:0 8px 16px;width:max-content;max-width:none;table-layout:auto}
 td{border:1px solid #ddd;padding:4px 6px;vertical-align:top;white-space:nowrap}
 col{min-width:60px}
 </style></head><body>${parts.join("")}</body></html>`;
