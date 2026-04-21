@@ -45,7 +45,7 @@ export default function FilePreview({
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [width, setWidth] = useState(60); // パーセント。ドラッグで 20〜90% の範囲で調整可。
+  const [width, setWidth] = useState(50); // パーセント。チャットとプレビュー半々がデフォルト。ドラッグで 20〜90% の範囲で調整可。
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
 
   // 値の編集タブ
