@@ -358,20 +358,11 @@ col{min-width:60px}
           </button>
         </div>
       )}
-      {canEdit && activeTab === "edit" ? (
-        <div className="flex-1 overflow-hidden">
-          <DocumentValueEditor
-            filledSlots={filledSlots!}
-            templatePath={templatePath!}
-            fileName={fileName}
-            companyId={companyId!}
-            threadId={threadId}
-            verifyIssues={verifyIssues}
-            onRegenerated={onRegenerated!}
-          />
-        </div>
-      ) : (
-      <div className="flex-1 overflow-hidden bg-[var(--color-hover)]">
+      {/* プレビューと修正タブの両方を常にマウントして display で切替（unmount すると docx-preview が消える） */}
+      <div
+        className="flex-1 overflow-hidden bg-[var(--color-hover)]"
+        style={{ display: canEdit && activeTab === "edit" ? "none" : "block" }}
+      >
         {showDocxContainer ? (
           <div className="relative w-full h-full">
             {loading && (
@@ -389,6 +380,21 @@ col{min-width:60px}
           <pre className="text-xs text-[var(--color-fg)] whitespace-pre-wrap font-mono leading-relaxed p-4 overflow-y-auto h-full bg-[var(--color-panel)]">{textContent}</pre>
         )}
       </div>
+      {canEdit && (
+        <div
+          className="flex-1 overflow-hidden"
+          style={{ display: activeTab === "edit" ? "block" : "none" }}
+        >
+          <DocumentValueEditor
+            filledSlots={filledSlots!}
+            templatePath={templatePath!}
+            fileName={fileName}
+            companyId={companyId!}
+            threadId={threadId}
+            verifyIssues={verifyIssues}
+            onRegenerated={onRegenerated!}
+          />
+        </div>
       )}
     </div>
     </>

@@ -31,6 +31,8 @@ export default function DocumentValueEditor({
   const [values, setValues] = useState<Record<number, string>>({});
   const [candidates, setCandidates] = useState<Record<number, Candidate[]>>({});
   const [slotIssues, setSlotIssues] = useState<Record<number, SlotIssue[]>>({});
+  // ユーザーが「値は正しい、指摘は無視」と確認済みにしたスロット
+  const [acknowledgedSlots, setAcknowledgedSlots] = useState<Set<number>>(new Set());
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<number | null>(null);
@@ -114,8 +116,11 @@ export default function DocumentValueEditor({
   const flatIssues = (verifyIssues || []).flatMap(vi => vi.issues);
 
   // 項目ごとの指摘は Haiku（候補API）がセマンティックマッチングで返す slotIssues を使う。
-  // 文字列マッチングでは誤マッチが多いため、AI に任せる方針。
-  const getSlotIssues = (slot: FilledSlot): SlotIssue[] => slotIssues[slot.slotId] || [];
+  // ただしユーザーが「確認済み」にした項目は指摘を抑止。
+  const getSlotIssues = (slot: FilledSlot): SlotIssue[] => {
+    if (acknowledgedSlots.has(slot.slotId)) return [];
+    return slotIssues[slot.slotId] || [];
+  };
   const isSlotFlagged = (slot: FilledSlot): boolean => getSlotIssues(slot).length > 0;
 
   // Haiku がどの項目にも紐付けなかった指摘（自信がない or 対応項目なし）
@@ -228,10 +233,10 @@ export default function DocumentValueEditor({
                         <span className="text-[11px] font-medium text-[var(--color-fg)]">{s.label}</span>
                       </div>
 
-                      {/* 修正理由（verify の指摘）をインライン表示 */}
+                      {/* 修正理由（verify の指摘）をインライン表示 + 確認済みボタン */}
                       {flagged && !changed && (
                         <div className="mb-1.5 rounded bg-red-100/60 border border-red-200 px-2 py-1.5">
-                          {slotIssues.map((iss, i) => (
+                          {getSlotIssues(s).map((iss, i) => (
                             <div key={i} className="text-[10.5px] text-red-900 leading-relaxed">
                               <span className="font-semibold">AI指摘:</span> {iss.problem}
                               {iss.expected && (
@@ -239,6 +244,25 @@ export default function DocumentValueEditor({
                               )}
                             </div>
                           ))}
+                          <button
+                            onClick={() => setAcknowledgedSlots(prev => new Set(prev).add(s.slotId))}
+                            className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-white border border-red-300 px-2 py-0.5 text-[10px] text-red-700 hover:bg-red-50"
+                            title="この指摘は確認した（値はこのままでOK）"
+                          >
+                            <Icon name="CheckCircle2" size={10} /> 確認済み
+                          </button>
+                        </div>
+                      )}
+                      {/* 一度 確認済みにした後は戻せるように */}
+                      {acknowledgedSlots.has(s.slotId) && !changed && (
+                        <div className="mb-1.5 text-[10px] text-[var(--color-fg-subtle)] inline-flex items-center gap-1">
+                          <Icon name="CheckCircle2" size={10} className="text-[var(--color-ok-fg)]" /> 確認済み
+                          <button
+                            onClick={() => setAcknowledgedSlots(prev => { const n = new Set(prev); n.delete(s.slotId); return n; })}
+                            className="ml-2 underline hover:text-[var(--color-fg)]"
+                          >
+                            戻す
+                          </button>
                         </div>
                       )}
 

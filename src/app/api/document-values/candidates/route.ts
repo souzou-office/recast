@@ -51,13 +51,16 @@ export async function POST(request: NextRequest) {
 - current と違う値が基本情報・案件整理に見つかれば、それを候補として提示
 - データにない場合は空配列を返す（候補なし）
 
-## verify 指摘の項目マッチング
-- verify 指摘と項目の対応付けは **意味的に判断**（ラベル文字列の完全一致ではなく、項目が指している内容と指摘が指している内容で判断）
+## verify 指摘の項目マッチング（厳格ルール）
+- **各 issue は最大 1 つの項目だけに紐付ける**（同じ issue を複数項目に重複してセットしない）
+- 意味的にもっとも具体的に対応する **1 項目だけ** を選ぶ
+- どの項目にも一対一で対応しない「書類全体に関わる指摘」「複数項目に跨る指摘」は **紐付けない**（空のまま、上部の「未分類」に回す）
+  - 例: 「株主リスト全体で合計が合わない」「総議決権数と個別値の不整合」等
+- 自信が持てない指摘も紐付けない（issueIndex 配列に入れない）
 - 例: 指摘「代表取締役の氏名が福田峻介になっているが、基本情報では三上春香」
-  → ラベル「代表取締役氏名」の項目にマッチ（文言は違ってもセマンティックに一致）
+  → ラベル「代表取締役氏名」の **1 項目だけ** にマッチ
 - 例: 指摘「岩下歌武輝の持株数が5000で株単位なし」
-  → ラベル「株主リスト(1)持株数」のような株主リスト項目にマッチ、「代表取締役氏名」のような無関係項目にはマッチさせない
-- 自信が持てない指摘は issueIndex を返さない（空でOK）
+  → ラベル「第2株主の持株数」など **具体的な1項目** だけにマッチ、株主関連の他項目には紐付けない
 
 ## 基本情報
 ${JSON.stringify(profile?.structured || {}, null, 2)}
@@ -118,15 +121,25 @@ JSONのみ返してください。`;
         if (!isNaN(id) && Array.isArray(v)) candidates[id] = v.filter(c => c && typeof c.value === "string");
       }
 
-      // slotIssues: slotId → 該当 issue の実体を埋めて返す
+      // slotIssues: slotId → 該当 issue の実体を埋めて返す。
+      // ただし、同じ issueIndex が複数 slotId に紐付けられていた場合は最初の 1 つだけ採用
+      // （Haiku が過剰マッチしても自動で 1 対 1 に正規化）。
+      const usedIssueIndices = new Set<number>();
       const slotIssues: Record<number, { problem: string; expected?: string; aspect?: string; severity?: string }[]> = {};
-      for (const [k, indices] of Object.entries(parsed.slotIssues || {})) {
+      // 先に slotId をソートして決定的に
+      const entries = Object.entries(parsed.slotIssues || {}).sort((a, b) => parseInt(a[0]) - parseInt(b[0]));
+      for (const [k, indices] of entries) {
         const id = parseInt(k);
         if (isNaN(id) || !Array.isArray(indices)) continue;
-        const mapped = indices
-          .map(i => flatIssues[i])
-          .filter(Boolean);
-        if (mapped.length > 0) slotIssues[id] = mapped;
+        const kept: typeof flatIssues = [];
+        for (const i of indices) {
+          if (typeof i !== "number" || usedIssueIndices.has(i)) continue;
+          const iss = flatIssues[i];
+          if (!iss) continue;
+          usedIssueIndices.add(i);
+          kept.push(iss);
+        }
+        if (kept.length > 0) slotIssues[id] = kept;
       }
 
       return NextResponse.json({ candidates, slotIssues });
