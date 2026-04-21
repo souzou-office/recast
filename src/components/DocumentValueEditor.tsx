@@ -214,7 +214,6 @@ export default function DocumentValueEditor({
                         {flagged && !changed && <span className="text-[11px] text-red-600" title="AIが修正推奨">🔴</span>}
                         {changed && <span className="text-[11px] text-[var(--color-accent)]" title="変更済み">✎</span>}
                         <span className="text-[11px] font-medium text-[var(--color-fg)]">{s.label}</span>
-                        {s.format && <span className="text-[10px] text-[var(--color-fg-subtle)] font-mono">{s.format}</span>}
                       </div>
 
                       {/* 変更時は 変更前 → 変更後 を明示表示 */}
