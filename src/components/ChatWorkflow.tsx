@@ -117,6 +117,27 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       .catch(() => setThread(null));
   }, [threadId, company?.id]);
 
+  // 空スレッドに初期カード（フォルダ選択）を遅延生成して追加する。
+  // POST /api/chat-threads が軽量化されて messages が空で返ってくるので、ここで補完。
+  useEffect(() => {
+    if (!thread || !company) return;
+    if (thread.messages.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/chat-threads/${thread.id}/initial`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id }),
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled && data.thread) setThread(data.thread);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [thread?.id, thread?.messages.length, company?.id]);
+
   // 自動スクロール
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -820,6 +841,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               {thread.createdAt && <> · {new Date(thread.createdAt).toLocaleDateString("ja-JP")}</>}
             </div>
           </div>
+          {thread.messages.length === 0 && (
+            <div className="flex items-center gap-2 text-[13px] text-[var(--color-fg-subtle)] py-6">
+              <span className="inline-block h-3 w-3 rounded-full border-2 border-[var(--color-accent)] border-t-transparent animate-spin" />
+              フォルダ一覧を準備中...
+            </div>
+          )}
           {thread.messages.map((msg, i) => {
             const goBack = () => {
               for (const m of thread.messages) {

@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import type { ChatThread } from "@/types";
-import { getWorkspaceConfig } from "@/lib/folders";
-import { createInitialMessage } from "@/lib/workflow-engine";
 
 const DATA_DIR = path.join(process.cwd(), "data", "chat-threads");
 
@@ -59,7 +57,10 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// 新規スレッド作成
+// 新規スレッド作成（軽量版）
+// 初期カード（フォルダ選択）の生成は listFiles が何度も走って重いので
+// 別エンドポイント /api/chat-threads/[threadId]/initial に分離。
+// このエンドポイントは空スレッドを即座に返すだけ（~50ms）。
 export async function POST(request: NextRequest) {
   const { companyId, displayName } = await request.json();
   if (!companyId) {
@@ -67,19 +68,11 @@ export async function POST(request: NextRequest) {
   }
 
   const now = new Date().toISOString();
-  const config = await getWorkspaceConfig();
-  const company = config.companies.find(c => c.id === companyId);
-
-  // 初期メッセージ（フォルダ選択カード）を生成
-  const initialMsg = company
-    ? await createInitialMessage(companyId, company.subfolders)
-    : null;
-
   const thread: ChatThread = {
     id: `thread_${Date.now()}`,
     companyId,
     displayName: displayName || "新規チャット",
-    messages: initialMsg ? [initialMsg] : [],
+    messages: [],
     createdAt: now,
     updatedAt: now,
   };
