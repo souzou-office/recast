@@ -5,6 +5,7 @@ import { Icon } from "./ui/Icon";
 import type { FilledSlot } from "@/types";
 
 type Candidate = { value: string; source: string };
+type SlotIssue = { problem: string; expected?: string; aspect?: string; severity?: string };
 
 interface Props {
   filledSlots: FilledSlot[];
@@ -29,6 +30,7 @@ export default function DocumentValueEditor({
   // スロット値の編集状態（slotId → value）
   const [values, setValues] = useState<Record<number, string>>({});
   const [candidates, setCandidates] = useState<Record<number, Candidate[]>>({});
+  const [slotIssues, setSlotIssues] = useState<Record<number, SlotIssue[]>>({});
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<number | null>(null);
@@ -59,6 +61,7 @@ export default function DocumentValueEditor({
       if (res.ok) {
         const data = await res.json();
         setCandidates(data.candidates || {});
+        setSlotIssues(data.slotIssues || {});
       }
     } catch { /* ignore */ }
     setCandidatesLoading(false);
@@ -107,34 +110,20 @@ export default function DocumentValueEditor({
     setRegenerating(false);
   };
 
-  // verify の指摘を収集（この書類への指摘だけ）
+  // verify の全指摘（上部の「未分類」セクション用）
   const flatIssues = (verifyIssues || []).flatMap(vi => vi.issues);
 
-  // 項目にマッチする verify issue を返す。
-  // ラベルが issue.problem または aspect に「明示的に」含まれている場合のみ紐付ける。
-  // 値ベースのマッチング（例: "5000" や "岩下歌武輝"）は別項目にも当たる偽陽性が多いため採用しない。
-  const getSlotIssues = (slot: FilledSlot) => {
-    if (flatIssues.length === 0) return [];
-    const label = (slot.label || "").trim();
-    // ラベルが短すぎる・不明な場合はマッチングしない（偽陽性の元）
-    if (label.length < 3 || label.startsWith("slot_") || label === "不明") return [];
-    return flatIssues.filter(iss => {
-      const haystack = `${iss.problem || ""} ${iss.aspect || ""}`;
-      // ラベル全体が含まれる場合のみヒット（部分一致に頼らない）
-      return haystack.includes(label);
-    });
-  };
+  // 項目ごとの指摘は Haiku（候補API）がセマンティックマッチングで返す slotIssues を使う。
+  // 文字列マッチングでは誤マッチが多いため、AI に任せる方針。
+  const getSlotIssues = (slot: FilledSlot): SlotIssue[] => slotIssues[slot.slotId] || [];
   const isSlotFlagged = (slot: FilledSlot): boolean => getSlotIssues(slot).length > 0;
 
-  // どの項目にも紐付かない issue（= 単独で上に出したい指摘）
-  const unmatchedIssues = flatIssues.filter(iss => {
-    return !filledSlots.some(s => {
-      const label = (s.label || "").trim();
-      if (label.length < 3 || label.startsWith("slot_") || label === "不明") return false;
-      const haystack = `${iss.problem || ""} ${iss.aspect || ""}`;
-      return haystack.includes(label);
-    });
-  });
+  // Haiku がどの項目にも紐付けなかった指摘（自信がない or 対応項目なし）
+  const matchedIssueSet = new Set<string>();
+  for (const issues of Object.values(slotIssues)) {
+    for (const iss of issues) matchedIssueSet.add(iss.problem);
+  }
+  const unmatchedIssues = flatIssues.filter(iss => !matchedIssueSet.has(iss.problem));
 
   // 空欄（初期値が空）の項目は表示しない。ただし verify が指摘しているものは表示。
   // 編集中に空にした（変更済みだが空）ものも表示し続ける。
