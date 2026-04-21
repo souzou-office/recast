@@ -45,11 +45,13 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const entries = await fs.readdir(basePath, { withFileTypes: true });
+    const rawEntries = await fs.readdir(basePath, { withFileTypes: true });
+    // 共通ルールフォルダ除外 + 番号順ソート
+    const entries = rawEntries
+      .filter(e => e.isDirectory() && !isCommonRuleFolderName(e.name))
+      .sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
     const folders = await Promise.all(
       entries
-        // 共通ルールフォルダは書類テンプレではないので除外
-        .filter(e => e.isDirectory() && !isCommonRuleFolderName(e.name))
         .map(async (e) => {
           const folderPath = path.join(basePath, e.name);
           let files: Array<{ name: string; path: string; hasLabels: boolean; slotCount: number; generatedAt: string | null }> = [];
@@ -70,6 +72,8 @@ export async function GET(request: NextRequest) {
                   };
                 })
             );
+            // 番号順（"1.", "2-1.", "3." 等）でソート。{numeric:true} は "10" > "2" を正しく扱う。
+            files.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
           } catch { /* ignore */ }
           return {
             name: e.name,
