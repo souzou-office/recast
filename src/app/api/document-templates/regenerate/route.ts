@@ -36,9 +36,16 @@ export async function POST(request: NextRequest) {
     const ext = path.extname(body.templatePath).toLowerCase();
 
     if (ext === ".docx" || ext === ".docm") {
-      const { replaceMarkedFields } = await import("@/lib/docx-marker-parser");
-      const replacements: Record<number, string> = {};
-      for (const s of body.filledSlots) replacements[s.slotId] = s.value;
+      // replaceMarkedFields は { 元の値 → 新しい値 } 形式を期待する。
+      // slotId → 元の値 をテンプレから引いて、ユーザーが編集した値で置換マップを作る。
+      const { replaceMarkedFields, getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
+      const { slots } = getMarkedDocumentTextWithSlots(buffer);
+      const replacements: Record<string, string> = {};
+      for (const s of body.filledSlots) {
+        const origValue = slots.get(s.slotId);
+        if (!origValue) continue;
+        replacements[origValue] = s.value;
+      }
       const outBuffer = replaceMarkedFields(buffer, replacements);
 
       // プレビュー用 HTML（best effort）
