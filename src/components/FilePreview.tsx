@@ -354,8 +354,7 @@ col{min-width:60px}
                 : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
             }`}
           >
-            値の編集
-            {filledSlots && <span className="ml-1 text-[10px] text-[var(--color-fg-subtle)]">({filledSlots.length})</span>}
+            修正
           </button>
         </div>
       )}

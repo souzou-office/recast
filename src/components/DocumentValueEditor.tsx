@@ -107,33 +107,44 @@ export default function DocumentValueEditor({
     setRegenerating(false);
   };
 
-  // copyIndex ごとにスロットをグループ化（複数部数書類用）
-  const slotsByCopy = new Map<number | undefined, FilledSlot[]>();
-  for (const s of filledSlots) {
-    const key = s.copyIndex;
-    if (!slotsByCopy.has(key)) slotsByCopy.set(key, []);
-    slotsByCopy.get(key)!.push(s);
-  }
-  const groups = Array.from(slotsByCopy.entries()).sort((a, b) => (a[0] || 0) - (b[0] || 0));
-
   // verify の指摘を収集（この書類への指摘だけ）
   const flatIssues = (verifyIssues || []).flatMap(vi => vi.issues);
 
-  // スロットと issue のマッチング。issue.problem / expected に slot.label または slot.value が含まれるかで判定。
-  const isSlotFlagged = (slot: FilledSlot): boolean => {
-    if (flatIssues.length === 0) return false;
-    return flatIssues.some(iss => {
+  // 項目にマッチする verify issue を返す（複数該当する場合もある）。
+  // issue.problem / expected に label または value が含まれるかで判定。
+  const getSlotIssues = (slot: FilledSlot) => {
+    if (flatIssues.length === 0) return [];
+    return flatIssues.filter(iss => {
       const text = `${iss.problem || ""} ${iss.expected || ""}`;
       if (slot.label && text.includes(slot.label)) return true;
       if (slot.value && slot.value.length >= 3 && text.includes(slot.value)) return true;
       return false;
     });
   };
+  const isSlotFlagged = (slot: FilledSlot): boolean => getSlotIssues(slot).length > 0;
+
+  // 空欄（初期値が空）の項目は表示しない。ただし verify が指摘しているものは表示。
+  // 編集中に空にした（変更済みだが空）ものも表示し続ける。
+  const visibleSlots = filledSlots.filter(s => {
+    const cur = values[s.slotId] ?? s.value;
+    const hasInitialValue = !!(s.value && s.value.trim());
+    const hasCurrentValue = !!(cur && cur.trim());
+    return hasInitialValue || hasCurrentValue || isSlotFlagged(s);
+  });
+
+  // copyIndex ごとにグループ化（複数部数書類用）
+  const slotsByCopy = new Map<number | undefined, FilledSlot[]>();
+  for (const s of visibleSlots) {
+    const key = s.copyIndex;
+    if (!slotsByCopy.has(key)) slotsByCopy.set(key, []);
+    slotsByCopy.get(key)!.push(s);
+  }
+  const groups = Array.from(slotsByCopy.entries()).sort((a, b) => (a[0] || 0) - (b[0] || 0));
 
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg)]">
       <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-hover)]">
-        <span className="text-xs text-[var(--color-fg-muted)]">値の編集</span>
+        <span className="text-xs text-[var(--color-fg-muted)]">修正</span>
         {(() => {
           const changedCount = filledSlots.filter(s => (values[s.slotId] ?? s.value) !== s.value).length;
           if (changedCount === 0) return null;
@@ -181,13 +192,13 @@ export default function DocumentValueEditor({
               ))}
             </ul>
             <div className="text-[10px] text-[var(--color-fg-subtle)] mt-2 leading-relaxed">
-              下のスロット一覧で、🔴マークが付いた項目が該当する可能性があります。候補ドロップダウンの先頭に正しい値が提示されるので、選んで「再生成」してください。
+              下の項目で、🔴マークが付いたものが該当する可能性があります。候補から正しい値を選んで「再生成」してください。
             </div>
           </div>
         )}
 
-        {filledSlots.length === 0 ? (
-          <p className="text-sm text-[var(--color-fg-subtle)]">編集可能なスロットがありません。</p>
+        {visibleSlots.length === 0 ? (
+          <p className="text-sm text-[var(--color-fg-subtle)]">編集可能な項目がありません。</p>
         ) : (
           groups.map(([copyIndex, slots], gi) => (
             <div key={gi} className="mb-4">
@@ -201,7 +212,8 @@ export default function DocumentValueEditor({
                   const current = values[s.slotId] ?? s.value;
                   const changed = current !== s.value;
                   const cands = candidates[s.slotId] || [];
-                  const flagged = isSlotFlagged(s);
+                  const slotIssues = getSlotIssues(s);
+                  const flagged = slotIssues.length > 0;
                   return (
                     <div key={`${copyIndex}-${s.slotId}`} className={`rounded-lg border p-2.5 ${
                       changed
@@ -215,6 +227,20 @@ export default function DocumentValueEditor({
                         {changed && <span className="text-[11px] text-[var(--color-accent)]" title="変更済み">✎</span>}
                         <span className="text-[11px] font-medium text-[var(--color-fg)]">{s.label}</span>
                       </div>
+
+                      {/* 修正理由（verify の指摘）をインライン表示 */}
+                      {flagged && !changed && (
+                        <div className="mb-1.5 rounded bg-red-100/60 border border-red-200 px-2 py-1.5">
+                          {slotIssues.map((iss, i) => (
+                            <div key={i} className="text-[10.5px] text-red-900 leading-relaxed">
+                              <span className="font-semibold">AI指摘:</span> {iss.problem}
+                              {iss.expected && (
+                                <span> → 正: <span className="font-medium">{iss.expected}</span></span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {/* 変更時は 変更前 → 変更後 を明示表示 */}
                       {changed && (
