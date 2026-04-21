@@ -45,7 +45,7 @@ export default function FilePreview({
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [width, setWidth] = useState(50); // パーセント
+  const [width, setWidth] = useState(60); // パーセント。ドラッグで 20〜90% の範囲で調整可。
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
 
   // 値の編集タブ
@@ -58,7 +58,7 @@ export default function FilePreview({
       if (!container) return;
       const rect = container.getBoundingClientRect();
       const pct = 100 - ((e.clientX - rect.left) / rect.width) * 100;
-      setWidth(Math.max(20, Math.min(80, pct)));
+      setWidth(Math.max(20, Math.min(90, pct)));
     };
     const handleUp = () => {
       document.body.style.cursor = "";
