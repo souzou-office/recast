@@ -110,18 +110,31 @@ export default function DocumentValueEditor({
   // verify の指摘を収集（この書類への指摘だけ）
   const flatIssues = (verifyIssues || []).flatMap(vi => vi.issues);
 
-  // 項目にマッチする verify issue を返す（複数該当する場合もある）。
-  // issue.problem / expected に label または value が含まれるかで判定。
+  // 項目にマッチする verify issue を返す。
+  // ラベルが issue.problem または aspect に「明示的に」含まれている場合のみ紐付ける。
+  // 値ベースのマッチング（例: "5000" や "岩下歌武輝"）は別項目にも当たる偽陽性が多いため採用しない。
   const getSlotIssues = (slot: FilledSlot) => {
     if (flatIssues.length === 0) return [];
+    const label = (slot.label || "").trim();
+    // ラベルが短すぎる・不明な場合はマッチングしない（偽陽性の元）
+    if (label.length < 3 || label.startsWith("slot_") || label === "不明") return [];
     return flatIssues.filter(iss => {
-      const text = `${iss.problem || ""} ${iss.expected || ""}`;
-      if (slot.label && text.includes(slot.label)) return true;
-      if (slot.value && slot.value.length >= 3 && text.includes(slot.value)) return true;
-      return false;
+      const haystack = `${iss.problem || ""} ${iss.aspect || ""}`;
+      // ラベル全体が含まれる場合のみヒット（部分一致に頼らない）
+      return haystack.includes(label);
     });
   };
   const isSlotFlagged = (slot: FilledSlot): boolean => getSlotIssues(slot).length > 0;
+
+  // どの項目にも紐付かない issue（= 単独で上に出したい指摘）
+  const unmatchedIssues = flatIssues.filter(iss => {
+    return !filledSlots.some(s => {
+      const label = (s.label || "").trim();
+      if (label.length < 3 || label.startsWith("slot_") || label === "不明") return false;
+      const haystack = `${iss.problem || ""} ${iss.aspect || ""}`;
+      return haystack.includes(label);
+    });
+  });
 
   // 空欄（初期値が空）の項目は表示しない。ただし verify が指摘しているものは表示。
   // 編集中に空にした（変更済みだが空）ものも表示し続ける。
@@ -175,6 +188,26 @@ export default function DocumentValueEditor({
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
+        {/* 項目に紐付かなかった verify 指摘はまとめて上に出す（どの項目のことか自動判定できなかったもの） */}
+        {unmatchedIssues.length > 0 && (
+          <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2.5">
+            <div className="text-[11px] font-semibold text-red-800 mb-1 inline-flex items-center gap-1">
+              <Icon name="AlertTriangle" size={11} /> AI指摘（項目特定できなかった分）
+            </div>
+            <ul className="space-y-1">
+              {unmatchedIssues.map((iss, i) => (
+                <li key={i} className="text-[10.5px] text-red-900 leading-relaxed">
+                  ・{iss.problem}
+                  {iss.expected && <span className="text-[var(--color-fg-muted)]"> → 正: <span className="font-medium">{iss.expected}</span></span>}
+                </li>
+              ))}
+            </ul>
+            <div className="text-[10px] text-[var(--color-fg-subtle)] mt-1.5">
+              該当の項目を手動で見つけて修正してください（ラベルと指摘の文言が一致しないと自動紐付けできません）。
+            </div>
+          </div>
+        )}
+
         {visibleSlots.length === 0 ? (
           <p className="text-sm text-[var(--color-fg-subtle)]">編集可能な項目がありません。</p>
         ) : (
