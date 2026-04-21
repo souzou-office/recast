@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { ensureDocxLabels, ensureXlsxLabels, type TemplateLabels } from "@/lib/template-labels";
+import { isCommonRuleFolderName } from "@/lib/global-rules";
 
 function isTemplateFile(name: string): boolean {
   const ext = path.extname(name).toLowerCase();
@@ -47,7 +48,8 @@ export async function GET(request: NextRequest) {
     const entries = await fs.readdir(basePath, { withFileTypes: true });
     const folders = await Promise.all(
       entries
-        .filter(e => e.isDirectory())
+        // 共通ルールフォルダは書類テンプレではないので除外
+        .filter(e => e.isDirectory() && !isCommonRuleFolderName(e.name))
         .map(async (e) => {
           const folderPath = path.join(basePath, e.name);
           let files: Array<{ name: string; path: string; hasLabels: boolean; slotCount: number; generatedAt: string | null }> = [];

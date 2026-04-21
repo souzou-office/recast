@@ -1,5 +1,11 @@
 import { readAllFilesInFolder } from "./files";
 
+// 共通ルールフォルダのフォルダ名パターン。
+// ここに該当するフォルダは「書類テンプレートの一覧」や「テンプレート解釈」一覧から除外される。
+export function isCommonRuleFolderName(name: string): boolean {
+  return /^(共通|共通ルール|ルール|rules?|common)/i.test(name);
+}
+
 // templateBasePath 直下（または「共通」「ルール」等の専用サブフォルダ）のテキストファイルだけを
 // 共通ルールとして読み込む。
 //
@@ -37,8 +43,7 @@ export async function loadGlobalRules(
         if (segments.length === 1) return true;
 
         // サブフォルダ内: 先頭セグメントが「共通」「ルール」等なら共通ルール扱い
-        const firstDir = segments[0];
-        return /^(共通|共通ルール|ルール|rules?|common)/i.test(firstDir);
+        return isCommonRuleFolderName(segments[0]);
       })
       .map(f => `【共通ルール: ${f.name}】\n${f.content}`)
       .join("\n\n");

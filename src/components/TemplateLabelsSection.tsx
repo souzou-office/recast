@@ -304,51 +304,71 @@ export default function TemplateLabelsSection() {
         ) : folders.length === 0 ? (
           <p className="text-sm text-[var(--color-fg-subtle)]">テンプレートフォルダが見つかりません。</p>
         ) : (
-          <div className="space-y-4">
-            {folders.map(folder => (
-              <div key={folder.path}>
-                <div className="text-[11px] font-semibold text-[var(--color-fg-muted)] mb-1.5 px-1 flex items-center gap-1.5">
-                  <Icon name="Folder" size={12} /> {folder.name}
-                  <span className="text-[var(--color-fg-subtle)] font-normal">
-                    （{folder.files.length} ファイル、{folder.files.filter(f => f.hasLabels).length} 解析済み）
-                  </span>
-                  <button
-                    onClick={() => handleRegenerateFolder(folder.path, folder.name)}
-                    disabled={regeneratingFolder !== null}
-                    className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-hover)] px-2.5 py-0.5 text-[10px] font-normal text-[var(--color-fg-muted)] hover:bg-[var(--color-fg)] hover:text-[var(--color-bg)] disabled:opacity-50 transition-colors"
-                    title="フォルダ内の全テンプレを再解析"
-                  >
-                    <Icon name="RefreshCcw" size={10} />
-                    {regeneratingFolder === folder.path ? "再解析中..." : "一括再解析"}
-                  </button>
+          <div className="space-y-3">
+            {folders.map(folder => {
+              const analyzedCount = folder.files.filter(f => f.hasLabels).length;
+              const allAnalyzed = folder.files.length > 0 && analyzedCount === folder.files.length;
+              return (
+                <div
+                  key={folder.path}
+                  className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] overflow-hidden"
+                >
+                  {/* フォルダヘッダー: 背景色で目立たせる */}
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--color-border-soft)] bg-[var(--color-hover)]">
+                    <Icon name="Folder" size={16} className="text-[var(--color-accent)] shrink-0" />
+                    <span className="text-[13px] font-semibold text-[var(--color-fg)]">{folder.name}</span>
+                    <span className={`text-[10px] rounded-full px-2 py-0.5 shrink-0 ${
+                      allAnalyzed
+                        ? "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]"
+                        : "bg-[var(--color-warn-bg)] text-[var(--color-warn-fg)]"
+                    }`}>
+                      {analyzedCount} / {folder.files.length} 解析済み
+                    </span>
+                    <button
+                      onClick={() => handleRegenerateFolder(folder.path, folder.name)}
+                      disabled={regeneratingFolder !== null || folder.files.length === 0}
+                      className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90 disabled:opacity-50 transition-opacity"
+                      title="フォルダ内の全テンプレを AI で再解析（数十秒かかる場合あり）"
+                    >
+                      <Icon name="RefreshCcw" size={11} />
+                      {regeneratingFolder === folder.path ? "再解析中..." : "一括再解析"}
+                    </button>
+                  </div>
+                  {/* ファイル一覧 */}
+                  {folder.files.length === 0 ? (
+                    <p className="text-[11px] text-[var(--color-fg-subtle)] px-4 py-3">
+                      このフォルダにテンプレファイルがありません
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-[var(--color-border-soft)]">
+                      {folder.files.map(f => {
+                        const isExcel = /\.(xlsx|xlsm|xls)$/i.test(f.name);
+                        return (
+                          <button
+                            key={f.path}
+                            onClick={() => setSelectedPath(f.path)}
+                            className="w-full flex items-center gap-2 px-4 py-2 hover:bg-[var(--color-hover)] transition-colors text-left"
+                          >
+                            <Icon name={isExcel ? "FileSpreadsheet" : "FileText"} size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
+                            <span className="flex-1 text-[13px] text-[var(--color-fg)] truncate">{f.name}</span>
+                            {f.hasLabels ? (
+                              <span className="text-[10px] text-[var(--color-ok-fg)] inline-flex items-center gap-1 shrink-0">
+                                <Icon name="CheckCircle2" size={10} /> {f.slotCount}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-[var(--color-warn-fg)] inline-flex items-center gap-1 shrink-0">
+                                <Icon name="AlertCircle" size={10} /> 未解析
+                              </span>
+                            )}
+                            <Icon name="ChevronRight" size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <div className="space-y-1">
-                  {folder.files.map(f => {
-                    const isExcel = /\.(xlsx|xlsm|xls)$/i.test(f.name);
-                    return (
-                      <button
-                        key={f.path}
-                        onClick={() => setSelectedPath(f.path)}
-                        className="w-full flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-2 hover:bg-[var(--color-hover)] transition-colors text-left"
-                      >
-                        <Icon name={isExcel ? "FileSpreadsheet" : "FileText"} size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
-                        <span className="flex-1 text-[13px] text-[var(--color-fg)] truncate">{f.name}</span>
-                        {f.hasLabels ? (
-                          <span className="text-[10px] text-[var(--color-ok-fg)] inline-flex items-center gap-1 shrink-0">
-                            <Icon name="CheckCircle2" size={10} /> {f.slotCount} スロット
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-[var(--color-warn-fg)] inline-flex items-center gap-1 shrink-0">
-                            <Icon name="AlertCircle" size={10} /> 未解析
-                          </span>
-                        )}
-                        <Icon name="ChevronRight" size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
