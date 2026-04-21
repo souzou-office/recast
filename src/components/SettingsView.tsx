@@ -2,12 +2,10 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { WorkspaceConfig } from "@/types";
-import ProfileTemplateModal from "./ProfileTemplateModal";
-import DocumentTemplateModal from "./DocumentTemplateModal";
-import CaseTemplateEditor from "./CaseTemplateEditor";
+import TemplateLabelsSection from "./TemplateLabelsSection";
 
 import { Icon } from "./ui/Icon";
-type SettingsSection = "basepath" | "templatepath" | "common" | "case-templates" | "profile-items" | "doc-templates";
+type SettingsSection = "basepath" | "templatepath" | "common" | "template-labels";
 
 interface BrowseDir {
   name: string;
@@ -34,10 +32,8 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
   const sections: { id: SettingsSection; label: string }[] = [
     { id: "basepath", label: "ベースフォルダ" },
     { id: "templatepath", label: "書類テンプレート" },
+    { id: "template-labels", label: "テンプレート解釈" },
     { id: "common", label: "共通パターン" },
-    { id: "case-templates", label: "案件整理テンプレート" },
-    { id: "profile-items", label: "基本情報 抽出項目" },
-    { id: "doc-templates", label: "書類雛形" },
   ];
 
   // フォルダブラウズ
@@ -388,19 +384,9 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
           </div>
         )}
 
-        {section === "case-templates" && (
-          <div className="p-6 h-full">
-            <CaseTemplateEditor />
-          </div>
-        )}
-        {section === "profile-items" && (
-          <div className="p-6 h-full">
-            <ProfileTemplateModal onClose={() => {}} inline />
-          </div>
-        )}
-        {section === "doc-templates" && (
+        {section === "template-labels" && (
           <div className="h-full">
-            <DocumentTemplateModal onClose={() => {}} inline />
+            <TemplateLabelsSection />
           </div>
         )}
       </div>

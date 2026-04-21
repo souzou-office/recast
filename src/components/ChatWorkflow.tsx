@@ -154,6 +154,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [...(thread.messages || []), userMsg].map(m => ({ role: m.role, content: m.content })),
+          companyId: company.id,
+          threadId: thread.id,
         }),
       });
       const reader = res.body?.getReader();
@@ -271,6 +273,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyId: company.id,
+          threadId: thread.id,
           templateFolderPath: templatePath,
           previousQA,
           folderPath: updatedThread.folderPath,
@@ -438,11 +441,17 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
 
         // 案件整理結果を保存
+        // message（画面表示用のテキスト）だけでなく masterSheet.content にも入れる。
+        // clarify / chat API が thread.masterSheet を参照するので、これが無いと案件整理を知らない状態で動いてしまう。
         organizeMsg.content = fullText;
         await fetch(`/api/chat-threads/${currentThread.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ companyId: company.id, message: organizeMsg }),
+          body: JSON.stringify({
+            companyId: company.id,
+            message: organizeMsg,
+            masterSheet: { content: fullText },
+          }),
         });
       }
 
@@ -463,6 +472,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyId: company.id,
+          threadId: currentThread.id,
           templateFolderPath: templatePath,
           folderPath: currentThread.folderPath,
           disabledFiles: currentThread.disabledFiles,

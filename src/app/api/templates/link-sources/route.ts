@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
 
@@ -41,6 +42,7 @@ ${fileList}
 例: {"0": [0, 2], "1": [1], "2": [0, 1, 2]}`
       }],
     });
+    logTokenUsage("/api/templates/link-sources", "claude-haiku-4-5-20251001", response.usage);
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
     const match = text.match(/\{[\s\S]*\}/);

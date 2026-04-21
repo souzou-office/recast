@@ -2,22 +2,32 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
-import { isPathDisabled } from "@/lib/disabled-filter";
+import { logTokenUsage } from "@/lib/token-logger";
+import { loadThread } from "@/lib/thread-store";
 import type { ClarificationQuestion } from "@/types";
 
 const client = new Anthropic();
+const MODEL = "claude-sonnet-4-6";
 
 // テンプレートのプレースホルダーに対する確認質問を生成
+//
+// コスト設計（2026-04 改訂）:
+// - 基本情報（profile）と案件整理（masterSheet）は、それ自体が「原本を AI が要約した確定情報」。
+//   それらを渡しておきながら原本 PDF/テキストを重ねて送るのは本末転倒でトークンを食うだけ。
+// - ここでは基本情報 + 案件整理テキスト + プレースホルダー一覧のみ送る。
+//   「ここに無ければ人間に聞く」で十分で、原本の確認は案件整理ステップの責務。
+//
 // previousQA: これまでのQ&A履歴（ループで再質問する際に含める）
 // knownMissing: 案件整理の出力で「値が *要確認*」になった項目名（必ず質問として出す）
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath, previousQA, folderPath, disabledFiles, knownMissing } = await request.json() as {
+  const { companyId, templateFolderPath, previousQA, knownMissing, threadId } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
     previousQA?: { question: string; answer: string }[];
-    folderPath?: string;
-    disabledFiles?: string[];
+    folderPath?: string;      // 互換のため残すが使わない（thread.folderPath から取る）
+    disabledFiles?: string[]; // 互換のため残すが使わない
     knownMissing?: string[];
+    threadId?: string;
   };
 
   const config = await getWorkspaceConfig();
@@ -25,6 +35,10 @@ export async function POST(request: NextRequest) {
   if (!company) {
     return NextResponse.json({ questions: [] });
   }
+
+  // 案件整理は必ず「今話しているチャットスレッド」に紐付くものを使う。
+  // company.caseRooms や company.masterSheet を拾うと別案件の情報が混入する。
+  const thread = threadId ? await loadThread(company.id, threadId) : null;
 
   // テンプレートファイルを読み込み
   const templateFiles = await readAllFilesInFolder(templateFolderPath);
@@ -93,10 +107,24 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // マスターシートとプロファイル
-  const caseRoom = company.caseRooms?.find(r => r.masterSheet);
-  const masterSheet = caseRoom?.masterSheet || company.masterSheet;
+  // 案件整理は thread のものだけを使う（案件ごとに独立、混ざらない）
+  const masterSheet = thread?.masterSheet;
   const profile = company.profile;
+
+  // デバッグ: 何が clarify に流れているかをサーバーコンソールに出す
+  console.log("[clarify/debug] threadId =", threadId);
+  console.log("[clarify/debug] thread loaded =", !!thread, "folderPath =", thread?.folderPath);
+  console.log("[clarify/debug] masterSheet.content length =", masterSheet?.content?.length || 0);
+  console.log("[clarify/debug] masterSheet.content preview =", masterSheet?.content?.slice(0, 200));
+  console.log("[clarify/debug] profile has 変更履歴 =", !!profile?.変更履歴);
+  console.log("[clarify/debug] profile has 辞任 string in structured =",
+    JSON.stringify(profile?.structured || {}).includes("辞任"));
+  console.log("[clarify/debug] memoText includes 辞任 =", memoText.includes("辞任"));
+  console.log("[clarify/debug] globalMemo includes 辞任 =", globalMemo.includes("辞任"));
+  console.log("[clarify/debug] globalMemo length =", globalMemo.length);
+  console.log("[clarify/debug] globalMemo file count =",
+    (globalMemo.match(/【共通ルール: /g) || []).length);
+  console.log("[clarify/debug] templateFolderPath =", templateFolderPath);
 
   const dataContext = JSON.stringify({
     基本情報: profile?.structured || {},
@@ -119,23 +147,25 @@ export async function POST(request: NextRequest) {
     ? `\n## 必ず質問する項目（案件整理で *要確認* になったもの）\n${knownMissing.map(m => `- ${m}`).join("\n")}\n\nこの項目は全て質問リストに含めてください。必要に応じて、資料から推測される候補を options に入れて選択肢として提示します。\n`
     : "";
 
-  // AIにデータ矛盾・不明項目を検出させる
-  const prompt = `以下の会社データとプレースホルダー一覧を比較して、確認が必要な項目だけをJSON配列で返してください。
+  // 原本 PDF/テキストは送らない。基本情報と案件整理テキストが「原本から抽出した確定情報」
+  // なので、同じ原本を重ねて送るのは本末転倒。
+  //
+  // system（固定・cache_control 対象）:
+  //   共通ルール / テンプレート注意事項 / 基本情報 / 案件整理テキスト / 出力ルール・形式
+  // user（可変）:
+  //   プレースホルダー一覧 / これまでのQ&A / knownMissing
+  const systemText = `あなたはテンプレートのプレースホルダーについて確認質問を作るアシスタントです。
+会社データと案件整理テキストから値が特定できる項目は質問せず、不明・矛盾・「必ず質問する項目」だけをJSON配列で返してください。
 
-${globalMemo ? `## 共通ルール（最優先で従うこと）\n${globalMemo}\n` : ""}
-${memoText ? `## テンプレート注意事項（このテンプレ固有のルール。質問の源泉）\n${memoText}\n\n` : ""}
-## 会社データ
+${globalMemo ? `## 共通ルール（最優先で従うこと）\n${globalMemo}\n\n` : ""}${memoText ? `## テンプレート注意事項（このテンプレ固有のルール。質問の源泉）\n${memoText}\n\n` : ""}## 会社データ
 ${dataContext}
 ${masterSheet?.content ? `\n## 案件整理テキスト\n${masterSheet.content}\n` : ""}
-${qaBlock}
-${knownMissingBlock}
-## プレースホルダー一覧
-${placeholderList}
 
 ## 重要な前提
 - **共通フォルダ（定款・登記簿・株主名簿等）の情報は基本情報として確定済み**。ここに記載の日付・住所等は正しい前提で扱う
 - **案件フォルダ（議事録・スケジュール・指示書等）の情報が今回の手続き内容**。スケジュール表に記載された日付はそのまま使う
 - 共通フォルダと案件フォルダの情報が異なっても、それは矛盾ではなく「変更手続き」である
+- **基本情報内の「過去の変更履歴」（辞任日、住所移転日、前任者氏名、旧所在地 等）は完了した事実**。今回の手続きとは無関係なので、**絶対に質問に含めない**。今回の案件整理テキストに記載されていることだけが今回の手続き内容。
 
 ## ルール
 
@@ -147,14 +177,16 @@ ${placeholderList}
 - **案件フォルダ内の複数資料間で値が矛盾している**（専門家判断が必要）
 - **複数の解釈が可能**（例: 役員が複数いて手続き対象者が特定できない）
 
-### 質問してはいけないもの
+### 質問してはいけないもの（厳守）
 - **「必ず質問する項目」リストに無く、かつ基本情報／案件整理テキストに明確な値がある項目**
+- **基本情報内の変更履歴・過去の辞任・過去の住所移転等、今回の手続きと関係ない過去の事実**
+- **案件整理テキストに既に記載されている内容**（記載済み = 確定済み。そこから値を取るだけで質問不要）
 - 表記ゆれレベルの違い（「株式会社」と「(株)」等はAIが正規化する）
 
 ### options の生成
 各質問には可能な限り候補を 1〜3 件 options に含める:
-- 案件資料（投資契約書・スケジュール表等）から推測される値を候補に
-- それぞれ source に出典（どのファイルのどこか）を書く
+- 案件整理テキスト（投資契約書・スケジュール表等から抽出した値）から推測される値を候補に
+- それぞれ source に出典（どの資料か）を書く
 - 手動入力ができる（フロントエンドが自動で追加）ので、分からなければ空の options でも可
 
 ## 出力形式（JSONのみ）
@@ -170,63 +202,67 @@ ${placeholderList}
   }
 ]`;
 
-  // 共通・案件フォルダの原本ファイルを content blocks として添付（AIが生データも参照できるように）
-  type ContentBlock =
-    | { type: "text"; text: string }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
-    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
-  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-  const contentBlocks: ContentBlock[] = [];
-  const sourceTexts: string[] = [];
-
-  // 共通フォルダ（role === "common"）＋ チャットで指定された案件フォルダを読む
-  const readFromSub = async (subId: string, subDisabled: string[], roleTag: string) => {
-    const files = await readAllFilesInFolder(subId);
-    for (const fc of files) {
-      if (isPathDisabled(fc.path, subDisabled)) continue;
-      if (fc.base64) {
-        const mime = fc.mimeType || "application/pdf";
-        if (mime === "application/pdf") {
-          contentBlocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: fc.base64 }, title: `${roleTag} ${fc.name}` });
-        } else if (IMAGE_MIMES.has(mime)) {
-          contentBlocks.push({ type: "image", source: { type: "base64", media_type: mime, data: fc.base64 } });
-        }
-      } else {
-        sourceTexts.push(`【${roleTag} ${fc.name}】\n${fc.content}`);
-      }
-    }
-  };
-
-  for (const sub of company.subfolders) {
-    if (sub.role !== "common") continue;
-    await readFromSub(sub.id, sub.disabledFiles || [], "[共通]");
-  }
-  if (folderPath) {
-    // チャットで選択された案件フォルダ（sub.activeではなくthread.folderPathを使用）
-    await readFromSub(folderPath, disabledFiles || [], "[案件]");
-  } else {
-    // フォールバック: sub.active な案件フォルダ
-    for (const sub of company.subfolders) {
-      if (!(sub.role === "job" && sub.active)) continue;
-      await readFromSub(sub.id, sub.disabledFiles || [], "[案件]");
-    }
-  }
-
-  const fullPrompt = sourceTexts.length > 0
-    ? `${prompt}\n\n## 原本ファイル（テキスト抽出済み）\n${sourceTexts.join("\n\n")}`
-    : prompt;
-  contentBlocks.push({ type: "text", text: fullPrompt });
+  const userPrompt = `## プレースホルダー一覧
+${placeholderList}
+${qaBlock}${knownMissingBlock}
+上記のプレースホルダーについて、確認が必要な項目だけを JSON 配列で返してください。`;
 
   try {
     const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2048,
-      messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
+      model: MODEL,
+      max_tokens: 4096,
+      system: [
+        { type: "text", text: systemText, cache_control: { type: "ephemeral" } },
+      ],
+      messages: [{ role: "user", content: userPrompt }],
     });
+    logTokenUsage("/api/document-templates/clarify", MODEL, response.usage);
+    console.log("[clarify/debug] previousQA count =", previousQA?.length || 0);
+    console.log("[clarify/debug] previousQA items =", (previousQA || []).map(qa => qa.question.slice(0, 40)));
+    console.log("[clarify/debug] knownMissing =", knownMissing);
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
-    const match = text.match(/\[[\s\S]*\]/);
-    let questions: ClarificationQuestion[] = match ? JSON.parse(match[0]) : [];
+    // JSON パース: 完全な [ ... ] があればそれを使い、途切れていたら末尾を補って救出
+    let questions: ClarificationQuestion[] = [];
+    const fullMatch = text.match(/\[[\s\S]*\]/);
+    if (fullMatch) {
+      try {
+        questions = JSON.parse(fullMatch[0]);
+      } catch {
+        /* fall through to truncation recovery */
+      }
+    }
+    if (questions.length === 0) {
+      // 途中で切れている場合: 最後の } までを拾って、リストとして閉じ直す
+      const start = text.indexOf("[");
+      const lastBrace = text.lastIndexOf("}");
+      if (start >= 0 && lastBrace > start) {
+        const patched = text.slice(start, lastBrace + 1) + "]";
+        try {
+          questions = JSON.parse(patched);
+          console.log(`[clarify] recovered from truncated JSON: ${questions.length} questions`);
+        } catch {
+          /* give up */
+        }
+      }
+    }
+
+    console.log("[clarify/debug] AI returned questions =", questions.map(q => ({ placeholder: q.placeholder, q: q.question?.slice(0, 50) })));
+
+    // previousQA に既に答えた質問を除外（AI が同じ質問を再生成してしまうケースへの安全網）
+    if (previousQA && previousQA.length > 0 && questions.length > 0) {
+      const answeredPlaceholders = new Set(
+        previousQA.map(qa => {
+          const m = qa.question.match(/【([^】]+)】/);
+          return m ? m[1].trim() : "";
+        }).filter(Boolean)
+      );
+      const before = questions.length;
+      questions = questions.filter(q => !answeredPlaceholders.has(q.placeholder));
+      if (before !== questions.length) {
+        console.log(`[clarify] filtered ${before - questions.length} duplicate questions (already answered)`);
+      }
+    }
 
     // 安全網: knownMissing にあるのに AI が質問に含め忘れた項目を追加
     // （AI が ignoring したり整理で名前ブレしたりしても、案件整理で *要確認* だった項目は必ず聞く）

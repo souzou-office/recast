@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
 
@@ -37,6 +38,7 @@ ${folderList}
 回答は番号をカンマ区切りで（例: 1,3,5）。該当なしなら「なし」。`
       }],
     });
+    logTokenUsage("/api/templates/suggest-folders", "claude-haiku-4-5-20251001", response.usage);
 
     const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
     if (text === "なし") {

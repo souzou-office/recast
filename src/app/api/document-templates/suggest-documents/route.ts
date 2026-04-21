@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
 
@@ -45,6 +46,7 @@ ${context}
 requiredはtrue（必須）またはfalse（任意・場合による）で判定してください。`
       }],
     });
+    logTokenUsage("/api/document-templates/suggest-documents", "claude-haiku-4-5-20251001", response.usage);
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
     const match = text.match(/\[[\s\S]*\]/);

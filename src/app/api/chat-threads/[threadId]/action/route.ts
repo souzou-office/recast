@@ -5,6 +5,7 @@ import path from "path";
 import type { ChatThread, ThreadMessage } from "@/types";
 import { onFolderSelected, onFilesConfirmed } from "@/lib/workflow-engine";
 import { getWorkspaceConfig } from "@/lib/folders";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
 
@@ -84,6 +85,7 @@ export async function POST(
           max_tokens: 50,
           messages: [{ role: "user", content: `会社「${company?.name || ""}」の案件フォルダ「${folderName}」から、チャットタイトルを1行で生成。日付(YYYY/MM)+内容の形式で簡潔に。名前のみ返してください。` }],
         });
+        logTokenUsage("/api/chat-threads/action", "claude-haiku-4-5-20251001", res.usage);
         const title = res.content[0].type === "text" ? res.content[0].text.trim() : "";
         if (title) thread.displayName = title;
       } catch { /* ignore */ }

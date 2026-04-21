@@ -34,7 +34,6 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [width, setWidth] = useState(50); // パーセント
-  const [docxRenderKey, setDocxRenderKey] = useState(0); // 再レンダリングトリガー
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
 
   const handleDragStart = useCallback(() => {
@@ -77,14 +76,109 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     }
   }, []);
 
+  // xlsx のブラウザ側レンダリング（sheetjs で HTML に変換、セル結合・列幅・簡易スタイル反映）
+  const renderXlsxInBrowserAsHtml = useCallback(async (buffer: Uint8Array): Promise<string> => {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.read(buffer, { type: "array", cellStyles: true });
+    const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    const parts: string[] = [];
+    for (const name of wb.SheetNames) {
+      const ws = wb.Sheets[name];
+      const ref = ws["!ref"];
+      if (!ref) continue;
+      const range = XLSX.utils.decode_range(ref);
+
+      // セル結合のマップ: "r,c" → { rowspan, colspan } or "skip"
+      const merges = (ws["!merges"] || []) as { s: { r: number; c: number }; e: { r: number; c: number } }[];
+      const mergeInfo: Record<string, { rowspan: number; colspan: number } | "skip"> = {};
+      for (const m of merges) {
+        const rowspan = m.e.r - m.s.r + 1;
+        const colspan = m.e.c - m.s.c + 1;
+        mergeInfo[`${m.s.r},${m.s.c}`] = { rowspan, colspan };
+        for (let r = m.s.r; r <= m.e.r; r++) {
+          for (let c = m.s.c; c <= m.e.c; c++) {
+            if (r === m.s.r && c === m.s.c) continue;
+            mergeInfo[`${r},${c}`] = "skip";
+          }
+        }
+      }
+
+      // 列幅（Excel の wch / wpx 単位を CSS 幅に変換）
+      const cols = (ws["!cols"] || []) as { wpx?: number; wch?: number }[];
+      const colWidths: string[] = [];
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const col = cols[c];
+        if (col?.wpx) colWidths.push(`${col.wpx}px`);
+        else if (col?.wch) colWidths.push(`${Math.round(col.wch * 7.5)}px`); // wch ≒ 文字数、1文字 ~7.5px
+        else colWidths.push("auto");
+      }
+
+      const rows: string[] = [];
+      for (let r = range.s.r; r <= range.e.r; r++) {
+        const cells: string[] = [];
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const info = mergeInfo[`${r},${c}`];
+          if (info === "skip") continue;
+          const addr = XLSX.utils.encode_cell({ r, c });
+          const cell = ws[addr];
+          const value = cell ? (cell.w ?? cell.v ?? "") : "";
+          const span = info
+            ? `${info.rowspan > 1 ? ` rowspan="${info.rowspan}"` : ""}${info.colspan > 1 ? ` colspan="${info.colspan}"` : ""}`
+            : "";
+          // 簡易スタイル: 太字・配置・背景色・文字色（cellStyles: true で取れたもののみ）
+          const style = cell?.s as { font?: { bold?: boolean; color?: { rgb?: string } }; alignment?: { horizontal?: string; vertical?: string }; fgColor?: { rgb?: string }; fill?: { fgColor?: { rgb?: string } } } | undefined;
+          const styleParts: string[] = [];
+          if (style?.font?.bold) styleParts.push("font-weight:600");
+          if (style?.font?.color?.rgb) styleParts.push(`color:#${style.font.color.rgb.slice(-6)}`);
+          if (style?.alignment?.horizontal) styleParts.push(`text-align:${style.alignment.horizontal}`);
+          if (style?.alignment?.vertical) styleParts.push(`vertical-align:${style.alignment.vertical === "center" ? "middle" : style.alignment.vertical}`);
+          const bg = style?.fill?.fgColor?.rgb || style?.fgColor?.rgb;
+          if (bg && bg !== "FFFFFF" && bg !== "FFFFFFFF") styleParts.push(`background:#${bg.slice(-6)}`);
+          const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join(";")}"` : "";
+          cells.push(`<td${span}${styleAttr}>${esc(String(value))}</td>`);
+        }
+        rows.push(`<tr>${cells.join("")}</tr>`);
+      }
+
+      const colgroup = `<colgroup>${colWidths.map(w => `<col style="width:${w}">`).join("")}</colgroup>`;
+      parts.push(`<h3>${esc(name)}</h3><table>${colgroup}${rows.join("")}</table>`);
+    }
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;padding:0;background:#fff;color:#111}
+body{padding:12px;font:12px -apple-system,system-ui,sans-serif;overflow:auto}
+h3{margin:16px 8px 4px;font:600 13px -apple-system,system-ui,sans-serif;color:#555}
+/* table-layout:fixed だと列幅を超えたセルが省略される。auto にして、列幅は colgroup の指定を最小値として扱う */
+table{border-collapse:collapse;margin:0 8px 16px;table-layout:auto}
+td{border:1px solid #ddd;padding:4px 6px;vertical-align:top;white-space:nowrap}
+col{min-width:60px}
+</style></head><body>${parts.join("")}</body></html>`;
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     setBlobUrl(null);
     setTextContent(null);
 
-    // base64 docx → ブラウザで直接レンダリング（LibreOffice 不要）
+    // base64 から直接レンダリング（ファイル種類で分岐）
     if (docxBase64) {
-      setDocxRenderKey(k => k + 1);
+      // xlsx / xlsm / xls なら sheetjs で HTML 化して iframe 表示
+      if (isExcel) {
+        (async () => {
+          try {
+            const bytes = base64ToUint8(docxBase64);
+            const html = await renderXlsxInBrowserAsHtml(bytes);
+            setBlobUrl("html:" + html);
+          } catch (err) {
+            setTextContent(`プレビューに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+          } finally {
+            setLoading(false);
+          }
+        })();
+        return;
+      }
+      // docx / docm（default） → docx-preview でレンダリング
       (async () => {
         try {
           const bytes = base64ToUint8(docxBase64);
@@ -113,7 +207,6 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
         .finally(() => setLoading(false));
     } else if (isBrowserDocx) {
       // docx/docm → ブラウザで直接レンダリング
-      setDocxRenderKey(k => k + 1);
       fetch("/api/workspace/raw-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -170,11 +263,14 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     return () => {
       setBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
     };
-  }, [filePath, docxBase64, isRawViewable, isBrowserDocx, isServerDocx, isExcel, renderDocxInBrowser]);
+  }, [filePath, docxBase64, isRawViewable, isBrowserDocx, isServerDocx, isExcel, renderDocxInBrowser, renderXlsxInBrowserAsHtml]);
 
   const handleDownload = async () => {
     if (docxBase64) {
-      const blob = new Blob([base64ToUint8(docxBase64)], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+      const mime = isExcel
+        ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      const blob = new Blob([base64ToUint8(docxBase64)], { type: mime });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = fileName; a.click();
@@ -195,7 +291,10 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     }
   };
 
-  const showDocxContainer = isBrowserDocx || !!docxBase64;
+  // docx-preview 用コンテナを表示するケース:
+  // - filePath 経由の .docx / .docm
+  // - docxBase64 経由で、かつ Excel ではないもの（Excel は HTML iframe で表示）
+  const showDocxContainer = isBrowserDocx || (!!docxBase64 && !isExcel);
 
   return (
     <>
@@ -214,10 +313,15 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
         </div>
       </div>
       <div className="flex-1 overflow-hidden bg-[var(--color-hover)]">
-        {loading ? (
+        {showDocxContainer ? (
+          <div className="relative w-full h-full">
+            {loading && (
+              <p className="absolute left-4 top-4 z-10 animate-pulse text-sm text-[var(--color-fg-subtle)]">読込中...</p>
+            )}
+            <div ref={docxContainerRef} className="w-full h-full overflow-auto bg-[var(--color-panel)] p-4" />
+          </div>
+        ) : loading ? (
           <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse p-4">読込中...</p>
-        ) : showDocxContainer ? (
-          <div key={docxRenderKey} ref={docxContainerRef} className="w-full h-full overflow-auto bg-[var(--color-panel)] p-4" />
         ) : blobUrl?.startsWith("html:") ? (
           <iframe srcDoc={blobUrl.slice(5)} className="w-full h-full border-0 bg-[var(--color-panel)]" />
         ) : blobUrl ? (

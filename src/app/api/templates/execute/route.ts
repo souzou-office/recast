@@ -5,8 +5,10 @@ import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
 import { mimeFromExtension } from "@/lib/file-parsers";
 import { isPathDisabled } from "@/lib/disabled-filter";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
+const MODEL = "claude-sonnet-4-6";
 
 export async function POST(request: NextRequest) {
   const { companyId, folderPath, disabledFiles, templateFolderPath } = await request.json() as {
@@ -178,6 +180,18 @@ ${profileBlock}
   - 会社の基本情報（上の「参照データ」JSON）から取った → **📇基本情報**
   - 両方に載っていれば 📇基本情報 を先に
 - 資料にも基本情報にも見つからない項目は値欄を **\`*要確認*\`** にし、省略しない
+
+### 株主関連ラベルの解釈ガイド（重要）
+株主関連の項目は、基本情報の \`株主構成\` 配列（各要素が氏名・住所・持株数・持株比率を持つ）から必ず算出・抽出すること。要確認にしない。
+
+- **「議決権を行使することができる株主の数」** = 株主構成の要素数（全株主数）
+- **「議決権を行使することができる株主の議決権の数」** = 株主構成の持株数の合計
+- **「大量保有株主の氏名又は名称/住所/保有株式数」** = 株主構成の中で最大保有者（持株数が最多の1名）の値
+- **「大量保有株主の議決権数の割合」** = その株主の持株比率（％、小数点以下2桁）
+- **「上位株主の合計議決権数」「上位株主の合計議決権数の割合」** = 上位N名（通常は過半数に達するまで or 契約書指定数）の合計。指定がなければ全株主合計でよい
+- **「第N株主の氏名/住所/メールアドレス」** = 株主構成の N 番目（持株数降順）の値。メールは基本情報に無ければ 📄案件資料から探す
+- **「株主の氏名 / 住所（提案書兼同意書等の署名欄）」**= 株主全員分。値欄には「（株主構成全員分）」と書き、根拠は **📇基本情報：株主構成** とする（具体名列挙は不要、produce 段階で展開）
+- **「株主全員の連絡先」** など名前だけ一覧が必要な場合も同様に、**📇基本情報：株主構成** を根拠に書く（要確認にしない）
 - 矛盾・表記揺れ・要確認事項は最後に **\`## ⚠ 要確認事項\`** として箇条書き
 - 本文の頭に 1 文の「今回の手続き要約」を書いてよい（例: 「Deep30 投資事業有限責任組合を引受人とする第三者割当増資」）
 - **上記ラベルに無い情報は出さない**
@@ -220,12 +234,11 @@ ${profileBlock}
 ${allTexts.join("\n\n")}`;
 
   type ContentBlock =
-    | { type: "text"; text: string }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
-    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+    | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string; cache_control?: { type: "ephemeral" } }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string }; cache_control?: { type: "ephemeral" } };
 
-  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-
+  // 画像は案件整理では送らない（テキスト+PDFで十分、壊れた画像でAPIエラーになるリスク回避）
   const contentBlocks: ContentBlock[] = [];
   for (const pdf of pdfFiles) {
     if (pdf.mimeType === "application/pdf") {
@@ -235,9 +248,10 @@ ${allTexts.join("\n\n")}`;
         title: pdf.name,
       });
     }
-    // 画像は案件整理では送らない（テキスト+PDFで十分、壊れた画像でAPIエラーになるリスク回避）
   }
-  contentBlocks.push({ type: "text", text: promptText });
+  // 最後の text ブロックに cache_control を付けると、そこまでの全 content（PDF + プロンプト）が
+  // ephemeral キャッシュ対象になる。同じ案件で再実行した場合、2回目以降は cached read（1/10 コスト）。
+  contentBlocks.push({ type: "text", text: promptText, cache_control: { type: "ephemeral" } });
 
   try {
     const encoder = new TextEncoder();
@@ -249,8 +263,8 @@ ${allTexts.join("\n\n")}`;
         })}\n\n`));
 
         const aiStream = client.messages.stream({
-          model: "claude-sonnet-4-6",
-          max_tokens: 4096,
+          model: MODEL,
+          max_tokens: 8192,
           messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
         });
 
@@ -262,6 +276,11 @@ ${allTexts.join("\n\n")}`;
             })}\n\n`));
           }
         }
+
+        try {
+          const final = await aiStream.finalMessage();
+          logTokenUsage("/api/templates/execute", MODEL, final.usage);
+        } catch { /* ignore */ }
 
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
         controller.close();
