@@ -111,21 +111,6 @@ export async function POST(request: NextRequest) {
   const masterSheet = thread?.masterSheet;
   const profile = company.profile;
 
-  // デバッグ: 何が clarify に流れているかをサーバーコンソールに出す
-  console.log("[clarify/debug] threadId =", threadId);
-  console.log("[clarify/debug] thread loaded =", !!thread, "folderPath =", thread?.folderPath);
-  console.log("[clarify/debug] masterSheet.content length =", masterSheet?.content?.length || 0);
-  console.log("[clarify/debug] masterSheet.content preview =", masterSheet?.content?.slice(0, 200));
-  console.log("[clarify/debug] profile has 変更履歴 =", !!profile?.変更履歴);
-  console.log("[clarify/debug] profile has 辞任 string in structured =",
-    JSON.stringify(profile?.structured || {}).includes("辞任"));
-  console.log("[clarify/debug] memoText includes 辞任 =", memoText.includes("辞任"));
-  console.log("[clarify/debug] globalMemo includes 辞任 =", globalMemo.includes("辞任"));
-  console.log("[clarify/debug] globalMemo length =", globalMemo.length);
-  console.log("[clarify/debug] globalMemo file count =",
-    (globalMemo.match(/【共通ルール: /g) || []).length);
-  console.log("[clarify/debug] templateFolderPath =", templateFolderPath);
-
   const dataContext = JSON.stringify({
     基本情報: profile?.structured || {},
     案件情報: masterSheet?.structured || {},
@@ -217,9 +202,6 @@ ${qaBlock}${knownMissingBlock}
       messages: [{ role: "user", content: userPrompt }],
     });
     logTokenUsage("/api/document-templates/clarify", MODEL, response.usage);
-    console.log("[clarify/debug] previousQA count =", previousQA?.length || 0);
-    console.log("[clarify/debug] previousQA items =", (previousQA || []).map(qa => qa.question.slice(0, 40)));
-    console.log("[clarify/debug] knownMissing =", knownMissing);
 
     const text = response.content[0].type === "text" ? response.content[0].text : "";
     // JSON パース: 完全な [ ... ] があればそれを使い、途切れていたら末尾を補って救出
@@ -246,8 +228,6 @@ ${qaBlock}${knownMissingBlock}
         }
       }
     }
-
-    console.log("[clarify/debug] AI returned questions =", questions.map(q => ({ placeholder: q.placeholder, q: q.question?.slice(0, 50) })));
 
     // previousQA に既に答えた質問を除外（AI が同じ質問を再生成してしまうケースへの安全網）
     if (previousQA && previousQA.length > 0 && questions.length > 0) {

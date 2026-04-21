@@ -233,6 +233,7 @@ function TemplateDetail({ templatePath, onClose, onUpdated }: {
 export default function TemplateLabelsSection() {
   const [folders, setFolders] = useState<FolderEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [regeneratingFolder, setRegeneratingFolder] = useState<string | null>(null);
@@ -276,6 +277,7 @@ export default function TemplateLabelsSection() {
     setRegeneratingFolder(null);
   };
 
+  // ファイル詳細表示
   if (selectedPath) {
     return (
       <TemplateDetail
@@ -286,6 +288,83 @@ export default function TemplateLabelsSection() {
     );
   }
 
+  // フォルダ詳細表示（そのフォルダ内のファイル一覧）
+  if (selectedFolderPath) {
+    const folder = folders.find(f => f.path === selectedFolderPath);
+    if (!folder) {
+      // 再取得待ち
+      return <p className="p-4 text-sm text-[var(--color-fg-subtle)]">読み込み中...</p>;
+    }
+    const analyzedCount = folder.files.filter(f => f.hasLabels).length;
+    const allAnalyzed = folder.files.length > 0 && analyzedCount === folder.files.length;
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-hover)]">
+          <button
+            onClick={() => setSelectedFolderPath(null)}
+            className="text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] shrink-0"
+            title="フォルダ一覧に戻る"
+          >
+            <Icon name="ChevronLeft" size={16} />
+          </button>
+          <Icon name="Folder" size={16} className="text-[var(--color-accent)] shrink-0" />
+          <span className="text-[14px] font-semibold text-[var(--color-fg)]">{folder.name}</span>
+          <span className={`text-[10px] rounded-full px-2 py-0.5 shrink-0 ${
+            allAnalyzed
+              ? "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]"
+              : "bg-[var(--color-warn-bg)] text-[var(--color-warn-fg)]"
+          }`}>
+            {analyzedCount} / {folder.files.length} 解析済み
+          </span>
+          <button
+            onClick={() => handleRegenerateFolder(folder.path, folder.name)}
+            disabled={regeneratingFolder !== null || folder.files.length === 0}
+            className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90 disabled:opacity-50 transition-opacity"
+            title="フォルダ内の全テンプレを AI で再解析（数十秒かかる場合あり）"
+          >
+            <Icon name="RefreshCcw" size={11} />
+            {regeneratingFolder === folder.path ? "再解析中..." : "一括再解析"}
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto bg-[var(--color-bg)]">
+          {folder.files.length === 0 ? (
+            <p className="text-[13px] text-[var(--color-fg-subtle)] px-4 py-6 text-center">
+              このフォルダにテンプレファイルがありません
+            </p>
+          ) : (
+            <div className="divide-y divide-[var(--color-border-soft)]">
+              {folder.files.map(f => {
+                const isExcel = /\.(xlsx|xlsm|xls)$/i.test(f.name);
+                return (
+                  <button
+                    key={f.path}
+                    onClick={() => setSelectedPath(f.path)}
+                    className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-[var(--color-hover)] transition-colors text-left"
+                  >
+                    <Icon name={isExcel ? "FileSpreadsheet" : "FileText"} size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
+                    <span className="flex-1 text-[13px] text-[var(--color-fg)] truncate">{f.name}</span>
+                    {f.hasLabels ? (
+                      <span className="text-[10px] text-[var(--color-ok-fg)] inline-flex items-center gap-1 shrink-0">
+                        <Icon name="CheckCircle2" size={10} /> {f.slotCount}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-[var(--color-warn-fg)] inline-flex items-center gap-1 shrink-0">
+                        <Icon name="AlertCircle" size={10} /> 未解析
+                      </span>
+                    )}
+                    <Icon name="ChevronRight" size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // フォルダ一覧
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 py-3 border-b border-[var(--color-border)]">
@@ -296,77 +375,37 @@ export default function TemplateLabelsSection() {
         </p>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 bg-[var(--color-bg)]">
+      <div className="flex-1 overflow-y-auto bg-[var(--color-bg)]">
         {loading ? (
-          <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse">読み込み中...</p>
+          <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse p-4">読み込み中...</p>
         ) : error ? (
-          <p className="text-sm text-red-600">{error}</p>
+          <p className="text-sm text-red-600 p-4">{error}</p>
         ) : folders.length === 0 ? (
-          <p className="text-sm text-[var(--color-fg-subtle)]">テンプレートフォルダが見つかりません。</p>
+          <p className="text-sm text-[var(--color-fg-subtle)] p-4">テンプレートフォルダが見つかりません。</p>
         ) : (
-          <div className="space-y-3">
+          <div className="divide-y divide-[var(--color-border-soft)]">
             {folders.map(folder => {
               const analyzedCount = folder.files.filter(f => f.hasLabels).length;
               const allAnalyzed = folder.files.length > 0 && analyzedCount === folder.files.length;
               return (
-                <div
+                <button
                   key={folder.path}
-                  className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] overflow-hidden"
+                  onClick={() => setSelectedFolderPath(folder.path)}
+                  className="w-full flex items-center gap-2 px-4 py-3 hover:bg-[var(--color-hover)] transition-colors text-left"
                 >
-                  {/* フォルダヘッダー: 背景色で目立たせる */}
-                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--color-border-soft)] bg-[var(--color-hover)]">
-                    <Icon name="Folder" size={16} className="text-[var(--color-accent)] shrink-0" />
-                    <span className="text-[13px] font-semibold text-[var(--color-fg)]">{folder.name}</span>
-                    <span className={`text-[10px] rounded-full px-2 py-0.5 shrink-0 ${
-                      allAnalyzed
-                        ? "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]"
+                  <Icon name="Folder" size={16} className="text-[var(--color-accent)] shrink-0" />
+                  <span className="flex-1 text-[14px] font-medium text-[var(--color-fg)] truncate">{folder.name}</span>
+                  <span className={`text-[10px] rounded-full px-2 py-0.5 shrink-0 ${
+                    allAnalyzed
+                      ? "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]"
+                      : folder.files.length === 0
+                        ? "bg-[var(--color-hover)] text-[var(--color-fg-subtle)]"
                         : "bg-[var(--color-warn-bg)] text-[var(--color-warn-fg)]"
-                    }`}>
-                      {analyzedCount} / {folder.files.length} 解析済み
-                    </span>
-                    <button
-                      onClick={() => handleRegenerateFolder(folder.path, folder.name)}
-                      disabled={regeneratingFolder !== null || folder.files.length === 0}
-                      className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90 disabled:opacity-50 transition-opacity"
-                      title="フォルダ内の全テンプレを AI で再解析（数十秒かかる場合あり）"
-                    >
-                      <Icon name="RefreshCcw" size={11} />
-                      {regeneratingFolder === folder.path ? "再解析中..." : "一括再解析"}
-                    </button>
-                  </div>
-                  {/* ファイル一覧 */}
-                  {folder.files.length === 0 ? (
-                    <p className="text-[11px] text-[var(--color-fg-subtle)] px-4 py-3">
-                      このフォルダにテンプレファイルがありません
-                    </p>
-                  ) : (
-                    <div className="divide-y divide-[var(--color-border-soft)]">
-                      {folder.files.map(f => {
-                        const isExcel = /\.(xlsx|xlsm|xls)$/i.test(f.name);
-                        return (
-                          <button
-                            key={f.path}
-                            onClick={() => setSelectedPath(f.path)}
-                            className="w-full flex items-center gap-2 px-4 py-2 hover:bg-[var(--color-hover)] transition-colors text-left"
-                          >
-                            <Icon name={isExcel ? "FileSpreadsheet" : "FileText"} size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
-                            <span className="flex-1 text-[13px] text-[var(--color-fg)] truncate">{f.name}</span>
-                            {f.hasLabels ? (
-                              <span className="text-[10px] text-[var(--color-ok-fg)] inline-flex items-center gap-1 shrink-0">
-                                <Icon name="CheckCircle2" size={10} /> {f.slotCount}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] text-[var(--color-warn-fg)] inline-flex items-center gap-1 shrink-0">
-                                <Icon name="AlertCircle" size={10} /> 未解析
-                              </span>
-                            )}
-                            <Icon name="ChevronRight" size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                  }`}>
+                    {folder.files.length === 0 ? "空" : `${analyzedCount} / ${folder.files.length} 解析済み`}
+                  </span>
+                  <Icon name="ChevronRight" size={14} className="text-[var(--color-fg-subtle)] shrink-0" />
+                </button>
               );
             })}
           </div>
