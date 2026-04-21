@@ -48,6 +48,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     // 値の編集タブを出すための追加情報（生成済み書類の場合のみ）
     filledSlots?: import("@/types").FilledSlot[];
     templatePath?: string;
+    issues?: import("@/types").CheckIssue[];
+    docName?: string;
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -927,6 +929,11 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           templatePath={previewFile.templatePath}
           companyId={company?.id}
           threadId={thread?.id}
+          verifyIssues={
+            previewFile.issues && previewFile.issues.length > 0 && previewFile.docName
+              ? [{ docName: previewFile.docName, issues: previewFile.issues }]
+              : undefined
+          }
           onRegenerated={(newBase64, newSlots) => {
             // プレビュー内の docxBase64 を更新
             setPreviewFile(prev => prev ? { ...prev, docxBase64: newBase64, filledSlots: newSlots } : prev);

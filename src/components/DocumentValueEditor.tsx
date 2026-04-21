@@ -116,6 +116,20 @@ export default function DocumentValueEditor({
   }
   const groups = Array.from(slotsByCopy.entries()).sort((a, b) => (a[0] || 0) - (b[0] || 0));
 
+  // verify の指摘を収集（この書類への指摘だけ）
+  const flatIssues = (verifyIssues || []).flatMap(vi => vi.issues);
+
+  // スロットと issue のマッチング。issue.problem / expected に slot.label または slot.value が含まれるかで判定。
+  const isSlotFlagged = (slot: FilledSlot): boolean => {
+    if (flatIssues.length === 0) return false;
+    return flatIssues.some(iss => {
+      const text = `${iss.problem || ""} ${iss.expected || ""}`;
+      if (slot.label && text.includes(slot.label)) return true;
+      if (slot.value && slot.value.length >= 3 && text.includes(slot.value)) return true;
+      return false;
+    });
+  };
+
   return (
     <div className="flex flex-col h-full bg-[var(--color-bg)]">
       <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-hover)]">
@@ -141,6 +155,28 @@ export default function DocumentValueEditor({
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
+        {/* verify 指摘サマリ */}
+        {flatIssues.length > 0 && (
+          <div className="mb-3 rounded-lg border border-[var(--color-warn-border,#f59e0b)] bg-[var(--color-warn-bg)] p-3">
+            <div className="text-[11px] font-semibold text-[var(--color-warn-fg)] mb-1.5 inline-flex items-center gap-1">
+              <Icon name="AlertTriangle" size={12} /> AI が指摘した修正点 ({flatIssues.length})
+            </div>
+            <ul className="space-y-1">
+              {flatIssues.map((iss, i) => (
+                <li key={i} className="text-[11px] text-[var(--color-fg)] leading-relaxed">
+                  <span className="text-[var(--color-fg-muted)]">・</span>{iss.problem}
+                  {iss.expected && (
+                    <span className="text-[var(--color-fg-muted)]"> → 正: <span className="font-medium text-[var(--color-fg)]">{iss.expected}</span></span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="text-[10px] text-[var(--color-fg-subtle)] mt-2 leading-relaxed">
+              下のスロット一覧で、🔴マークが付いた項目が該当する可能性があります。候補ドロップダウンの先頭に正しい値が提示されるので、選んで「再生成」してください。
+            </div>
+          </div>
+        )}
+
         {filledSlots.length === 0 ? (
           <p className="text-sm text-[var(--color-fg-subtle)]">編集可能なスロットがありません。</p>
         ) : (
@@ -156,9 +192,15 @@ export default function DocumentValueEditor({
                   const current = values[s.slotId] ?? s.value;
                   const changed = current !== s.value;
                   const cands = candidates[s.slotId] || [];
+                  const flagged = isSlotFlagged(s);
                   return (
-                    <div key={`${copyIndex}-${s.slotId}`} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)] p-2.5">
+                    <div key={`${copyIndex}-${s.slotId}`} className={`rounded-lg border p-2.5 ${
+                      flagged
+                        ? "border-red-400 bg-red-50 ring-1 ring-red-200"
+                        : "border-[var(--color-border)] bg-[var(--color-panel)]"
+                    }`}>
                       <div className="flex items-center gap-2 mb-1">
+                        {flagged && <span className="text-[11px] text-red-600" title="AIが修正推奨">🔴</span>}
                         <span className="text-[11px] font-medium text-[var(--color-fg)]">{s.label}</span>
                         {s.format && <span className="text-[10px] text-[var(--color-fg-subtle)] font-mono">{s.format}</span>}
                         {changed && <span className="text-[10px] text-[var(--color-accent)]">●変更済み</span>}

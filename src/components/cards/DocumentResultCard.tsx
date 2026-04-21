@@ -11,6 +11,8 @@ interface Props {
     fileName: string;
     templatePath?: string;
     filledSlots?: import("@/types").FilledSlot[];
+    issues?: CheckIssue[];
+    docName?: string;
   }) => void;
 }
 
@@ -76,6 +78,8 @@ function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: 
             fileName: doc.fileName,
             templatePath: doc.templatePath,
             filledSlots: doc.filledSlots,
+            issues: doc.issues,
+            docName: doc.name,
           })}
           className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
           title="プレビュー"
