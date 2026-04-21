@@ -289,9 +289,9 @@ severity の基準:
 - docName は「生成済み書類」セクションで使っている書類名と完全一致させる
 - JSON のみ返す（説明文は不要）`;
 
-  // 最後の text ブロックに cache_control を付け、そこまでの全 content（原本PDF + プロンプト）を
-  // ephemeral キャッシュ対象に。同じスレッドでチェックを再実行した場合、2回目以降は cached read。
-  contentBlocks.push({ type: "text", text: prompt, cache_control: { type: "ephemeral" } });
+  // verify は 1 案件に 1 回しか呼ばれないので cache_control を付けない。
+  // （cache_write は通常入力の 1.25 倍なので、2回目の読み込みが無ければ損になる）
+  contentBlocks.push({ type: "text", text: prompt });
 
   // 生成書類のファイル名もsourceFilesに追加（リンク用）
   for (const doc of generatedDocuments) {

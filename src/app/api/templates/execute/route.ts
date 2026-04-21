@@ -249,9 +249,9 @@ ${allTexts.join("\n\n")}`;
       });
     }
   }
-  // 最後の text ブロックに cache_control を付けると、そこまでの全 content（PDF + プロンプト）が
-  // ephemeral キャッシュ対象になる。同じ案件で再実行した場合、2回目以降は cached read（1/10 コスト）。
-  contentBlocks.push({ type: "text", text: promptText, cache_control: { type: "ephemeral" } });
+  // 案件整理は 1 案件に 1 回しか呼ばれないので cache_control を付けない。
+  // （cache_write は通常入力の 1.25 倍なので、2回目の読み込みが無ければ損になる）
+  contentBlocks.push({ type: "text", text: promptText });
 
   try {
     const encoder = new TextEncoder();
