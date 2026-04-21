@@ -175,28 +175,6 @@ export default function DocumentValueEditor({
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
-        {/* verify 指摘サマリ */}
-        {flatIssues.length > 0 && (
-          <div className="mb-3 rounded-lg border border-[var(--color-warn-border,#f59e0b)] bg-[var(--color-warn-bg)] p-3">
-            <div className="text-[11px] font-semibold text-[var(--color-warn-fg)] mb-1.5 inline-flex items-center gap-1">
-              <Icon name="AlertTriangle" size={12} /> AI が指摘した修正点 ({flatIssues.length})
-            </div>
-            <ul className="space-y-1">
-              {flatIssues.map((iss, i) => (
-                <li key={i} className="text-[11px] text-[var(--color-fg)] leading-relaxed">
-                  <span className="text-[var(--color-fg-muted)]">・</span>{iss.problem}
-                  {iss.expected && (
-                    <span className="text-[var(--color-fg-muted)]"> → 正: <span className="font-medium text-[var(--color-fg)]">{iss.expected}</span></span>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <div className="text-[10px] text-[var(--color-fg-subtle)] mt-2 leading-relaxed">
-              下の項目で、🔴マークが付いたものが該当する可能性があります。候補から正しい値を選んで「再生成」してください。
-            </div>
-          </div>
-        )}
-
         {visibleSlots.length === 0 ? (
           <p className="text-sm text-[var(--color-fg-subtle)]">編集可能な項目がありません。</p>
         ) : (
