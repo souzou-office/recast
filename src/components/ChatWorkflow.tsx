@@ -804,7 +804,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   }
 
   return (
-    <div className="flex h-full">
+    <div id="main-content-area" className="flex h-full">
       {/* 左: チャット */}
       <div className={`flex flex-col ${previewFile ? "flex-1 min-w-0" : "w-full"}`}>
       {/* メッセージ一覧 */}
