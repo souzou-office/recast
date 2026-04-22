@@ -70,7 +70,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           try {
             const m = checkText.match(/```json\s*([\s\S]*?)```/) || checkText.match(/(\{[\s\S]*\})/);
             if (m) {
-              const parsed = JSON.parse(m[1] || m[0]) as { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> };
+              const parsed = JSON.parse(m[1] || m[0]) as { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string; slotId?: number; candidates?: { value: string; source: string }[] }> }> };
               if (parsed.documents) {
                 for (let i = loaded.messages.length - 1; i >= 0; i--) {
                   const cards = loaded.messages[i].cards;
@@ -98,6 +98,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                       aspect: iss.aspect || "",
                       problem: iss.problem || "",
                       expected: iss.expected,
+                      slotId: typeof iss.slotId === "number" ? iss.slotId : undefined,
+                      candidates: Array.isArray(iss.candidates) ? iss.candidates.filter(c => c && typeof c.value === "string") : undefined,
                     }));
                     const status: "ok" | "warn" | "error" =
                       match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
@@ -717,7 +719,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
       // JSON 抽出
       const jsonMatch = fullText.match(/```json\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
-      let parsed: { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> } | null = null;
+      let parsed: { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string; slotId?: number; candidates?: { value: string; source: string }[] }> }> } | null = null;
       if (jsonMatch) {
         try { parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]); } catch { parsed = null; }
       }
@@ -756,6 +758,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                 aspect: iss.aspect || "",
                 problem: iss.problem || "",
                 expected: iss.expected,
+                slotId: typeof iss.slotId === "number" ? iss.slotId : undefined,
+                candidates: Array.isArray(iss.candidates) ? iss.candidates.filter(c => c && typeof c.value === "string") : undefined,
               }));
               const status: "ok" | "warn" | "error" =
                 match.status === "error" || issues.some(i => i.severity === "error") ? "error" :

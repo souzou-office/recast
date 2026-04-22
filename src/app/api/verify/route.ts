@@ -114,13 +114,23 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // --- 1. 生成済み書類のテキスト抽出 ---
+  // --- 1. 生成済み書類のテキスト抽出 + filledSlots 一覧 ---
+  // filledSlots を渡しておくことで、AI は「この指摘はどの項目（slotId）のことか」
+  // を発見と同時に特定できる。後段で別 AI に推測させる必要がない。
   const generatedTexts: string[] = [];
   for (const doc of generatedDocuments) {
     const text = await extractDocumentText(doc.docxBase64, doc.fileName);
-    if (text) {
-      generatedTexts.push(`【生成書類: ${doc.fileName}】\n${text}`);
+    if (!text) continue;
+    let docBlock = `【生成書類: ${doc.fileName}】\n${text}`;
+    const slots = (doc as { filledSlots?: { slotId: number; label: string; value: string }[] }).filledSlots;
+    if (slots && slots.length > 0) {
+      docBlock += `\n\n[この書類の項目一覧（slotId 付き）]\n` +
+        slots
+          .filter(s => s.value && s.value.trim())
+          .map(s => `- slotId=${s.slotId}: ${s.label} = "${s.value}"`)
+          .join("\n");
     }
+    generatedTexts.push(docBlock);
   }
 
   // --- 2. 原本ファイルの読み込み ---
@@ -255,7 +265,7 @@ ${generatedTexts.join("\n\n")}
 - 必要な情報が空欄や未記入のまま
 
 ## 出力フォーマット
-**書類ごと** に整理した JSON を返してください。フォーマットは以下のとおり:
+**書類ごと** に整理した JSON を返してください。各 issue には **slotId**（該当項目）と **candidates**（修正候補）も付けてください。
 
 \`\`\`json
 {
@@ -269,14 +279,30 @@ ${generatedTexts.join("\n\n")}
           "severity": "error" | "warn" | "info",
           "aspect": "原本との整合性",
           "problem": "代表取締役の氏名が福田峻介になっているが、基本情報では三上春香",
-          "expected": "三上春香"
+          "expected": "三上春香",
+          "slotId": 3,
+          "candidates": [
+            { "value": "三上春香", "source": "⚠verify指摘" },
+            { "value": "三上春香", "source": "📇基本情報" }
+          ]
         }
       ]
-    },
-    ...
+    }
   ]
 }
 \`\`\`
+
+### slotId の付け方（重要）
+- 各書類の「項目一覧（slotId 付き）」を見て、指摘が **どの 1 項目** のことか特定し、その slotId を入れる
+- 自信がない／書類全体に関わる指摘／複数項目に跨る指摘 は slotId を **省略**（フィールド自体を出さない）
+- **同じ slotId を複数 issue に付けない**（重複禁止）
+- ラベル文字列の一致ではなく、項目の意味と問題箇所が一致するものだけ
+
+### candidates の付け方
+- expected があれば候補の先頭に: \`{ value: expected, source: "⚠verify指摘" }\`
+- 加えて、基本情報 / 案件整理から該当する値があれば追加
+- 候補がなければ空配列でもよい
+- 同じ値の重複は避ける（最大 3 件）
 
 severity の基準:
 - "error"（🔴重大）: 登記/法務上 影響があり、確実に修正が必要

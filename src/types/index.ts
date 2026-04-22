@@ -224,6 +224,9 @@ export interface CheckIssue {
   aspect: string;   // チェック観点（例: 原本との整合性 / 書類間の整合性 / 要確認の残り）
   problem: string;  // 問題内容
   expected?: string; // 原本の正しい値（あれば）
+  slotId?: number;  // verify が指摘した項目の slotId（紐付かない指摘の場合は undefined）
+  candidates?: { value: string; source: string }[]; // 修正候補（expected 含む、なければ空）
+  acknowledged?: boolean; // ユーザーが「確認した、このままで OK」とマークした
 }
 
 export interface DocumentResultItem {
