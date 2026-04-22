@@ -66,7 +66,9 @@ function severityDot(sev: CheckIssue["severity"]) {
 function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; onPreview?: Props["onPreview"]; onMarkOk?: Props["onMarkOk"] }) {
   const ext = doc.fileName.split(".").pop()?.toLowerCase() || "";
   const iconName = ext === "pdf" ? "FileType" : ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" : "FileText";
-  const hasIssues = !!(doc.issues && doc.issues.length > 0);
+  // acknowledged な指摘は「解決済み」扱いで表示・カウントから除く
+  const activeIssues = (doc.issues || []).filter(iss => !iss.acknowledged);
+  const hasIssues = activeIssues.length > 0;
   const isOk = doc.checkStatus === "ok";
 
   return (
@@ -109,7 +111,7 @@ function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; on
       {hasIssues && (
         <div className="px-3 pb-2.5 pt-0.5 border-t border-[var(--color-border-soft)] bg-[var(--color-warn-bg)]/30">
           <ul className="space-y-1.5 mt-2">
-            {doc.issues!.map((iss, i) => (
+            {activeIssues.map((iss, i) => (
               <li key={i} className="flex items-start gap-2 text-[12px]">
                 {severityDot(iss.severity)}
                 <div className="flex-1 leading-relaxed">
@@ -131,7 +133,11 @@ function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; on
 }
 
 export default function DocumentResultCardUI({ card, onPreview, onMarkOk }: Props) {
-  const totalIssues = card.documents.reduce((sum, d) => sum + (d.issues?.length || 0), 0);
+  // 解決済み (acknowledged) の指摘はカウントから除外
+  const totalIssues = card.documents.reduce(
+    (sum, d) => sum + ((d.issues || []).filter(iss => !iss.acknowledged).length),
+    0,
+  );
   const hasChecked = card.documents.some(d => d.checkStatus !== undefined);
   const anyError = card.documents.some(d => d.checkStatus === "error");
   const anyWarn = card.documents.some(d => d.checkStatus === "warn");

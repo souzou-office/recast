@@ -16,6 +16,8 @@ interface Props {
   verifyIssues?: { docName: string; issues: CheckIssue[] }[];
   // 再生成後、親（ChatWorkflow）に新しい docxBase64 と filledSlots を伝える
   onRegenerated: (docxBase64: string, filledSlots: FilledSlot[]) => void;
+  // 指摘の acknowledged 状態を親に通知（slotId に紐付く全 issue を一括 ack/解除）
+  onIssueAcknowledge?: (slotId: number, acknowledged: boolean) => void;
 }
 
 export default function DocumentValueEditor({
@@ -26,6 +28,7 @@ export default function DocumentValueEditor({
   threadId,
   verifyIssues,
   onRegenerated,
+  onIssueAcknowledge,
 }: Props) {
   // スロット値の編集状態（slotId → value）
   const [values, setValues] = useState<Record<number, string>>({});
@@ -42,6 +45,17 @@ export default function DocumentValueEditor({
     setValues(init);
     setDirty(false);
   }, [filledSlots]);
+
+  // 永続化された acknowledged 状態を復元
+  useEffect(() => {
+    const set = new Set<number>();
+    for (const vi of verifyIssues || []) {
+      for (const iss of vi.issues) {
+        if (iss.acknowledged && typeof iss.slotId === "number") set.add(iss.slotId);
+      }
+    }
+    setAcknowledgedSlots(set);
+  }, [verifyIssues]);
 
   // verify の指摘から、slotId 別に issue + candidates を構築（AI 呼び出しなし、純機械処理）
   const flatIssues: CheckIssue[] = (verifyIssues || []).flatMap(vi => vi.issues);
@@ -93,6 +107,13 @@ export default function DocumentValueEditor({
       });
       if (res.ok) {
         const data = await res.json();
+        // 値を変えた slot に紐付く verify 指摘は「直した」とみなして自動で acknowledged 扱い
+        if (onIssueAcknowledge) {
+          for (const s of filledSlots) {
+            const newVal = values[s.slotId] ?? s.value;
+            if (newVal !== s.value) onIssueAcknowledge(s.slotId, true);
+          }
+        }
         onRegenerated(data.docxBase64, newSlots);
         setDirty(false);
       } else {
@@ -219,7 +240,10 @@ export default function DocumentValueEditor({
                             </div>
                           ))}
                           <button
-                            onClick={() => setAcknowledgedSlots(prev => new Set(prev).add(s.slotId))}
+                            onClick={() => {
+                              setAcknowledgedSlots(prev => new Set(prev).add(s.slotId));
+                              onIssueAcknowledge?.(s.slotId, true);
+                            }}
                             className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-white border border-red-300 px-2 py-0.5 text-[10px] text-red-700 hover:bg-red-50"
                             title="この指摘は確認した（値はこのままでOK）"
                           >
@@ -232,7 +256,10 @@ export default function DocumentValueEditor({
                         <div className="mb-1.5 text-[10px] text-[var(--color-fg-subtle)] inline-flex items-center gap-1">
                           <Icon name="CheckCircle2" size={10} className="text-[var(--color-ok-fg)]" /> 確認済み
                           <button
-                            onClick={() => setAcknowledgedSlots(prev => { const n = new Set(prev); n.delete(s.slotId); return n; })}
+                            onClick={() => {
+                              setAcknowledgedSlots(prev => { const n = new Set(prev); n.delete(s.slotId); return n; });
+                              onIssueAcknowledge?.(s.slotId, false);
+                            }}
                             className="ml-2 underline hover:text-[var(--color-fg)]"
                           >
                             戻す

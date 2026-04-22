@@ -1001,6 +1001,38 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               }),
             }).catch(() => { /* ignore */ });
           }}
+          onIssueAcknowledge={(slotId, ack) => {
+            if (!thread || !company) return;
+            // document-result カード内の該当書類の issues を更新
+            const updatedMessages = thread.messages.map(m => {
+              if (!m.cards) return m;
+              const newCards = m.cards.map(c => {
+                if (c.type !== "document-result") return c;
+                const newDocs = c.documents.map(d => {
+                  if (d.fileName !== previewFile.fileName) return d;
+                  const newIssues = (d.issues || []).map(iss =>
+                    iss.slotId === slotId ? { ...iss, acknowledged: ack } : iss
+                  );
+                  // 残りの未解決 issue 数で status を再計算
+                  const unresolved = newIssues.filter(i => !i.acknowledged);
+                  const newStatus: "ok" | "warn" | "error" =
+                    unresolved.length === 0 ? "ok" :
+                    unresolved.some(i => i.severity === "error") ? "error" : "warn";
+                  return { ...d, issues: newIssues, checkStatus: newStatus };
+                });
+                return { ...c, documents: newDocs };
+              });
+              return { ...m, cards: newCards };
+            });
+            const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+            setThread(updatedThread);
+            // 永続化
+            fetch(`/api/chat-threads/${thread.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ companyId: company.id, messages: updatedMessages }),
+            }).catch(() => { /* ignore */ });
+          }}
         />
       )}
     </div>
