@@ -1,12 +1,22 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import DocumentValueEditor from "./DocumentValueEditor";
+import type { FilledSlot } from "@/types";
 
 interface Props {
   filePath?: string;
   fileName: string;
   onClose: () => void;
   docxBase64?: string;
+  // 値の編集タブ用（生成済み書類でのみ有効）
+  filledSlots?: FilledSlot[];
+  templatePath?: string;
+  companyId?: string;
+  threadId?: string;
+  verifyIssues?: { docName: string; issues: import("@/types").CheckIssue[] }[];
+  onRegenerated?: (docxBase64: string, filledSlots: FilledSlot[]) => void;
+  onIssueAcknowledge?: (slotId: number, acknowledged: boolean) => void;
 }
 
 const RAW_VIEWABLE = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".htm"]);
@@ -23,7 +33,10 @@ function base64ToUint8(base64: string): Uint8Array {
   return byteArray;
 }
 
-export default function FilePreview({ filePath, fileName, onClose, docxBase64 }: Props) {
+export default function FilePreview({
+  filePath, fileName, onClose, docxBase64,
+  filledSlots, templatePath, companyId, threadId, verifyIssues, onRegenerated, onIssueAcknowledge,
+}: Props) {
   const ext = `.${(fileName.split(".").pop() || "").toLowerCase()}`;
   const isRawViewable = RAW_VIEWABLE.has(ext);
   const isBrowserDocx = BROWSER_DOCX.has(ext);
@@ -33,9 +46,12 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [width, setWidth] = useState(50); // パーセント
-  const [docxRenderKey, setDocxRenderKey] = useState(0); // 再レンダリングトリガー
+  const [width, setWidth] = useState(50); // パーセント。チャットとプレビュー半々がデフォルト。ドラッグで 20〜90% の範囲で調整可。
   const docxContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // 値の編集タブ
+  const canEdit = !!(filledSlots && templatePath && companyId && onRegenerated);
+  const [activeTab, setActiveTab] = useState<"preview" | "edit">("preview");
 
   const handleDragStart = useCallback(() => {
     const handleMove = (e: MouseEvent) => {
@@ -43,7 +59,7 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
       if (!container) return;
       const rect = container.getBoundingClientRect();
       const pct = 100 - ((e.clientX - rect.left) / rect.width) * 100;
-      setWidth(Math.max(20, Math.min(80, pct)));
+      setWidth(Math.max(20, Math.min(90, pct)));
     };
     const handleUp = () => {
       document.body.style.cursor = "";
@@ -77,14 +93,115 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     }
   }, []);
 
+  // xlsx のブラウザ側レンダリング（sheetjs で HTML に変換）
+  // 現在は生成 xlsx プレビューでは未使用（LibreOffice PDF 変換に移行）。
+  // 将来ブラウザ側描画に戻す可能性に備えて残している。
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _renderXlsxInBrowserAsHtml = useCallback(async (buffer: Uint8Array): Promise<string> => {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.read(buffer, { type: "array", cellStyles: true });
+    const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    const parts: string[] = [];
+    for (const name of wb.SheetNames) {
+      const ws = wb.Sheets[name];
+      const ref = ws["!ref"];
+      if (!ref) continue;
+      const range = XLSX.utils.decode_range(ref);
+
+      // セル結合のマップ: "r,c" → { rowspan, colspan } or "skip"
+      const merges = (ws["!merges"] || []) as { s: { r: number; c: number }; e: { r: number; c: number } }[];
+      const mergeInfo: Record<string, { rowspan: number; colspan: number } | "skip"> = {};
+      for (const m of merges) {
+        const rowspan = m.e.r - m.s.r + 1;
+        const colspan = m.e.c - m.s.c + 1;
+        mergeInfo[`${m.s.r},${m.s.c}`] = { rowspan, colspan };
+        for (let r = m.s.r; r <= m.e.r; r++) {
+          for (let c = m.s.c; c <= m.e.c; c++) {
+            if (r === m.s.r && c === m.s.c) continue;
+            mergeInfo[`${r},${c}`] = "skip";
+          }
+        }
+      }
+
+      // 列幅（Excel の wch / wpx 単位を CSS 幅に変換）
+      const cols = (ws["!cols"] || []) as { wpx?: number; wch?: number }[];
+      const colWidths: string[] = [];
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const col = cols[c];
+        if (col?.wpx) colWidths.push(`${col.wpx}px`);
+        else if (col?.wch) colWidths.push(`${Math.round(col.wch * 7.5)}px`); // wch ≒ 文字数、1文字 ~7.5px
+        else colWidths.push("auto");
+      }
+
+      const rows: string[] = [];
+      for (let r = range.s.r; r <= range.e.r; r++) {
+        const cells: string[] = [];
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const info = mergeInfo[`${r},${c}`];
+          if (info === "skip") continue;
+          const addr = XLSX.utils.encode_cell({ r, c });
+          const cell = ws[addr];
+          const value = cell ? (cell.w ?? cell.v ?? "") : "";
+          const span = info
+            ? `${info.rowspan > 1 ? ` rowspan="${info.rowspan}"` : ""}${info.colspan > 1 ? ` colspan="${info.colspan}"` : ""}`
+            : "";
+          // 簡易スタイル: 太字・配置・背景色・文字色（cellStyles: true で取れたもののみ）
+          const style = cell?.s as { font?: { bold?: boolean; color?: { rgb?: string } }; alignment?: { horizontal?: string; vertical?: string }; fgColor?: { rgb?: string }; fill?: { fgColor?: { rgb?: string } } } | undefined;
+          const styleParts: string[] = [];
+          if (style?.font?.bold) styleParts.push("font-weight:600");
+          if (style?.font?.color?.rgb) styleParts.push(`color:#${style.font.color.rgb.slice(-6)}`);
+          if (style?.alignment?.horizontal) styleParts.push(`text-align:${style.alignment.horizontal}`);
+          if (style?.alignment?.vertical) styleParts.push(`vertical-align:${style.alignment.vertical === "center" ? "middle" : style.alignment.vertical}`);
+          const bg = style?.fill?.fgColor?.rgb || style?.fgColor?.rgb;
+          if (bg && bg !== "FFFFFF" && bg !== "FFFFFFFF") styleParts.push(`background:#${bg.slice(-6)}`);
+          const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join(";")}"` : "";
+          cells.push(`<td${span}${styleAttr}>${esc(String(value))}</td>`);
+        }
+        rows.push(`<tr>${cells.join("")}</tr>`);
+      }
+
+      const colgroup = `<colgroup>${colWidths.map(w => `<col style="width:${w}">`).join("")}</colgroup>`;
+      parts.push(`<h3>${esc(name)}</h3><table>${colgroup}${rows.join("")}</table>`);
+    }
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+/* iframe のネイティブスクロール (html 要素) に任せる。body に overflow を書くと逆に阻害される */
+html,body{margin:0;padding:0;background:#fff;color:#111}
+body{padding:12px;font:12px -apple-system,system-ui,sans-serif}
+h3{margin:16px 8px 4px;font:600 13px -apple-system,system-ui,sans-serif;color:#555}
+/* width:max-content でテーブルが列幅の合計分まで広がる → viewport を超えれば iframe が横スクロール */
+table{border-collapse:collapse;margin:0 8px 16px;width:max-content;max-width:none;table-layout:auto}
+td{border:1px solid #ddd;padding:4px 6px;vertical-align:top;white-space:nowrap}
+col{min-width:60px}
+</style></head><body>${parts.join("")}</body></html>`;
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     setBlobUrl(null);
     setTextContent(null);
 
-    // base64 docx → ブラウザで直接レンダリング（LibreOffice 不要）
+    // base64 から直接レンダリング（ファイル種類で分岐）
     if (docxBase64) {
-      setDocxRenderKey(k => k + 1);
+      // xlsx / xlsm / xls は sheetjs の HTML 表示ではスクロール等が厳しいので、
+      // LibreOffice で PDF に変換して表示する（Word の既存ルートと同じ）。
+      if (isExcel) {
+        fetch("/api/workspace/preview-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ base64: docxBase64, fileName }),
+        })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(`PDF 変換失敗 (${res.status})`);
+            const blob = await res.blob();
+            setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
+          })
+          .catch((err) => setTextContent(`プレビューに失敗しました: ${err instanceof Error ? err.message : String(err)}`))
+          .finally(() => setLoading(false));
+        return;
+      }
+      // docx / docm（default） → docx-preview でレンダリング
       (async () => {
         try {
           const bytes = base64ToUint8(docxBase64);
@@ -113,7 +230,6 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
         .finally(() => setLoading(false));
     } else if (isBrowserDocx) {
       // docx/docm → ブラウザで直接レンダリング
-      setDocxRenderKey(k => k + 1);
       fetch("/api/workspace/raw-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -170,11 +286,14 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     return () => {
       setBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
     };
-  }, [filePath, docxBase64, isRawViewable, isBrowserDocx, isServerDocx, isExcel, renderDocxInBrowser]);
+  }, [filePath, fileName, docxBase64, isRawViewable, isBrowserDocx, isServerDocx, isExcel, renderDocxInBrowser]);
 
   const handleDownload = async () => {
     if (docxBase64) {
-      const blob = new Blob([base64ToUint8(docxBase64)], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+      const mime = isExcel
+        ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      const blob = new Blob([base64ToUint8(docxBase64)], { type: mime });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = fileName; a.click();
@@ -195,7 +314,10 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
     }
   };
 
-  const showDocxContainer = isBrowserDocx || !!docxBase64;
+  // docx-preview 用コンテナを表示するケース:
+  // - filePath 経由の .docx / .docm
+  // - docxBase64 経由で、かつ Excel ではないもの（Excel は HTML iframe で表示）
+  const showDocxContainer = isBrowserDocx || (!!docxBase64 && !isExcel);
 
   return (
     <>
@@ -213,11 +335,44 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
           <button onClick={onClose} className="text-xs text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]">x</button>
         </div>
       </div>
-      <div className="flex-1 overflow-hidden bg-[var(--color-hover)]">
-        {loading ? (
+      {canEdit && (
+        <div className="flex items-center gap-0 border-b border-[var(--color-border-soft)] bg-[var(--color-panel)] px-2">
+          <button
+            onClick={() => setActiveTab("preview")}
+            className={`px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
+              activeTab === "preview"
+                ? "border-[var(--color-accent)] text-[var(--color-fg)]"
+                : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
+            }`}
+          >
+            プレビュー
+          </button>
+          <button
+            onClick={() => setActiveTab("edit")}
+            className={`px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
+              activeTab === "edit"
+                ? "border-[var(--color-accent)] text-[var(--color-fg)]"
+                : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
+            }`}
+          >
+            修正
+          </button>
+        </div>
+      )}
+      {/* プレビューと修正タブの両方を常にマウントして display で切替（unmount すると docx-preview が消える） */}
+      <div
+        className="flex-1 overflow-hidden bg-[var(--color-hover)]"
+        style={{ display: canEdit && activeTab === "edit" ? "none" : "block" }}
+      >
+        {showDocxContainer ? (
+          <div className="relative w-full h-full">
+            {loading && (
+              <p className="absolute left-4 top-4 z-10 animate-pulse text-sm text-[var(--color-fg-subtle)]">読込中...</p>
+            )}
+            <div ref={docxContainerRef} className="w-full h-full overflow-auto bg-[var(--color-panel)] p-4" />
+          </div>
+        ) : loading ? (
           <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse p-4">読込中...</p>
-        ) : showDocxContainer ? (
-          <div key={docxRenderKey} ref={docxContainerRef} className="w-full h-full overflow-auto bg-[var(--color-panel)] p-4" />
         ) : blobUrl?.startsWith("html:") ? (
           <iframe srcDoc={blobUrl.slice(5)} className="w-full h-full border-0 bg-[var(--color-panel)]" />
         ) : blobUrl ? (
@@ -226,6 +381,23 @@ export default function FilePreview({ filePath, fileName, onClose, docxBase64 }:
           <pre className="text-xs text-[var(--color-fg)] whitespace-pre-wrap font-mono leading-relaxed p-4 overflow-y-auto h-full bg-[var(--color-panel)]">{textContent}</pre>
         )}
       </div>
+      {canEdit && (
+        <div
+          className="flex-1 overflow-hidden"
+          style={{ display: activeTab === "edit" ? "block" : "none" }}
+        >
+          <DocumentValueEditor
+            filledSlots={filledSlots!}
+            templatePath={templatePath!}
+            fileName={fileName}
+            companyId={companyId!}
+            threadId={threadId}
+            verifyIssues={verifyIssues}
+            onRegenerated={onRegenerated!}
+            onIssueAcknowledge={onIssueAcknowledge}
+          />
+        </div>
+      )}
     </div>
     </>
   );

@@ -6,12 +6,23 @@
 
 import type { FileContent } from "@/types";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require("pdf-parse");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const mammoth = require("mammoth");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const XLSX = require("xlsx");
+// パーサーは parseBuffer の中で初回呼び出し時にだけロードする（lazy）。
+// これらが top-level require だと、listFiles だけ使う API（例: /api/workspace の GET）
+// にも 3000 モジュール以上が引きずられて、dev のコールドスタートで 15 秒以上かかる。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let pdfParse: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let mammoth: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let XLSX: any = null;
+function ensureParsers(): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  if (!pdfParse) pdfParse = require("pdf-parse");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  if (!mammoth) mammoth = require("mammoth");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  if (!XLSX) XLSX = require("xlsx");
+}
 
 // テキストとして読めるMIMEタイプ
 export const TEXT_MIME_TYPES = new Set([
@@ -179,6 +190,7 @@ export async function parseSpreadsheet(buffer: Buffer, name: string, filePath: s
 
 /** MIMEタイプに応じて Buffer をパースする汎用関数 */
 export async function parseBuffer(buffer: Buffer, name: string, filePath: string, mimeType: string): Promise<FileContent | null> {
+  ensureParsers();
   // PDF
   if (BINARY_MIME_TYPES.has(mimeType)) {
     return parsePdf(buffer, name, filePath);

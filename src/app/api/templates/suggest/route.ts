@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import { getWorkspaceConfig } from "@/lib/folders";
+import { logTokenUsage } from "@/lib/token-logger";
 import type { CheckTemplate } from "@/types";
 
 const client = new Anthropic();
@@ -54,6 +55,7 @@ ${templateList}
 回答はIDのみ（例: officer-appointment）。該当なしなら「なし」。`
       }],
     });
+    logTokenUsage("/api/templates/suggest", "claude-haiku-4-5-20251001", response.usage);
 
     const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
     const suggested = text !== "なし" ? templates.find(t => t.id === text) : null;

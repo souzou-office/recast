@@ -4,17 +4,37 @@ import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder, readFileContent } from "@/lib/files";
 import { isPathDisabled } from "@/lib/disabled-filter";
 import { mimeFromExtension } from "@/lib/file-parsers";
+import { logTokenUsage } from "@/lib/token-logger";
 import path from "path";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const mammoth = require("mammoth");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const XLSX = require("xlsx");
 
 const client = new Anthropic();
+const MODEL = "claude-sonnet-4-6";
 
-// 生成済みdocxのbase64からテキストを抽出
-async function extractDocxText(base64: string): Promise<string> {
+// 生成書類の base64 からテキストを抽出。ファイル名の拡張子で docx / xlsx を分岐。
+// xlsx を mammoth に通すと空文字になり、チェック対象から漏れるので必ず拡張子判定が必要。
+async function extractDocumentText(base64: string, fileName: string): Promise<string> {
+  const ext = (fileName.split(".").pop() || "").toLowerCase();
   try {
     const buffer = Buffer.from(base64, "base64");
+    if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+      const wb = XLSX.read(buffer, { type: "buffer" });
+      const parts: string[] = [];
+      for (const sheetName of wb.SheetNames) {
+        const sheet = wb.Sheets[sheetName];
+        // 値だけ取り出す（書式ではなく計算後の値）。空白行は除く。
+        const csv: string = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+        if (csv.trim()) {
+          parts.push(`[シート: ${sheetName}]\n${csv}`);
+        }
+      }
+      return parts.join("\n\n").trim();
+    }
+    // docx / docm / その他 → mammoth
     const result = await mammoth.extractRawText({ buffer });
     return result.value?.trim() || "";
   } catch {
@@ -94,20 +114,30 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // --- 1. 生成済み書類のテキスト抽出 ---
+  // --- 1. 生成済み書類のテキスト抽出 + filledSlots 一覧 ---
+  // filledSlots を渡しておくことで、AI は「この指摘はどの項目（slotId）のことか」
+  // を発見と同時に特定できる。後段で別 AI に推測させる必要がない。
   const generatedTexts: string[] = [];
   for (const doc of generatedDocuments) {
-    const text = await extractDocxText(doc.docxBase64);
-    if (text) {
-      generatedTexts.push(`【生成書類: ${doc.fileName}】\n${text}`);
+    const text = await extractDocumentText(doc.docxBase64, doc.fileName);
+    if (!text) continue;
+    let docBlock = `【生成書類: ${doc.fileName}】\n${text}`;
+    const slots = (doc as { filledSlots?: { slotId: number; label: string; value: string }[] }).filledSlots;
+    if (slots && slots.length > 0) {
+      docBlock += `\n\n[この書類の項目一覧（slotId 付き）]\n` +
+        slots
+          .filter(s => s.value && s.value.trim())
+          .map(s => `- slotId=${s.slotId}: ${s.label} = "${s.value}"`)
+          .join("\n");
     }
+    generatedTexts.push(docBlock);
   }
 
   // --- 2. 原本ファイルの読み込み ---
   type ContentBlock =
-    | { type: "text"; text: string }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string }
-    | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+    | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string; cache_control?: { type: "ephemeral" } }
+    | { type: "image"; source: { type: "base64"; media_type: string; data: string }; cache_control?: { type: "ephemeral" } };
 
   const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
@@ -185,6 +215,28 @@ export async function POST(request: NextRequest) {
 
   // --- 4. プロンプト構築 ---
   const prompt = `以下の「原本（元資料）」と「生成済み書類（recastが作成した書類）」を突合せチェックしてください。
+
+## 重要な前提（必ず守ること）
+
+recast は書類テンプレート内のマーカー（要入力箇所）に**値を埋める**処理だけを行います。テンプレートの固定文言（条文番号・見出し・箇条書き記号・条項構成など）は recast が一切触っていません。
+
+したがって **verify のチェック対象は「recast が埋めた値」のみ** です。
+
+### ✅ 指摘対象（値の正しさ）
+- 日付・氏名・住所・会社名・金額・株数・持分比率などの**値**が、原本/基本情報/案件整理と不整合
+- 値が \`（要確認）\` のまま残っている
+- 書類間で同じ意味の値が不一致（書類Aの代表取締役氏名 ≠ 書類Bの代表取締役氏名 等）
+- 必須の値が空欄
+
+### ❌ 指摘してはいけないもの（recast が触っていない部分）
+- **条文番号の体系**（第1条、第2条 等、①②③ 等、(1)(2)(3) 等）
+- **箇条書き記号の揺れ**（①と 1. と ・ の混在など）
+- **全角半角の違い**、空白・改行・句読点の差
+- 見出し・定型文・章立て等、テンプレート由来の固定文言
+- **Word の自動番号付け機能による番号の抽出漏れ**: 生成書類のテキスト抽出時に箇条書き番号が一部だけ取れないことがあるが、これはテキスト抽出ツールの限界で、実際のファイルには番号が正しく表示されている。「③だけある、他は無い」のような抽出結果でも **実体の問題ではないので絶対に指摘しないこと**
+
+**判定の指針**: 「この不整合は recast が値を埋める際のミスか、それともテンプレ由来・抽出ツール由来か」を必ず自問し、後者なら issues に含めない。
+
 ${qaBlock}
 ## 案件整理結果
 ${JSON.stringify(referenceData, null, 2)}
@@ -197,14 +249,15 @@ ${generatedTexts.join("\n\n")}
 
 ## チェック観点（重要度順）
 
-### 1. 原本と生成書類の整合性
-- 原本（定款・登記簿・株主名簿・議事録・指示書等）に記載されている情報と、生成書類の記載が一致しているか
-- 日付、金額、人名、住所、株数、持分比率などの転記ミスがないか
-- 原本に基づいて正しく計算されているか（株数の合計、議決権数など）
-- **ただし「ユーザー確定済みの回答」で明示的に確定した値は、それを正しいものとして扱う**（原本と一見違っても問題として挙げない）
+### 1. 原本と生成書類の値の整合性（recastが埋めた値のみ）
+- 原本（定款・登記簿・株主名簿・議事録・指示書等）に記載されている**値**と、生成書類に埋められた**値**が一致しているか
+- 日付、金額、人名、住所、株数、持分比率などの転記ミス
+- 計算結果の正しさ（株数の合計、議決権数など）
+- **「ユーザー確定済みの回答」で明示的に確定した値は正しいものとして扱う**
 
-### 2. 生成書類間の整合性
-- 複数の生成書類間で、同じ情報（日付、人名、会社名等）が一致しているか
+### 2. 生成書類間の値の整合性
+- 複数の生成書類で、同じ意味を持つ値（日付、人名、会社名等）が一致しているか
+- **条文構成や見出しの違いは対象外**（テンプレの仕様差で、recast が触っていない）
 - ある書類で記載した内容が、別の書類と矛盾していないか
 
 ### 3. 記載漏れ・形式
@@ -212,7 +265,7 @@ ${generatedTexts.join("\n\n")}
 - 必要な情報が空欄や未記入のまま
 
 ## 出力フォーマット
-**書類ごと** に整理した JSON を返してください。フォーマットは以下のとおり:
+**書類ごと** に整理した JSON を返してください。各 issue には **slotId**（該当項目）と **candidates**（修正候補）も付けてください。
 
 \`\`\`json
 {
@@ -226,14 +279,30 @@ ${generatedTexts.join("\n\n")}
           "severity": "error" | "warn" | "info",
           "aspect": "原本との整合性",
           "problem": "代表取締役の氏名が福田峻介になっているが、基本情報では三上春香",
-          "expected": "三上春香"
+          "expected": "三上春香",
+          "slotId": 3,
+          "candidates": [
+            { "value": "三上春香", "source": "⚠verify指摘" },
+            { "value": "三上春香", "source": "📇基本情報" }
+          ]
         }
       ]
-    },
-    ...
+    }
   ]
 }
 \`\`\`
+
+### slotId の付け方（重要）
+- 各書類の「項目一覧（slotId 付き）」を見て、指摘が **どの 1 項目** のことか特定し、その slotId を入れる
+- 自信がない／書類全体に関わる指摘／複数項目に跨る指摘 は slotId を **省略**（フィールド自体を出さない）
+- **同じ slotId を複数 issue に付けない**（重複禁止）
+- ラベル文字列の一致ではなく、項目の意味と問題箇所が一致するものだけ
+
+### candidates の付け方
+- expected があれば候補の先頭に: \`{ value: expected, source: "⚠verify指摘" }\`
+- 加えて、基本情報 / 案件整理から該当する値があれば追加
+- 候補がなければ空配列でもよい
+- 同じ値の重複は避ける（最大 3 件）
 
 severity の基準:
 - "error"（🔴重大）: 登記/法務上 影響があり、確実に修正が必要
@@ -246,6 +315,8 @@ severity の基準:
 - docName は「生成済み書類」セクションで使っている書類名と完全一致させる
 - JSON のみ返す（説明文は不要）`;
 
+  // verify は 1 案件に 1 回しか呼ばれないので cache_control を付けない。
+  // （cache_write は通常入力の 1.25 倍なので、2回目の読み込みが無ければ損になる）
   contentBlocks.push({ type: "text", text: prompt });
 
   // 生成書類のファイル名もsourceFilesに追加（リンク用）
@@ -264,7 +335,7 @@ severity の基準:
 
       try {
         const aiStream = client.messages.stream({
-          model: "claude-sonnet-4-6",
+          model: MODEL,
           max_tokens: 8192,
           messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
         });
@@ -274,6 +345,11 @@ severity の基準:
             send({ type: "text", text: event.delta.text });
           }
         }
+
+        try {
+          const final = await aiStream.finalMessage();
+          logTokenUsage("/api/verify", MODEL, final.usage);
+        } catch { /* ignore */ }
 
         send({ type: "done" });
       } catch (e) {

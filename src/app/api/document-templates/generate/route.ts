@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { readFileContent } from "@/lib/files";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
 
@@ -70,6 +71,7 @@ ${textParts.length > 0 ? "\n--- 書類内容 ---\n" + textParts.join("\n\n") : "
       max_tokens: 8192,
       messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
     });
+    logTokenUsage("/api/document-templates/generate", "claude-sonnet-4-6", response.usage);
 
     const text = response.content
       .filter(b => b.type === "text")

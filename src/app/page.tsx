@@ -20,6 +20,20 @@ export default function Home() {
   const [sidebarWidth, setSidebarWidth] = useState(220);
   const resizing = useRef(false);
 
+  // カードから「テンプレ解釈を確認する」が押されたら、設定タブに遷移してテンプレ解釈を開く。
+  // SettingsView は sessionStorage の "recast-settings-target" を見て該当セクションに飛ぶ。
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { section?: string; templateFolderPath?: string } | undefined;
+      if (detail) {
+        try { sessionStorage.setItem("recast-settings-target", JSON.stringify(detail)); } catch { /* ignore */ }
+      }
+      setView("settings");
+    };
+    window.addEventListener("recast:open-settings", handler);
+    return () => window.removeEventListener("recast:open-settings", handler);
+  }, []);
+
   const handleMouseDown = useCallback(() => {
     resizing.current = true;
     document.body.style.cursor = "col-resize";

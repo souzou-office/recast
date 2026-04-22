@@ -41,7 +41,16 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [previewFile, setPreviewFile] = useState<{ filePath?: string; docxBase64?: string; fileName: string } | null>(null);
+  const [previewFile, setPreviewFile] = useState<{
+    filePath?: string;
+    docxBase64?: string;
+    fileName: string;
+    // 値の編集タブを出すための追加情報（生成済み書類の場合のみ）
+    filledSlots?: import("@/types").FilledSlot[];
+    templatePath?: string;
+    issues?: import("@/types").CheckIssue[];
+    docName?: string;
+  } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingTemplatePath = useRef<string | null>(null);
@@ -61,7 +70,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           try {
             const m = checkText.match(/```json\s*([\s\S]*?)```/) || checkText.match(/(\{[\s\S]*\})/);
             if (m) {
-              const parsed = JSON.parse(m[1] || m[0]) as { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> };
+              const parsed = JSON.parse(m[1] || m[0]) as { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string; slotId?: number; candidates?: { value: string; source: string }[] }> }> };
               if (parsed.documents) {
                 for (let i = loaded.messages.length - 1; i >= 0; i--) {
                   const cards = loaded.messages[i].cards;
@@ -89,6 +98,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                       aspect: iss.aspect || "",
                       problem: iss.problem || "",
                       expected: iss.expected,
+                      slotId: typeof iss.slotId === "number" ? iss.slotId : undefined,
+                      candidates: Array.isArray(iss.candidates) ? iss.candidates.filter(c => c && typeof c.value === "string") : undefined,
                     }));
                     const status: "ok" | "warn" | "error" =
                       match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
@@ -107,6 +118,27 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       })
       .catch(() => setThread(null));
   }, [threadId, company?.id]);
+
+  // 空スレッドに初期カード（フォルダ選択）を遅延生成して追加する。
+  // POST /api/chat-threads が軽量化されて messages が空で返ってくるので、ここで補完。
+  useEffect(() => {
+    if (!thread || !company) return;
+    if (thread.messages.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/chat-threads/${thread.id}/initial`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id }),
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled && data.thread) setThread(data.thread);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [thread?.id, thread?.messages.length, company?.id]);
 
   // 自動スクロール
   useEffect(() => {
@@ -154,6 +186,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [...(thread.messages || []), userMsg].map(m => ({ role: m.role, content: m.content })),
+          companyId: company.id,
+          threadId: thread.id,
         }),
       });
       const reader = res.body?.getReader();
@@ -211,6 +245,25 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     else if (card?.type === "file-select") action = "files-confirmed";
     else if (card?.type === "template-select") action = "template-selected";
     else if (card?.type === "check-prompt") action = "check-accepted";
+    else if (card?.type === "template-review" && (cardData as { acknowledged?: boolean }).acknowledged) {
+      // [このまま実行] 押下 → カードを acknowledged にして保留中のワークフローを継続
+      const updatedCard = { ...card, acknowledged: true };
+      const updatedMessages = thread.messages.map(m => {
+        if (m.id !== messageId) return m;
+        const newCards = (m.cards || []).map((c, i) => i === cardIndex ? (updatedCard as ActionCard) : c);
+        return { ...m, cards: newCards };
+      });
+      const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+      setThread(updatedThread);
+      await fetch(`/api/chat-threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, messages: updatedThread.messages }),
+      });
+      await runWorkflow(updatedThread, card.folderPath);
+      setLoading(false);
+      return;
+    }
     else if (card?.type === "clarification") {
       // 確認質問に回答 → 回答を反映してもう一度 clarify を呼ぶ
       // 新たな確認事項があれば次のカードを出す、無ければ書類生成に進む
@@ -271,6 +324,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyId: company.id,
+          threadId: thread.id,
           templateFolderPath: templatePath,
           previousQA,
           folderPath: updatedThread.folderPath,
@@ -327,7 +381,49 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
         // テンプレート選択後→案件整理+書類生成をSSEで実行
         if (action === "template-selected" && "selectedPath" in cardData && cardData.selectedPath) {
-          await runWorkflow(result.thread, cardData.selectedPath as string);
+          const templatePath = cardData.selectedPath as string;
+          // テンプレの解釈ラベルを確認。未生成のファイルがあれば AI に生成させて、
+          // 新規生成があればレビューカードを挟む（初回だけ）。
+          let shouldAutoProceed = true;
+          try {
+            const ensureRes = await fetch("/api/template-labels/ensure", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ folderPath: templatePath }),
+            });
+            if (ensureRes.ok) {
+              const data = await ensureRes.json();
+              if (data.newlyGenerated > 0) {
+                const reviewMsg: ThreadMessage = {
+                  id: `msg_${Date.now()}`,
+                  role: "assistant",
+                  content: "テンプレート解釈を生成しました。",
+                  cards: [{
+                    type: "template-review",
+                    folderPath: templatePath,
+                    templateName: templatePath.split(/[\\/]/).pop() || templatePath,
+                    totalFiles: data.totalFiles,
+                    newlyGenerated: data.newlyGenerated,
+                    files: (data.files || []).map((f: { name: string; slotCount: number; wasNew: boolean }) => ({
+                      name: f.name, slotCount: f.slotCount, wasNew: f.wasNew,
+                    })),
+                  }],
+                  timestamp: new Date().toISOString(),
+                };
+                setThread(prev => prev ? { ...prev, messages: [...prev.messages, reviewMsg] } : prev);
+                await fetch(`/api/chat-threads/${result.thread.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ companyId: company.id, message: reviewMsg }),
+                });
+                shouldAutoProceed = false;
+              }
+            }
+          } catch { /* ensure 失敗時は従来どおり実行 */ }
+
+          if (shouldAutoProceed) {
+            await runWorkflow(result.thread, templatePath);
+          }
         }
         // チェック実行
         if (action === "check-accepted") {
@@ -438,11 +534,17 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
 
         // 案件整理結果を保存
+        // message（画面表示用のテキスト）だけでなく masterSheet.content にも入れる。
+        // clarify / chat API が thread.masterSheet を参照するので、これが無いと案件整理を知らない状態で動いてしまう。
         organizeMsg.content = fullText;
         await fetch(`/api/chat-threads/${currentThread.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ companyId: company.id, message: organizeMsg }),
+          body: JSON.stringify({
+            companyId: company.id,
+            message: organizeMsg,
+            masterSheet: { content: fullText },
+          }),
         });
       }
 
@@ -463,6 +565,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyId: company.id,
+          threadId: currentThread.id,
           templateFolderPath: templatePath,
           folderPath: currentThread.folderPath,
           disabledFiles: currentThread.disabledFiles,
@@ -616,7 +719,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
       // JSON 抽出
       const jsonMatch = fullText.match(/```json\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
-      let parsed: { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string }> }> } | null = null;
+      let parsed: { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string; slotId?: number; candidates?: { value: string; source: string }[] }> }> } | null = null;
       if (jsonMatch) {
         try { parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]); } catch { parsed = null; }
       }
@@ -655,6 +758,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                 aspect: iss.aspect || "",
                 problem: iss.problem || "",
                 expected: iss.expected,
+                slotId: typeof iss.slotId === "number" ? iss.slotId : undefined,
+                candidates: Array.isArray(iss.candidates) ? iss.candidates.filter(c => c && typeof c.value === "string") : undefined,
               }));
               const status: "ok" | "warn" | "error" =
                 match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
@@ -724,12 +829,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   }
 
   return (
-    <div className="flex h-full">
+    <div id="main-content-area" className="flex h-full">
       {/* 左: チャット */}
       <div className={`flex flex-col ${previewFile ? "flex-1 min-w-0" : "w-full"}`}>
       {/* メッセージ一覧 */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto px-10 py-10">
+        <div className={`mx-auto px-10 py-10 ${previewFile ? "w-full max-w-none" : "w-[65%] min-w-[560px] max-w-[1100px]"}`}>
           {/* 案件名ヘッダ */}
           <div className="mb-8">
             <h1 className="font-serif text-[26px] font-semibold tracking-tight mb-1 text-[var(--color-fg)]">
@@ -740,6 +845,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               {thread.createdAt && <> · {new Date(thread.createdAt).toLocaleDateString("ja-JP")}</>}
             </div>
           </div>
+          {thread.messages.length === 0 && (
+            <div className="flex items-center gap-2 text-[13px] text-[var(--color-fg-subtle)] py-6">
+              <span className="inline-block h-3 w-3 rounded-full border-2 border-[var(--color-accent)] border-t-transparent animate-spin" />
+              フォルダ一覧を準備中...
+            </div>
+          )}
           {thread.messages.map((msg, i) => {
             const goBack = () => {
               for (const m of thread.messages) {
@@ -813,7 +924,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
       {/* 入力欄 */}
       <div className="px-10 py-5 bg-[var(--color-bg)]">
-        <div className="w-[65%] min-w-[560px] max-w-[1100px] mx-auto">
+        <div className={`mx-auto ${previewFile ? "w-full max-w-none" : "w-[65%] min-w-[560px] max-w-[1100px]"}`}>
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-[0_2px_8px_rgba(0,0,0,0.04)] flex items-end gap-2 px-4 py-3 focus-within:border-[var(--color-accent)]/40">
             <textarea
               ref={textareaRef}
@@ -845,6 +956,83 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           docxBase64={previewFile.docxBase64}
           fileName={previewFile.fileName}
           onClose={() => setPreviewFile(null)}
+          filledSlots={previewFile.filledSlots}
+          templatePath={previewFile.templatePath}
+          companyId={company?.id}
+          threadId={thread?.id}
+          verifyIssues={
+            previewFile.issues && previewFile.issues.length > 0 && previewFile.docName
+              ? [{ docName: previewFile.docName, issues: previewFile.issues }]
+              : undefined
+          }
+          onRegenerated={(newBase64, newSlots) => {
+            // プレビュー内の docxBase64 を更新
+            setPreviewFile(prev => prev ? { ...prev, docxBase64: newBase64, filledSlots: newSlots } : prev);
+            // スレッド内の該当書類も更新（document-result カードの該当 doc を差し替え）
+            if (!thread || !company) return;
+            const updatedMessages = thread.messages.map(m => {
+              if (!m.cards) return m;
+              const newCards = m.cards.map(c => {
+                if (c.type !== "document-result") return c;
+                const newDocs = c.documents.map(d =>
+                  d.fileName === previewFile.fileName
+                    ? { ...d, docxBase64: newBase64, filledSlots: newSlots }
+                    : d
+                );
+                return { ...c, documents: newDocs };
+              });
+              return { ...m, cards: newCards };
+            });
+            const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+            setThread(updatedThread);
+            // 永続化: thread.generatedDocuments 側も対応する書類を更新
+            const updatedGenDocs = (thread.generatedDocuments || []).map(gd =>
+              gd.fileName === previewFile.fileName
+                ? { ...gd, docxBase64: newBase64, filledSlots: newSlots }
+                : gd
+            );
+            fetch(`/api/chat-threads/${thread.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                companyId: company.id,
+                messages: updatedMessages,
+                generatedDocuments: updatedGenDocs,
+              }),
+            }).catch(() => { /* ignore */ });
+          }}
+          onIssueAcknowledge={(slotId, ack) => {
+            if (!thread || !company) return;
+            // document-result カード内の該当書類の issues を更新
+            const updatedMessages = thread.messages.map(m => {
+              if (!m.cards) return m;
+              const newCards = m.cards.map(c => {
+                if (c.type !== "document-result") return c;
+                const newDocs = c.documents.map(d => {
+                  if (d.fileName !== previewFile.fileName) return d;
+                  const newIssues = (d.issues || []).map(iss =>
+                    iss.slotId === slotId ? { ...iss, acknowledged: ack } : iss
+                  );
+                  // 残りの未解決 issue 数で status を再計算
+                  const unresolved = newIssues.filter(i => !i.acknowledged);
+                  const newStatus: "ok" | "warn" | "error" =
+                    unresolved.length === 0 ? "ok" :
+                    unresolved.some(i => i.severity === "error") ? "error" : "warn";
+                  return { ...d, issues: newIssues, checkStatus: newStatus };
+                });
+                return { ...c, documents: newDocs };
+              });
+              return { ...m, cards: newCards };
+            });
+            const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+            setThread(updatedThread);
+            // 永続化
+            fetch(`/api/chat-threads/${thread.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ companyId: company.id, messages: updatedMessages }),
+            }).catch(() => { /* ignore */ });
+          }}
         />
       )}
     </div>

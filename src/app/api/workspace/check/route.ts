@@ -3,8 +3,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
 import { isPathDisabled } from "@/lib/disabled-filter";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
+const MODEL = "claude-sonnet-4-6";
 
 const CHECK_PROMPT = `あなたはバックオフィス業務を支援するAIです。
 案件フォルダの指示書と会社の基本情報を照合して、確認事項を一覧にまとめてください。
@@ -110,13 +112,14 @@ export async function POST(request: NextRequest) {
 
   try {
     const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
+      model: MODEL,
       max_tokens: 4096,
       messages: [{
         role: "user",
         content: `${CHECK_PROMPT}\n\n${filesText}`,
       }],
     });
+    logTokenUsage("/api/workspace/check", MODEL, response.usage);
 
     const text = response.content
       .filter(b => b.type === "text")

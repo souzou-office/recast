@@ -114,11 +114,14 @@ export async function onFilesConfirmed(templateBasePath: string, folderName?: st
     };
   }
 
+  const { isCommonRuleFolderName } = await import("./global-rules");
   const entries = await listFiles(templateBasePath);
   const templates: TemplateSelectCard["templates"] = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory) continue;
+    // 共通ルールフォルダは書類テンプレではないので選択肢から外す
+    if (isCommonRuleFolderName(entry.name)) continue;
     const subEntries = await listFiles(entry.path);
     const fileCount = subEntries.filter(e => !e.isDirectory).length;
     templates.push({ name: entry.name, path: entry.path, fileCount });

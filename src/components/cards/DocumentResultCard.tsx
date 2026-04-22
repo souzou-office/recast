@@ -5,7 +5,17 @@ import { Icon } from "@/components/ui/Icon";
 
 interface Props {
   card: DocumentResultCard;
-  onPreview?: (file: { filePath?: string; docxBase64?: string; fileName: string }) => void;
+  onPreview?: (file: {
+    filePath?: string;
+    docxBase64?: string;
+    fileName: string;
+    templatePath?: string;
+    filledSlots?: import("@/types").FilledSlot[];
+    issues?: CheckIssue[];
+    docName?: string;
+  }) => void;
+  // 書類ごとに「問題なし」を手動でマークする（確認済み扱い）
+  onMarkOk?: (fileName: string) => void;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -53,10 +63,13 @@ function severityDot(sev: CheckIssue["severity"]) {
   return <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${color}`} />;
 }
 
-function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: Props["onPreview"] }) {
+function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; onPreview?: Props["onPreview"]; onMarkOk?: Props["onMarkOk"] }) {
   const ext = doc.fileName.split(".").pop()?.toLowerCase() || "";
   const iconName = ext === "pdf" ? "FileType" : ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" : "FileText";
-  const hasIssues = !!(doc.issues && doc.issues.length > 0);
+  // acknowledged な指摘は「解決済み」扱いで表示・カウントから除く
+  const activeIssues = (doc.issues || []).filter(iss => !iss.acknowledged);
+  const hasIssues = activeIssues.length > 0;
+  const isOk = doc.checkStatus === "ok";
 
   return (
     <div className={`rounded-lg border ${hasIssues ? "border-[var(--color-border)]" : "border-[var(--color-border-soft)]"} bg-[var(--color-panel)] overflow-hidden`}>
@@ -65,12 +78,28 @@ function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: 
         <span className="flex-1 text-[13px] text-[var(--color-fg)] font-medium truncate">{doc.name}</span>
         {statusBadge(doc.checkStatus)}
         <button
-          onClick={() => onPreview?.({ docxBase64: doc.docxBase64, fileName: doc.fileName })}
+          onClick={() => onPreview?.({
+            docxBase64: doc.docxBase64,
+            fileName: doc.fileName,
+            templatePath: doc.templatePath,
+            filledSlots: doc.filledSlots,
+            issues: doc.issues,
+            docName: doc.name,
+          })}
           className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
           title="プレビュー"
         >
           <Icon name="Eye" size={12} />
         </button>
+        {!isOk && onMarkOk && (
+          <button
+            onClick={() => onMarkOk(doc.fileName)}
+            className="inline-flex items-center gap-1 text-[11px] text-[var(--color-ok-fg)] hover:bg-[var(--color-ok-bg)] rounded px-1 py-0.5"
+            title="問題なし（確認済み）にする"
+          >
+            <Icon name="CheckCircle2" size={12} />
+          </button>
+        )}
         <button
           onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
           className="inline-flex items-center gap-1 text-[11px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
@@ -82,7 +111,7 @@ function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: 
       {hasIssues && (
         <div className="px-3 pb-2.5 pt-0.5 border-t border-[var(--color-border-soft)] bg-[var(--color-warn-bg)]/30">
           <ul className="space-y-1.5 mt-2">
-            {doc.issues!.map((iss, i) => (
+            {activeIssues.map((iss, i) => (
               <li key={i} className="flex items-start gap-2 text-[12px]">
                 {severityDot(iss.severity)}
                 <div className="flex-1 leading-relaxed">
@@ -103,8 +132,12 @@ function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: 
   );
 }
 
-export default function DocumentResultCardUI({ card, onPreview }: Props) {
-  const totalIssues = card.documents.reduce((sum, d) => sum + (d.issues?.length || 0), 0);
+export default function DocumentResultCardUI({ card, onPreview, onMarkOk }: Props) {
+  // 解決済み (acknowledged) の指摘はカウントから除外
+  const totalIssues = card.documents.reduce(
+    (sum, d) => sum + ((d.issues || []).filter(iss => !iss.acknowledged).length),
+    0,
+  );
   const hasChecked = card.documents.some(d => d.checkStatus !== undefined);
   const anyError = card.documents.some(d => d.checkStatus === "error");
   const anyWarn = card.documents.some(d => d.checkStatus === "warn");
@@ -140,7 +173,7 @@ export default function DocumentResultCardUI({ card, onPreview }: Props) {
       </div>
       <div className="p-3 space-y-1.5">
         {card.documents.map((doc, i) => (
-          <DocumentRow key={i} doc={doc} onPreview={onPreview} />
+          <DocumentRow key={i} doc={doc} onPreview={onPreview} onMarkOk={onMarkOk} />
         ))}
       </div>
       {card.checkSummary && (

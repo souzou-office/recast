@@ -5,9 +5,11 @@ import path from "path";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder, readFileContent } from "@/lib/files";
 import { isPathDisabled } from "@/lib/disabled-filter";
+import { logTokenUsage } from "@/lib/token-logger";
 import type { CompanyProfile, StructuredProfile, ChangeHistoryEntry } from "@/types";
 
 const client = new Anthropic();
+const MODEL = "claude-sonnet-4-6";
 const PROFILE_TEMPLATE_PATH = path.join(process.cwd(), "data", "profile-template.json");
 
 // 推奨キー名（下流の produce/verify 等が参照するため、AI にはこの名前を使うよう誘導する）
@@ -222,13 +224,14 @@ export async function POST(request: NextRequest) {
 
   try {
     const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
+      model: MODEL,
       max_tokens: 8192,
       messages: [{
         role: "user",
         content: contentBlocks as Anthropic.ContentBlockParam[],
       }],
     });
+    logTokenUsage("/api/workspace/profile", MODEL, response.usage);
 
     const rawText = response.content
       .filter(b => b.type === "text")
@@ -340,7 +343,7 @@ export async function PATCH(request: NextRequest) {
       : company.profile.summary || "{}";
 
     const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
+      model: MODEL,
       max_tokens: 4096,
       messages: [{
         role: "user",
@@ -356,6 +359,7 @@ ${currentJson}
 ${newFilesText}`,
       }],
     });
+    logTokenUsage("/api/workspace/profile#diff", MODEL, response.usage);
 
     const rawText = response.content
       .filter(b => b.type === "text")

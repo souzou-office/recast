@@ -10,6 +10,74 @@ export interface XlsxMarkedCell {
   sheetName: string; // シート名
 }
 
+// Excel 組み込みの日付 numFmtId（仕様で固定）
+// https://learn.microsoft.com/en-us/office/troubleshoot/excel/cells-predefined-format
+const BUILTIN_DATE_NUM_FMT_IDS = new Set<number>([
+  14, 15, 16, 17, 18, 19, 20, 21, 22,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+  45, 46, 47,
+  50, 51, 52, 53, 54, 55, 56, 57, 58,
+]);
+
+// formatCode が日付系かどうか判定。"年", "月", "日" 等の日本語日付も拾う。
+// 引用符内の文字と [...] 修飾は除外（例: "m/d/yyyy" が date なのと同じく "h:mm" は時刻）
+function isDateFormatCode(code: string): boolean {
+  const stripped = code.replace(/"[^"]*"/g, "").replace(/\[[^\]]*\]/g, "");
+  // y/m/d/h のいずれかを含めば日付または時刻。通貨は y/m/d を含まないので安全
+  if (/[ymdh]/i.test(stripped)) return true;
+  // 日本語で年月日を含む（稀に formatCode に直接書かれるケース）
+  if (/[年月日時分秒]/.test(code)) return true;
+  return false;
+}
+
+// styles.xml から「日付フォーマット適用済み」のセルスタイルインデックスを特定
+function findDateStyleIndexes(stylesXml: string): Set<number> {
+  // まず numFmts（カスタムフォーマット）から日付フォーマット ID を収集
+  const dateNumFmtIds = new Set<number>(BUILTIN_DATE_NUM_FMT_IDS);
+  const numFmtsMatch = stylesXml.match(/<numFmts[^>]*>([\s\S]*?)<\/numFmts>/);
+  if (numFmtsMatch) {
+    const re = /<numFmt\b([^/>]*)\/>/g;
+    let m;
+    while ((m = re.exec(numFmtsMatch[1])) !== null) {
+      const idMatch = m[1].match(/numFmtId="(\d+)"/);
+      const codeMatch = m[1].match(/formatCode="([^"]*)"/);
+      if (!idMatch || !codeMatch) continue;
+      if (isDateFormatCode(codeMatch[1])) {
+        dateNumFmtIds.add(parseInt(idMatch[1]));
+      }
+    }
+  }
+
+  // cellXfs の各セルスタイルのうち、numFmtId が日付系のものを特定
+  const xfsMatch = stylesXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/);
+  if (!xfsMatch) return new Set();
+
+  const dateStyles = new Set<number>();
+  const xfRe = /<xf\b([^>]*)(?:\/>|>[\s\S]*?<\/xf>)/g;
+  let xm;
+  let xi = 0;
+  while ((xm = xfRe.exec(xfsMatch[1])) !== null) {
+    const numFmtMatch = xm[1].match(/numFmtId="(\d+)"/);
+    if (numFmtMatch && dateNumFmtIds.has(parseInt(numFmtMatch[1]))) {
+      dateStyles.add(xi);
+    }
+    xi++;
+  }
+  return dateStyles;
+}
+
+// Excel シリアル日付 (1 = 1900-01-01 as per Lotus-compat) → "YYYY-MM-DD"
+// 基準: 1899-12-30 UTC。Excel は 1900 年の閏年バグのため 60 を跨ぐと 1 日ずれるが、
+// 46062 等の現代の日付では影響しないため簡易実装で OK。
+function excelSerialToDateString(serial: number): string {
+  const ms = Date.UTC(1899, 11, 30) + serial * 86400000;
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 // styles.xml から黄色背景のスタイルインデックスを特定
 function findYellowStyleIndexes(stylesXml: string): Set<number> {
   // fills から黄色の fillId を特定
@@ -74,6 +142,9 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
 
   const yellowStyles = findYellowStyleIndexes(stylesXml);
   if (yellowStyles.size === 0) return [];
+  // 日付フォーマットのセルを特定。数値を「46062」のような生のシリアルで AI に
+  // 渡すと誤解（管理番号等と解釈）される。ISO 日付に変換してから渡す。
+  const dateStyles = findDateStyleIndexes(stylesXml);
 
   // sharedStrings
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
@@ -126,7 +197,19 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
           const idx = parseInt(vMatch[1]);
           value = sharedStrings[idx] || "";
         } else {
-          value = vMatch[1];
+          const raw = vMatch[1];
+          // 日付フォーマットで数値が入っていれば Excel シリアル → ISO 日付に変換
+          if (dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
+            const serial = parseFloat(raw);
+            if (serial > 0 && serial < 2958466) {
+              // 1900-01-01 〜 9999-12-31 の範囲内で変換
+              value = excelSerialToDateString(serial);
+            } else {
+              value = raw;
+            }
+          } else {
+            value = raw;
+          }
         }
       }
 
@@ -447,6 +530,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
   const yellowStyles = findYellowStyleIndexes(stylesXml);
+  const dateStyles = findDateStyleIndexes(stylesXml);
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
 
@@ -471,11 +555,22 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
         const vMatch = inner.match(/<v>([^<]*)<\/v>/);
         if (!vMatch) continue;
         const tMatch = attrs.match(/\bt="([^"]*)"/);
-        let val = "";
-        if (tMatch?.[1] === "s") val = sharedStrings[parseInt(vMatch[1])] || "";
-        else val = vMatch[1];
         const sMatch = attrs.match(/\bs="(\d+)"/);
-        const isYellow = sMatch && yellowStyles.has(parseInt(sMatch[1]));
+        const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
+        let val = "";
+        if (tMatch?.[1] === "s") {
+          val = sharedStrings[parseInt(vMatch[1])] || "";
+        } else {
+          const raw = vMatch[1];
+          // 日付セルの数値は ISO 日付に変換
+          if (dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
+            const serial = parseFloat(raw);
+            val = serial > 0 && serial < 2958466 ? excelSerialToDateString(serial) : raw;
+          } else {
+            val = raw;
+          }
+        }
+        const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
         if (!val.trim()) continue;
         if (/<f\b/.test(inner)) { rowTexts.push(val); continue; } // 数式セルは素通し
         if (isYellow) {
@@ -501,9 +596,12 @@ export function getXlsxMarkedText(buffer: Buffer): string {
   const zip = new PizZip(buffer);
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
+  // 日付セル判定は1回だけ準備してループ内で参照（以前はセルごとに再パースしていて非効率）
+  const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
+  const yellowStyles = findYellowStyleIndexes(stylesXml);
+  const dateStyles = findDateStyleIndexes(stylesXml);
 
   // 全テキストを行ごとに構築（黄色セルは★マーク）
-  const yellowValues = new Set(cells.map(c => c.value));
   const lines: string[] = [];
 
   for (const fileName of Object.keys(zip.files)) {
@@ -524,17 +622,23 @@ export function getXlsxMarkedText(buffer: Buffer): string {
         if (!vMatch) continue;
 
         const tMatch = attrs.match(/\bt="([^"]*)"/);
+        const sMatch = attrs.match(/\bs="(\d+)"/);
+        const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
         let val = "";
         if (tMatch?.[1] === "s") {
           val = sharedStrings[parseInt(vMatch[1])] || "";
         } else {
-          val = vMatch[1];
+          const raw = vMatch[1];
+          // 日付セルの数値は ISO 日付に変換
+          if (dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
+            const serial = parseFloat(raw);
+            val = serial > 0 && serial < 2958466 ? excelSerialToDateString(serial) : raw;
+          } else {
+            val = raw;
+          }
         }
 
-        const sMatch = attrs.match(/\bs="(\d+)"/);
-        const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
-        const yellowStylesLocal = findYellowStyleIndexes(stylesXml);
-        const isYellow = sMatch && yellowStylesLocal.has(parseInt(sMatch[1]));
+        const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
 
         rowTexts.push(isYellow ? `★${val}★` : val);
       }

@@ -1,18 +1,21 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { FileContent, CompanyProfile, Company } from "@/types";
 import { readFileContent } from "@/lib/files";
+import { logTokenUsage } from "@/lib/token-logger";
 
 const client = new Anthropic();
+const MODEL = "claude-sonnet-4-6";
 
 const SYSTEM_PROMPT = `あなたはバックオフィス業務を支援するAIアシスタント「recast」です。
-ユーザーが提供した案件フォルダ内のファイルを参照し、質問に正確に回答してください。
+案件整理テキストと会社の基本情報をもとに、ユーザーの質問に正確に回答してください。
 日本語で回答してください。
 
-会社の基本情報が必要な場合:
-1. まず get_company_profile で基本情報サマリーを確認
-2. サマリーだけでは不十分で原文が必要な場合は read_common_file で特定のファイルを読む
+基本方針:
+- まず案件整理テキスト（下に添付）で回答を試みる
+- 会社の基本情報が必要な場合は get_company_profile を呼ぶ
+- 案件整理でも基本情報でも分からない原文レベルの詳細が必要な場合に限り read_common_file で共通フォルダのファイルを読む
 
-案件ファイルの情報だけで回答できる場合はツールを使う必要はありません。`;
+案件整理の情報で回答できる場合はツールを使う必要はありません。`;
 
 const TOOLS: Anthropic.Tool[] = [
   {
@@ -57,15 +60,26 @@ export async function* streamChat(
   contextFiles: FileContent[],
   companyProfile?: CompanyProfile | null,
   commonFiles?: { id: string; name: string; mimeType: string }[],
-  allCompanies?: Company[]
+  allCompanies?: Company[],
+  masterContent?: string | null
 ) {
+  // system の構成
+  // 案件整理テキスト（masterContent）があれば、それだけを使う（原本の再送は避ける）。
+  // 無い場合のみフォールバックで案件フォルダの生ファイルを詰める。
+  //
+  // cache_control で system ブロックにキャッシュを効かせる。
+  //   - 5分以内の連続メッセージは入力トークン 1/10 に
+  //   - tool use ループの再送も cached read でほぼタダ
+  let system = SYSTEM_PROMPT;
+
   const textFiles = contextFiles.filter(f => !f.base64);
   const binaryFiles = contextFiles.filter(f => f.base64);
 
-  // システムプロンプト（案件ファイルだけ）
-  let system = SYSTEM_PROMPT;
-  if (textFiles.length > 0) {
-    system += "\n\n--- 案件ファイル ---\n";
+  if (masterContent && masterContent.trim().length > 0) {
+    system += `\n\n--- 案件整理テキスト ---\n${masterContent}\n`;
+  } else if (textFiles.length > 0) {
+    // 案件整理が未生成の場合のフォールバック
+    system += "\n\n--- 案件ファイル（案件整理未生成のためフォールバック） ---\n";
     for (const file of textFiles) {
       system += `\n【${file.name}】\n${file.content}\n`;
     }
@@ -74,7 +88,11 @@ export async function* streamChat(
   // メッセージを組み立て
   const apiMessages: Anthropic.MessageParam[] = [];
 
-  if (binaryFiles.length > 0 && messages.length > 0) {
+  // バイナリ（PDF）は masterContent があれば同梱しない（案件整理に要約済みのはず）。
+  // ただし画像やスキャンPDF中心のケースはフォールバック時に同梱する。
+  const shouldAttachBinaries = binaryFiles.length > 0 && !masterContent;
+
+  if (shouldAttachBinaries && messages.length > 0) {
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       if (msg.role === "user" && i === messages.length - 1) {
@@ -102,22 +120,44 @@ export async function* streamChat(
     }
   }
 
-  // tool useが必要か判定するため最初は非ストリーミング
-  let response = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 4096,
-    system,
-    messages: apiMessages,
-    tools: TOOLS,
-  });
+  // system を cache_control 付きで配列形式に
+  const buildSystem = (): Anthropic.TextBlockParam[] => [
+    { type: "text", text: system, cache_control: { type: "ephemeral" } },
+  ];
 
-  // tool useループ（非ストリーミング）
-  while (response.stop_reason === "tool_use") {
+  // 最初からストリーミングで呼ぶ。tool use が来たらストリームを読み切ってから次ラウンドへ。
+  // tool use が無いラウンドの text_delta はその場で yield（即レスポンス）。
+  // 従来の「非ストリーミングで判定 → ストリーミングで再呼び出し」の二重課金を解消。
+  let round = 0;
+  while (true) {
+    round += 1;
+    const stream = client.messages.stream({
+      model: MODEL,
+      max_tokens: 4096,
+      system: buildSystem(),
+      messages: apiMessages,
+      tools: TOOLS,
+    });
+
+    for await (const event of stream) {
+      if (
+        event.type === "content_block_delta" &&
+        event.delta.type === "text_delta"
+      ) {
+        yield event.delta.text;
+      }
+    }
+
+    const response = await stream.finalMessage();
+    logTokenUsage(`/api/chat${round > 1 ? `#round${round}` : ""}`, MODEL, response.usage);
+
+    if (response.stop_reason !== "tool_use") break;
+
+    // tool use 処理
     const toolBlocks = response.content.filter(
       (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
     );
 
-    // ツール結果を組み立て
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const tool of toolBlocks) {
       if (tool.name === "get_company_profile") {
@@ -192,47 +232,5 @@ export async function* streamChat(
 
     apiMessages.push({ role: "assistant", content: response.content });
     apiMessages.push({ role: "user", content: toolResults });
-
-    // まだtool useが続くか確認
-    response = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system,
-      messages: apiMessages,
-      tools: TOOLS,
-    });
-  }
-
-  // 最終回答がtool use無しならストリーミングで再リクエスト
-  // （tool useループ後のresponseはテキストのみのはず）
-  if (response.stop_reason === "end_turn") {
-    // tool useがあった場合、最終回答をストリーミングで再取得
-    const hadToolUse = apiMessages.length > messages.length;
-    if (hadToolUse) {
-      // 既にresponseがあるのでそれをyield
-      for (const block of response.content) {
-        if (block.type === "text" && block.text) {
-          yield block.text;
-        }
-      }
-    } else {
-      // tool use無し → ストリーミングで最初からやり直し
-      const stream = client.messages.stream({
-        model: "claude-sonnet-4-6",
-        max_tokens: 4096,
-        system,
-        messages: apiMessages,
-        tools: TOOLS,
-      });
-
-      for await (const event of stream) {
-        if (
-          event.type === "content_block_delta" &&
-          event.delta.type === "text_delta"
-        ) {
-          yield event.delta.text;
-        }
-      }
-    }
   }
 }

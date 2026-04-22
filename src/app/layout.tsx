@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Noto_Sans_JP, Noto_Serif_JP, Fraunces } from "next/font/google";
+import TokenDebugBar from "@/components/TokenDebugBar";
 import "./globals.css";
 
 const notoSans = Noto_Sans_JP({
@@ -37,7 +38,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ja" className={`${notoSans.variable} ${notoSerif.variable} ${fraunces.variable}`}>
-      <body className="h-screen overflow-hidden antialiased bg-[var(--color-bg)] text-[var(--color-fg)]">{children}</body>
+      <body className="h-screen overflow-hidden antialiased bg-[var(--color-bg)] text-[var(--color-fg)]">
+        {children}
+        <TokenDebugBar />
+      </body>
     </html>
   );
 }

@@ -5,23 +5,31 @@ import os from "os";
 import { execSync } from "child_process";
 
 // Windowsドライブ一覧（ドライブ名付き）
+// 注意: wmic は出力が CP932（Shift-JIS）なので Node の "utf-8" デコードで日本語ラベルが化ける。
+// PowerShell 経由で UTF-8 出力に固定して取得する。
 function getWindowsDrives(): { name: string; path: string }[] {
   const drives: { name: string; path: string }[] = [];
   try {
-    const output = execSync("wmic logicaldisk get DeviceID,VolumeName /format:csv", { encoding: "utf-8" });
-    for (const line of output.split("\n")) {
-      const parts = line.trim().split(",");
-      if (parts.length >= 3 && /^[A-Z]:$/.test(parts[1])) {
-        const letter = parts[1];
-        const label = parts[2]?.trim();
-        drives.push({
-          name: label ? `${letter} ${label}` : letter,
-          path: `${letter}\\`,
-        });
-      }
+    const psCommand = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Get-CimInstance Win32_LogicalDisk | ForEach-Object { $_.DeviceID + ',' + $_.VolumeName }";
+    const output = execSync(`powershell -NoProfile -NonInteractive -Command "${psCommand}"`, {
+      encoding: "utf-8",
+      windowsHide: true,
+    });
+    for (const line of output.split(/\r?\n/)) {
+      const idx = line.indexOf(",");
+      if (idx < 0) continue;
+      const letter = line.slice(0, idx).trim();
+      const label = line.slice(idx + 1).trim();
+      if (!/^[A-Z]:$/.test(letter)) continue;
+      drives.push({
+        name: label ? `${letter} ${label}` : letter,
+        path: `${letter}\\`,
+      });
     }
-  } catch {
-    // fallback
+  } catch { /* PowerShell 失敗時はフォールバックへ */ }
+
+  if (drives.length === 0) {
+    // フォールバック: ドライブレター列挙のみ（ラベル無し）
     for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
       try {
         const p = `${letter}:\\`;
