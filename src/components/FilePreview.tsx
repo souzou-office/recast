@@ -14,7 +14,7 @@ interface Props {
   templatePath?: string;
   companyId?: string;
   threadId?: string;
-  verifyIssues?: { docName: string; issues: { aspect: string; problem: string; expected?: string }[] }[];
+  verifyIssues?: { docName: string; issues: import("@/types").CheckIssue[] }[];
   onRegenerated?: (docxBase64: string, filledSlots: FilledSlot[]) => void;
 }
 

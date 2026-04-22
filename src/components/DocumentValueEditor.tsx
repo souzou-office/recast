@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Icon } from "./ui/Icon";
-import type { FilledSlot } from "@/types";
+import type { FilledSlot, CheckIssue } from "@/types";
 
 type Candidate = { value: string; source: string };
-type SlotIssue = { problem: string; expected?: string; aspect?: string; severity?: string };
 
 interface Props {
   filledSlots: FilledSlot[];
@@ -13,7 +12,8 @@ interface Props {
   fileName: string;
   companyId: string;
   threadId?: string;
-  verifyIssues?: { docName: string; issues: { aspect: string; problem: string; expected?: string }[] }[];
+  // verify が返す issues。各 issue に slotId と candidates が含まれる（新形式）。
+  verifyIssues?: { docName: string; issues: CheckIssue[] }[];
   // 再生成後、親（ChatWorkflow）に新しい docxBase64 と filledSlots を伝える
   onRegenerated: (docxBase64: string, filledSlots: FilledSlot[]) => void;
 }
@@ -29,11 +29,8 @@ export default function DocumentValueEditor({
 }: Props) {
   // スロット値の編集状態（slotId → value）
   const [values, setValues] = useState<Record<number, string>>({});
-  const [candidates, setCandidates] = useState<Record<number, Candidate[]>>({});
-  const [slotIssues, setSlotIssues] = useState<Record<number, SlotIssue[]>>({});
   // ユーザーが「値は正しい、指摘は無視」と確認済みにしたスロット
   const [acknowledgedSlots, setAcknowledgedSlots] = useState<Set<number>>(new Set());
-  const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -46,30 +43,26 @@ export default function DocumentValueEditor({
     setDirty(false);
   }, [filledSlots]);
 
-  // 候補を読み込み
-  const loadCandidates = useCallback(async () => {
-    setCandidatesLoading(true);
-    try {
-      const res = await fetch("/api/document-values/candidates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyId,
-          threadId,
-          filledSlots,
-          verifyIssues,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCandidates(data.candidates || {});
-        setSlotIssues(data.slotIssues || {});
+  // verify の指摘から、slotId 別に issue + candidates を構築（AI 呼び出しなし、純機械処理）
+  const flatIssues: CheckIssue[] = (verifyIssues || []).flatMap(vi => vi.issues);
+  const slotIssues: Record<number, CheckIssue[]> = {};
+  const candidates: Record<number, Candidate[]> = {};
+  for (const iss of flatIssues) {
+    if (typeof iss.slotId !== "number") continue;
+    if (!slotIssues[iss.slotId]) slotIssues[iss.slotId] = [];
+    slotIssues[iss.slotId].push(iss);
+    // issue.candidates を slot の候補にマージ（重複除去）
+    if (iss.candidates && iss.candidates.length > 0) {
+      if (!candidates[iss.slotId]) candidates[iss.slotId] = [];
+      const seen = new Set(candidates[iss.slotId].map(c => c.value));
+      for (const c of iss.candidates) {
+        if (c?.value && !seen.has(c.value)) {
+          candidates[iss.slotId].push(c);
+          seen.add(c.value);
+        }
       }
-    } catch { /* ignore */ }
-    setCandidatesLoading(false);
-  }, [companyId, threadId, filledSlots, verifyIssues]);
-
-  useEffect(() => { loadCandidates(); }, [loadCandidates]);
+    }
+  }
 
   const handleSelectCandidate = (slotId: number, candidate: Candidate) => {
     setValues(prev => ({ ...prev, [slotId]: candidate.value }));
@@ -112,23 +105,15 @@ export default function DocumentValueEditor({
     setRegenerating(false);
   };
 
-  // verify の全指摘（上部の「未分類」セクション用）
-  const flatIssues = (verifyIssues || []).flatMap(vi => vi.issues);
-
-  // 項目ごとの指摘は Haiku（候補API）がセマンティックマッチングで返す slotIssues を使う。
-  // ただしユーザーが「確認済み」にした項目は指摘を抑止。
-  const getSlotIssues = (slot: FilledSlot): SlotIssue[] => {
+  // 項目ごとの指摘（slotId が付いている issue のみ）。確認済み項目は抑止。
+  const getSlotIssues = (slot: FilledSlot): CheckIssue[] => {
     if (acknowledgedSlots.has(slot.slotId)) return [];
     return slotIssues[slot.slotId] || [];
   };
   const isSlotFlagged = (slot: FilledSlot): boolean => getSlotIssues(slot).length > 0;
 
-  // Haiku がどの項目にも紐付けなかった指摘（自信がない or 対応項目なし）
-  const matchedIssueSet = new Set<string>();
-  for (const issues of Object.values(slotIssues)) {
-    for (const iss of issues) matchedIssueSet.add(iss.problem);
-  }
-  const unmatchedIssues = flatIssues.filter(iss => !matchedIssueSet.has(iss.problem));
+  // slotId が付いていない指摘（書類全体の話・自信なし）= 上部の「未分類」へ
+  const unmatchedIssues = flatIssues.filter(iss => typeof iss.slotId !== "number");
 
   // 空欄（初期値が空）の項目は表示しない。ただし verify が指摘しているものは表示。
   // 編集中に空にした（変更済みだが空）ものも表示し続ける。
@@ -161,21 +146,10 @@ export default function DocumentValueEditor({
             </span>
           );
         })()}
-        {candidatesLoading && (
-          <span className="text-[10px] text-[var(--color-fg-subtle)] animate-pulse">候補読み込み中...</span>
-        )}
-        <button
-          onClick={loadCandidates}
-          disabled={candidatesLoading}
-          className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-hover)] border border-[var(--color-border)] px-2 py-0.5 text-[10px] text-[var(--color-fg-muted)] hover:bg-[var(--color-fg)] hover:text-[var(--color-bg)] disabled:opacity-50"
-          title="候補を再取得"
-        >
-          <Icon name="RefreshCcw" size={10} /> 候補更新
-        </button>
         <button
           onClick={handleRegenerate}
           disabled={!dirty || regenerating}
-          className="inline-flex items-center gap-1 rounded-full bg-[var(--color-accent)] px-3 py-1 text-[10px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+          className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-accent)] px-3 py-1 text-[10px] font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {regenerating ? "再生成中..." : "再生成してプレビュー更新"}
         </button>
