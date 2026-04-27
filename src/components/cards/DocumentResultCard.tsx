@@ -16,6 +16,8 @@ interface Props {
   }) => void;
   // 書類ごとに「問題なし」を手動でマークする（確認済み扱い）
   onMarkOk?: (fileName: string) => void;
+  // 編集タブで保存された変更を一括で再生成する
+  onBulkRegenerate?: () => void;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -76,6 +78,11 @@ function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; on
       <div className="flex items-center gap-2 px-3 py-2">
         <Icon name={iconName} size={14} className="text-[var(--color-fg-muted)] shrink-0" />
         <span className="flex-1 text-[13px] text-[var(--color-fg)] font-medium truncate">{doc.name}</span>
+        {doc.pendingChanges && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-[10px] text-[var(--color-accent-fg)] font-medium" title="編集タブで保存された変更が docx に未反映">
+            <Icon name="Clock" size={10} /> 更新待ち
+          </span>
+        )}
         {statusBadge(doc.checkStatus)}
         <button
           onClick={() => onPreview?.({
@@ -132,7 +139,9 @@ function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; on
   );
 }
 
-export default function DocumentResultCardUI({ card, onPreview, onMarkOk }: Props) {
+export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onBulkRegenerate }: Props) {
+  // 編集タブで保存されたが未反映の書類数
+  const pendingCount = card.documents.filter(d => d.pendingChanges).length;
   // 解決済み (acknowledged) の指摘はカウントから除外
   const totalIssues = card.documents.reduce(
     (sum, d) => sum + ((d.issues || []).filter(iss => !iss.acknowledged).length),
@@ -158,18 +167,29 @@ export default function DocumentResultCardUI({ card, onPreview, onMarkOk }: Prop
 
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] overflow-hidden">
-      <div className={`px-4 py-2.5 text-xs font-medium border-b border-[var(--color-border-soft)] flex items-center justify-between ${headerBg}`}>
+      <div className={`px-4 py-2.5 text-xs font-medium border-b border-[var(--color-border-soft)] flex items-center justify-between gap-2 ${headerBg}`}>
         <span className="inline-flex items-center gap-1.5">
           <Icon name={headerIcon} size={14} /> {headerLabel}
         </span>
-        {card.documents.length > 1 && (
-          <button
-            onClick={() => downloadAllZip(card.documents)}
-            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90"
-          >
-            <Icon name="Download" size={11} /> すべてZIP
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {pendingCount > 0 && onBulkRegenerate && (
+            <button
+              onClick={() => onBulkRegenerate()}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-accent)] px-3 py-1 text-[10px] font-medium text-white hover:opacity-90"
+              title={`${pendingCount}件の書類を一括再生成`}
+            >
+              <Icon name="RefreshCcw" size={11} /> 更新待ち {pendingCount} 件を再生成
+            </button>
+          )}
+          {card.documents.length > 1 && (
+            <button
+              onClick={() => downloadAllZip(card.documents)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90"
+            >
+              <Icon name="Download" size={11} /> すべてZIP
+            </button>
+          )}
+        </div>
       </div>
       <div className="p-3 space-y-1.5">
         {card.documents.map((doc, i) => (

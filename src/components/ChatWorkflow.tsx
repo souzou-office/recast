@@ -681,6 +681,72 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   };
 
   // チェック実行
+  // 編集タブで [保存] された pendingChanges のある書類だけを一括再生成
+  const handleBulkRegenerate = async (messageId: string, cardIndex: number) => {
+    if (!thread || !company) return;
+    const msg = thread.messages.find(m => m.id === messageId);
+    const card = msg?.cards?.[cardIndex];
+    if (!card || card.type !== "document-result") return;
+
+    const targets = card.documents.filter(d => d.pendingChanges && d.templatePath && d.filledSlots);
+    if (targets.length === 0) return;
+
+    setLoading(true);
+    try {
+      // 各書類を順次再生成（並列にすると LibreOffice / fs ロックで衝突しがち）
+      const updatedDocs = [...card.documents];
+      for (const doc of targets) {
+        try {
+          const res = await fetch("/api/document-templates/regenerate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              templatePath: doc.templatePath,
+              fileName: doc.fileName,
+              filledSlots: (doc.filledSlots || []).map(s => ({ slotId: s.slotId, value: s.value })),
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const idx = updatedDocs.findIndex(d => d.fileName === doc.fileName);
+            if (idx >= 0) {
+              updatedDocs[idx] = { ...updatedDocs[idx], docxBase64: data.docxBase64, pendingChanges: false };
+            }
+          }
+        } catch { /* 1 件失敗しても他は続ける */ }
+      }
+
+      // thread に反映
+      const updatedMessages = thread.messages.map(m => {
+        if (m.id !== messageId) return m;
+        const newCards = (m.cards || []).map((c, i) => i === cardIndex ? { ...c, documents: updatedDocs } as ActionCard : c);
+        return { ...m, cards: newCards };
+      });
+      const updatedGenDocs = (thread.generatedDocuments || []).map(gd => {
+        const u = updatedDocs.find(d => d.fileName === gd.fileName);
+        return u ? { ...gd, docxBase64: u.docxBase64, pendingChanges: false } : gd;
+      });
+      const updatedThread: ChatThread = { ...thread, messages: updatedMessages, generatedDocuments: updatedGenDocs };
+      setThread(updatedThread);
+      // プレビュー開いてる書類があれば、そっちも更新
+      if (previewFile) {
+        const u = updatedDocs.find(d => d.fileName === previewFile.fileName);
+        if (u) setPreviewFile(prev => prev ? { ...prev, docxBase64: u.docxBase64 } : prev);
+      }
+      await fetch(`/api/chat-threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          messages: updatedMessages,
+          generatedDocuments: updatedGenDocs,
+        }),
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const runCheck = async (currentThread: ChatThread) => {
     if (!company) return;
     setLoading(true);
@@ -901,6 +967,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                         thread={thread}
                         onPreview={setPreviewFile}
                         onGoBackToFolder={goBack}
+                        onBulkRegenerate={card.type === "document-result" ? () => handleBulkRegenerate(msg.id, ci) : undefined}
                       />
                     </div>
                   ))}
@@ -989,6 +1056,40 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const updatedGenDocs = (thread.generatedDocuments || []).map(gd =>
               gd.fileName === previewFile.fileName
                 ? { ...gd, docxBase64: newBase64, filledSlots: newSlots }
+                : gd
+            );
+            fetch(`/api/chat-threads/${thread.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                companyId: company.id,
+                messages: updatedMessages,
+                generatedDocuments: updatedGenDocs,
+              }),
+            }).catch(() => { /* ignore */ });
+          }}
+          onSaveValues={(newSlots) => {
+            // 値だけ保存（docx は再生成しない、書類カードで一括再生成する）
+            if (!thread || !company) return;
+            const updatedMessages = thread.messages.map(m => {
+              if (!m.cards) return m;
+              const newCards = m.cards.map(c => {
+                if (c.type !== "document-result") return c;
+                const newDocs = c.documents.map(d =>
+                  d.fileName === previewFile.fileName
+                    ? { ...d, filledSlots: newSlots, pendingChanges: true }
+                    : d
+                );
+                return { ...c, documents: newDocs };
+              });
+              return { ...m, cards: newCards };
+            });
+            const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+            setThread(updatedThread);
+            setPreviewFile(prev => prev ? { ...prev, filledSlots: newSlots } : prev);
+            const updatedGenDocs = (thread.generatedDocuments || []).map(gd =>
+              gd.fileName === previewFile.fileName
+                ? { ...gd, filledSlots: newSlots, pendingChanges: true }
                 : gd
             );
             fetch(`/api/chat-threads/${thread.id}`, {

@@ -16,6 +16,8 @@ interface Props {
   verifyIssues?: { docName: string; issues: CheckIssue[] }[];
   // 再生成後、親（ChatWorkflow）に新しい docxBase64 と filledSlots を伝える
   onRegenerated: (docxBase64: string, filledSlots: FilledSlot[]) => void;
+  // 値だけ保存して docx 再生成は後回しにする（書類カード側で一括再生成する）
+  onSaveValues?: (filledSlots: FilledSlot[]) => void;
   // 指摘の acknowledged 状態を親に通知（slotId に紐付く全 issue を一括 ack/解除）
   onIssueAcknowledge?: (slotId: number, acknowledged: boolean) => void;
   // 再生成成功時に親（FilePreview）にプレビュータブ切替を要求
@@ -30,6 +32,7 @@ export default function DocumentValueEditor({
   threadId,
   verifyIssues,
   onRegenerated,
+  onSaveValues,
   onIssueAcknowledge,
   onSwitchToPreview,
 }: Props) {
@@ -90,6 +93,22 @@ export default function DocumentValueEditor({
   const handleChange = (slotId: number, value: string) => {
     setValues(prev => ({ ...prev, [slotId]: value }));
     setDirty(true);
+  };
+
+  // 値だけ親に保存（docx は再生成しない）。書類カードで一括再生成する用。
+  const handleSaveValues = () => {
+    const newSlots: FilledSlot[] = filledSlots.map(s => ({
+      ...s,
+      value: values[s.slotId] ?? s.value,
+    }));
+    if (onIssueAcknowledge) {
+      for (const s of filledSlots) {
+        const newVal = values[s.slotId] ?? s.value;
+        if (newVal !== s.value) onIssueAcknowledge(s.slotId, true);
+      }
+    }
+    onSaveValues?.(newSlots);
+    setDirty(false);
   };
 
   const handleRegenerate = async () => {
@@ -172,13 +191,26 @@ export default function DocumentValueEditor({
             </span>
           );
         })()}
-        <button
-          onClick={handleRegenerate}
-          disabled={!dirty || regenerating}
-          className="ml-auto inline-flex items-center gap-1 rounded-full bg-[var(--color-accent)] px-3 py-1 text-[10px] font-medium text-white hover:opacity-90 disabled:opacity-50"
-        >
-          {regenerating ? "再生成中..." : "再生成してプレビュー更新"}
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          {/* 急ぐとき用: その場で再生成してプレビュー更新 */}
+          <button
+            onClick={handleRegenerate}
+            disabled={!dirty || regenerating}
+            className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] underline disabled:opacity-30 disabled:no-underline"
+            title="この書類だけを今すぐ再生成"
+          >
+            {regenerating ? "再生成中..." : "今すぐ再生成"}
+          </button>
+          {/* デフォルト: 値を保存しておいて、書類カードで一括再生成する */}
+          <button
+            onClick={handleSaveValues}
+            disabled={!dirty || regenerating}
+            className="inline-flex items-center gap-1 rounded-full bg-[var(--color-accent)] px-3 py-1 text-[10px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+            title="値を保存。書類カードの「一括再生成」でまとめて反映"
+          >
+            <Icon name="Save" size={11} /> 保存
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">

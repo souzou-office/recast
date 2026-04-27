@@ -16,9 +16,10 @@ interface Props {
   thread: ChatThread;
   onPreview?: (file: { filePath?: string; docxBase64?: string; fileName: string }) => void;
   onGoBackToFolder?: () => void;
+  onBulkRegenerate?: () => void;
 }
 
-export default function ActionCardRenderer({ card, onAction, company, thread, onPreview, onGoBackToFolder }: Props) {
+export default function ActionCardRenderer({ card, onAction, company, thread, onPreview, onGoBackToFolder, onBulkRegenerate }: Props) {
   switch (card.type) {
     case "folder-select":
       return <FolderSelectCardUI card={card} onAction={onAction} />;
@@ -29,7 +30,7 @@ export default function ActionCardRenderer({ card, onAction, company, thread, on
     case "clarification":
       return <ClarificationCardUI card={card} onAction={onAction} />;
     case "document-result":
-      return <DocumentResultCardUI card={card} onPreview={onPreview} />;
+      return <DocumentResultCardUI card={card} onPreview={onPreview} onBulkRegenerate={onBulkRegenerate} />;
     case "template-review":
       return (
         <TemplateReviewCardUI

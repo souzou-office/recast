@@ -107,6 +107,7 @@ export interface GeneratedDocument {
   fileName: string;
   createdAt: string;
   filledSlots?: FilledSlot[];  // 埋めた値の履歴（直接編集・再生成用）。後方互換で optional
+  pendingChanges?: boolean;    // 値が変更されたが docxBase64 にまだ反映されていない
 }
 
 export interface CaseRoom {
@@ -240,6 +241,7 @@ export interface DocumentResultItem {
   // 値の直接編集・再生成用（後方互換のため optional）
   templatePath?: string;
   filledSlots?: FilledSlot[];
+  pendingChanges?: boolean; // 編集された値が docxBase64 にまだ反映されていない
 }
 
 export interface DocumentResultCard {

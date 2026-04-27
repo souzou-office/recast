@@ -16,6 +16,7 @@ interface Props {
   threadId?: string;
   verifyIssues?: { docName: string; issues: import("@/types").CheckIssue[] }[];
   onRegenerated?: (docxBase64: string, filledSlots: FilledSlot[]) => void;
+  onSaveValues?: (filledSlots: FilledSlot[]) => void;
   onIssueAcknowledge?: (slotId: number, acknowledged: boolean) => void;
 }
 
@@ -35,7 +36,7 @@ function base64ToUint8(base64: string): Uint8Array {
 
 export default function FilePreview({
   filePath, fileName, onClose, docxBase64,
-  filledSlots, templatePath, companyId, threadId, verifyIssues, onRegenerated, onIssueAcknowledge,
+  filledSlots, templatePath, companyId, threadId, verifyIssues, onRegenerated, onSaveValues, onIssueAcknowledge,
 }: Props) {
   const ext = `.${(fileName.split(".").pop() || "").toLowerCase()}`;
   const isRawViewable = RAW_VIEWABLE.has(ext);
@@ -394,6 +395,7 @@ col{min-width:60px}
             threadId={threadId}
             verifyIssues={verifyIssues}
             onRegenerated={onRegenerated!}
+            onSaveValues={onSaveValues}
             onIssueAcknowledge={onIssueAcknowledge}
             onSwitchToPreview={() => setActiveTab("preview")}
           />
