@@ -395,6 +395,7 @@ col{min-width:60px}
             verifyIssues={verifyIssues}
             onRegenerated={onRegenerated!}
             onIssueAcknowledge={onIssueAcknowledge}
+            onSwitchToPreview={() => setActiveTab("preview")}
           />
         </div>
       )}
