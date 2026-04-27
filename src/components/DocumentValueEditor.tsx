@@ -18,6 +18,8 @@ interface Props {
   onRegenerated: (docxBase64: string, filledSlots: FilledSlot[]) => void;
   // 指摘の acknowledged 状態を親に通知（slotId に紐付く全 issue を一括 ack/解除）
   onIssueAcknowledge?: (slotId: number, acknowledged: boolean) => void;
+  // 再生成成功時に親（FilePreview）にプレビュータブ切替を要求
+  onSwitchToPreview?: () => void;
 }
 
 export default function DocumentValueEditor({
@@ -29,6 +31,7 @@ export default function DocumentValueEditor({
   verifyIssues,
   onRegenerated,
   onIssueAcknowledge,
+  onSwitchToPreview,
 }: Props) {
   // スロット値の編集状態（slotId → value）
   const [values, setValues] = useState<Record<number, string>>({});
@@ -116,6 +119,8 @@ export default function DocumentValueEditor({
         }
         onRegenerated(data.docxBase64, newSlots);
         setDirty(false);
+        // 再生成完了後、プレビュータブに自動切替して結果を見せる
+        onSwitchToPreview?.();
       } else {
         const err = await res.json().catch(() => ({}));
         alert(`再生成失敗: ${err.error || "不明なエラー"}`);
