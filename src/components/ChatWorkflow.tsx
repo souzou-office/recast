@@ -500,6 +500,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           folderPath: currentThread.folderPath,
           disabledFiles: currentThread.disabledFiles,
           templateFolderPath: templatePath,
+          threadId: currentThread.id,
         }),
       });
       const reader = res.body?.getReader();
@@ -677,6 +678,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         confirmedAnswers,
         folderPath: currentThread.folderPath,
         disabledFiles: currentThread.disabledFiles,
+        threadId: currentThread.id,
       }),
     });
     const produceData = await produceRes.json();
