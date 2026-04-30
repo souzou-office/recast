@@ -642,7 +642,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     const organizeContent = currentThread.messages.find(m => m.role === "assistant" && m.content.length > 200)?.content || "";
 
     // 確認質問の回答を収集（placeholder名→確定値のマップ）
-    const confirmedAnswers: Record<string, string> = {};
+    // confirmedAnswers: { placeholder, question, answer, options } で完全な文脈を produce に渡す。
+    // 旧 Record<placeholder, answer> だと AI が「何を聞いた質問か」を見られなかった。
+    const confirmedAnswers: { placeholder: string; question: string; answer: string; options: { label: string; source?: string }[] }[] = [];
     for (const m of currentThread.messages) {
       for (const c of m.cards || []) {
         if (c.type !== "clarification") continue;
@@ -653,7 +655,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const opt = q.options.find(o => o.id === q.selectedOptionId);
             ans = opt?.label || "";
           }
-          if (ans) confirmedAnswers[q.placeholder] = ans;
+          if (ans) {
+            confirmedAnswers.push({
+              placeholder: q.placeholder,
+              question: q.question,
+              answer: ans,
+              options: q.options.map(o => ({ label: o.label, source: o.source })),
+            });
+          }
         }
       }
     }

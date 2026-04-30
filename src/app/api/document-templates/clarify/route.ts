@@ -72,37 +72,29 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ハイライト方式のテンプレートかチェック
-  let markedFieldDescs: string[] = [];
+  // ハイライト方式のテンプレ用に .labels.json から豊かなラベルを取得
+  // execute と同じくテンプレ解釈キャッシュを使い、「人名」程度ではなく
+  // 「代表取締役の氏名」「取締役決定書の作成日」のような具体的なラベルで質問を作る。
+  type RichLabel = { docName: string; label: string; format: string; sourceHint?: string };
+  const richLabels: RichLabel[] = [];
   if (allPlaceholders.size === 0) {
-    // プレースホルダーなし → ハイライト方式かもしれない
-    const { extractMarkedFields } = await import("@/lib/docx-marker-parser");
+    const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
     for (const tf of templateFiles) {
       if (tf.base64) continue;
       const ext = tf.name.toLowerCase().split(".").pop() || "";
-      if (ext !== "docx") continue;
-      try {
-        const fsLib = await import("fs/promises");
-        const buf = await fsLib.readFile(tf.path);
-        const fields = extractMarkedFields(buf);
-        for (const f of fields) {
-          // コメントがあればそのまま使う。なければ値の「種類」を推定（元の値自体は渡さない＝前案件のデータだから）
-          let desc: string;
-          if (f.comment) {
-            desc = f.comment;
-          } else {
-            const v = f.originalValue;
-            if (/年.*月.*日|令和|平成/.test(v)) desc = "日付（決定日・届出日・払込期日等）";
-            else if (/都|道|府|県|市|区|町|丁目|番/.test(v)) desc = "住所";
-            else if (/株式会社|有限|合同|組合/.test(v)) desc = "法人名";
-            else if (/[，,]\d{3}/.test(v) || /^\d+$/.test(v.replace(/[，,]/g, ""))) desc = "数値（株数・金額等）";
-            else desc = "人名";
-          }
-          if (!markedFieldDescs.includes(desc)) markedFieldDescs.push(desc);
-        }
-      } catch { /* ignore */ }
+      const baseName = tf.name.replace(/\.[^.]+$/, "");
+      let labels;
+      if (ext === "docx" || ext === "docm") labels = await ensureDocxLabels(tf.path);
+      else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") labels = await ensureXlsxLabels(tf.path);
+      if (!labels) continue;
+      const seen = new Set<string>();
+      for (const s of labels.slots) {
+        if (!s.label || s.label === "不明" || seen.has(s.label)) continue;
+        seen.add(s.label);
+        richLabels.push({ docName: baseName, label: s.label, format: s.format, sourceHint: s.sourceHint });
+      }
     }
-    if (markedFieldDescs.length === 0) {
+    if (richLabels.length === 0) {
       return NextResponse.json({ questions: [] });
     }
   }
@@ -117,9 +109,28 @@ export async function POST(request: NextRequest) {
   }, null, 2);
 
   // プレースホルダーまたはハイライトフィールドのリスト
-  const placeholderList = allPlaceholders.size > 0
-    ? Array.from(allPlaceholders).join(", ")
-    : markedFieldDescs.map(d => `「${d}」`).join(", ");
+  // ハイライト方式は .labels.json の豊かなラベル（書類別 + 形式 + 出典）を使う
+  let placeholderList: string;
+  if (allPlaceholders.size > 0) {
+    placeholderList = Array.from(allPlaceholders).join(", ");
+  } else {
+    const byDoc: Record<string, RichLabel[]> = {};
+    for (const r of richLabels) {
+      if (!byDoc[r.docName]) byDoc[r.docName] = [];
+      byDoc[r.docName].push(r);
+    }
+    const lines: string[] = [];
+    for (const [doc, labels] of Object.entries(byDoc)) {
+      lines.push(`### ${doc}`);
+      for (const l of labels) {
+        const parts = [`- **${l.label}**`];
+        if (l.format) parts.push(`形式: \`${l.format}\``);
+        if (l.sourceHint) parts.push(`出典候補: ${l.sourceHint}`);
+        lines.push(parts.join(" | "));
+      }
+    }
+    placeholderList = lines.join("\n");
+  }
 
   // これまでのQ&Aを前提として追加
   const qaBlock = previousQA && previousQA.length > 0

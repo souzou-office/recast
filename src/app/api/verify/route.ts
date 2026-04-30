@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
       const thread = JSON.parse(raw);
       if (thread.generatedDocuments) threadDocs = thread.generatedDocuments;
       // clarification カードから Q&A を収集
-      type Q = { id: string; placeholder: string; question: string; selectedOptionId?: string; manualInput?: string; options: { id: string; label: string }[] };
+      type Q = { id: string; placeholder: string; question: string; selectedOptionId?: string; manualInput?: string; options: { id: string; label: string; source?: string }[] };
       type Card = { type: string; questions?: Q[]; selectedPath?: string };
       for (const m of thread.messages || []) {
         for (const c of (m.cards || []) as Card[]) {
@@ -90,7 +90,16 @@ export async function POST(request: NextRequest) {
                 const opt = q.options.find(o => o.id === q.selectedOptionId);
                 ans = opt?.label || "";
               }
-              if (ans) threadQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+              if (ans) {
+                // 候補一覧も付けて context として渡す（AI が「どんな選択肢があったか」「どこから来た値か」を見れるように）
+                const optionsBlock = q.options.length > 0
+                  ? "\n  選択肢: " + q.options.map(o => `${o.label}${o.source ? `(${o.source})` : ""}`).join(" / ")
+                  : "";
+                threadQA.push({
+                  question: `【${q.placeholder}】${q.question}${optionsBlock}`,
+                  answer: ans,
+                });
+              }
             }
           }
           if (c.type === "template-select" && c.selectedPath) {

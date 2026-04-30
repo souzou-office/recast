@@ -71,17 +71,45 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  // テンプレートごとに「意味ラベル付きのスロット一覧」を準備する。
-  // 初回は Haiku で解析してキャッシュ（.labels.json）、以降はキャッシュから即返し。
-  // これで案件整理 AI は各スロットの意味（例: "取締役決定書の作成日"）＋記載形式
-  // （例: "令和○年○月○日"）＋推定出典（"案件スケジュール表"）が分かる。
+  // テンプレートごとに「意味ラベル付きのスロット一覧」+「テンプレ本体（マーカー入りテキスト）」を準備する。
+  // ラベルだけだと「人名」しか分からない時に AI が文脈を読めない。本文も一緒に渡せば
+  // 「代表取締役 ★福田峻介★」のような前後の文言から推定できる。
   let templateContext = "";
+  let templateBodies = "";
   type FlatLabel = { docName: string; label: string; format: string; sourceHint?: string };
   const allLabels: FlatLabel[] = [];
   if (templateFolderPath) {
     try {
       const templateFiles = await readAllFilesInFolder(templateFolderPath);
       const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
+      const { getMarkedDocumentText } = await import("@/lib/docx-marker-parser");
+      const { getXlsxMarkedText } = await import("@/lib/xlsx-marker-parser");
+      const fsLib = await import("fs/promises");
+
+      // テンプレ本体を「★...★」マーク付きテキストとして取得（スロット位置が見える）
+      const bodies: string[] = [];
+      for (const tf of templateFiles) {
+        if (tf.base64) continue;
+        const ext = tf.name.toLowerCase().split(".").pop() || "";
+        const baseName = tf.name.replace(/\.[^.]+$/, "");
+        try {
+          if (ext === "docx" || ext === "docm") {
+            const buf = await fsLib.readFile(tf.path);
+            const text = getMarkedDocumentText(buf);
+            if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
+          } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+            const buf = await fsLib.readFile(tf.path);
+            const text = getXlsxMarkedText(buf);
+            if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
+          } else if (tf.content) {
+            // .txt / .md などは中身そのまま（プレースホルダー含むメモ書類）
+            bodies.push(`### ${tf.name}\n\`\`\`\n${tf.content}\n\`\`\``);
+          }
+        } catch { /* skip unreadable */ }
+      }
+      if (bodies.length > 0) {
+        templateBodies = `\n## 作成予定書類のテンプレ本体（★前案件の値★ がスロット）\n\n${bodies.join("\n\n")}\n`;
+      }
 
       // プレースホルダー方式 ({{X}} / 【X】): その名前自体が意味ラベルなのでそのまま使う
       const placeholderExists = new Set<string>();
@@ -163,8 +191,11 @@ ${lines.join("\n")}
     : "";
 
   const promptText = `以下の「案件資料」を確認し、**上記の「必要な項目」だけ**を抽出・整理してください。
+案件整理の目的は **書類生成に必要な値を全て揃える** ことです。テンプレ本体の前後の文脈を見て、
+各スロットに何が入るべきかを正確に判断してください。
 
 ${templateContext}
+${templateBodies}
 ${profileBlock}
 
 ## 出力の作り方（ユーザーが読む内容）
