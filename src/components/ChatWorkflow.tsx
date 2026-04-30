@@ -14,19 +14,46 @@ import { Icon } from "./ui/Icon";
 function extractMissingFromOrganize(organizeText: string): string[] {
   if (!organizeText) return [];
   const items: string[] = [];
+  const pushLabel = (label: string) => {
+    const t = label.trim();
+    if (!t) return;
+    if (/^項目$|^-+$/.test(t)) return;
+    if (items.includes(t)) return;
+    items.push(t);
+  };
+
+  // 1) 表形式の値が *要確認* になっている行
   for (const rawLine of organizeText.split("\n")) {
     const line = rawLine.trim();
     if (!line.startsWith("|") || !line.includes("|")) continue;
     const cols = line.split("|").map(s => s.trim()).filter(Boolean);
     if (cols.length < 2) continue;
     const value = cols[1] || "";
-    // *要確認* / 要確認 / （要確認） / (要確認) 等を検出
     if (/(?:^|[*\s（(])要確認(?:[*\s）)]|$)/.test(value)) {
-      const label = cols[0];
-      if (label && !/^項目$|^-+$/.test(label) && !items.includes(label)) {
-        items.push(label);
-      }
+      pushLabel(cols[0]);
     }
+  }
+
+  // 2) 末尾の「## ⚠ 要確認事項」セクション内の箇条書き
+  //    各箇条書きから「：」より前をラベルとして拾う（例: "商号の表記揺れ：..." → "商号の表記揺れ"）
+  let inSection = false;
+  for (const rawLine of organizeText.split("\n")) {
+    const line = rawLine.trim();
+    if (/^#+\s*[⚠️⚠]?\s*(要確認事項|確認事項|要確認)/.test(line)) {
+      inSection = true;
+      continue;
+    }
+    if (inSection && /^#+\s/.test(line)) {
+      inSection = false;
+      continue;
+    }
+    if (!inSection) continue;
+    const m = line.match(/^[・\-*•]\s*(.+)$/);
+    if (!m) continue;
+    const content = m[1].trim();
+    // 「：」または「:」より前をラベルに（無ければ全体の先頭40文字）
+    const labelMatch = content.match(/^(.+?)[：:]/);
+    pushLabel(labelMatch ? labelMatch[1] : content.slice(0, 40));
   }
   return items;
 }

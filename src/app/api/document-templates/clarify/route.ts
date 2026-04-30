@@ -246,21 +246,42 @@ ${qaBlock}${knownMissingBlock}
 
     // 安全網: knownMissing にあるのに AI が質問に含め忘れた項目を追加
     // （AI が ignoring したり整理で名前ブレしたりしても、案件整理で *要確認* だった項目は必ず聞く）
+    //
+    // 重複判定はラベル名をゆるく正規化（カッコ・記号・空白を除去）してから比較。
+    // 「日付（株主リスト（6-2）証明書作成日）」と「株主リスト（6-2）の証明書作成日」は
+    // 同じ項目を指しているので、片方が AI 生成で出ていれば auto 追加はしない。
+    const normalize = (s: string): string =>
+      s.replace(/[（）\(\)【】「」『』《》<>\[\]/／\\\\\-－‐ー−・,，、。\s　]/g, "")
+        .replace(/^日付/, "")
+        .replace(/の値$/, "");
+
     if (knownMissing && knownMissing.length > 0) {
-      const answered = new Set((previousQA || []).map(qa => qa.question.replace(/【([^】]+)】.*/, "$1")));
+      const answeredNormalized = new Set(
+        (previousQA || []).map(qa => {
+          const m = qa.question.match(/【([^】]+)】/);
+          return normalize(m ? m[1] : "");
+        }).filter(Boolean)
+      );
+      const existingNormalized = new Set([
+        ...questions.map(q => normalize(q.placeholder || "")),
+        ...questions.map(q => normalize(q.question || "")),
+      ].filter(Boolean));
+
       for (const missing of knownMissing) {
-        if (answered.has(missing)) continue; // 既に回答済み
-        const exists = questions.some(q =>
-          q.placeholder === missing ||
-          (q.question && q.question.includes(missing))
-        );
-        if (!exists) {
+        const norm = normalize(missing);
+        if (!norm) continue;
+        if (answeredNormalized.has(norm)) continue;
+        // 既存の質問にラベルが含まれていれば追加しない（緩い包含一致でも）
+        const alreadyCovered = existingNormalized.has(norm) ||
+          [...existingNormalized].some(e => e.includes(norm) || norm.includes(e));
+        if (!alreadyCovered) {
           questions.push({
             id: `auto_${questions.length + 1}`,
             placeholder: missing,
             question: `${missing} の値を入力してください（案件整理で特定できませんでした）`,
             options: [],
           });
+          existingNormalized.add(norm);
         }
       }
     }
