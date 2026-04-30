@@ -101,11 +101,14 @@ export async function POST(request: NextRequest) {
     try {
       const templateFiles = await readAllFilesInFolder(templateFolderPath);
       const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
-      const { getMarkedDocumentText } = await import("@/lib/docx-marker-parser");
-      const { getXlsxMarkedText } = await import("@/lib/xlsx-marker-parser");
+      const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
+      const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
       const fsLib = await import("fs/promises");
 
-      // テンプレ本体を「★...★」マーク付きテキストとして取得（スロット位置が見える）
+      // テンプレ本体を「［要入力_N《前案件:○○》］」形式で取得。
+      // - 「要入力_N」が「埋めるべきスロット」であることを AI に明示
+      // - 「《前案件:○○》」は過去案件の値（型判定のヒントのみ。必ず今回の値で置換）
+      // - produce ターンでも同じ番号付けを使うので、会話を通じて一貫した参照ができる
       const bodies: string[] = [];
       for (const tf of templateFiles) {
         if (tf.base64) continue;
@@ -114,11 +117,11 @@ export async function POST(request: NextRequest) {
         try {
           if (ext === "docx" || ext === "docm") {
             const buf = await fsLib.readFile(tf.path);
-            const text = getMarkedDocumentText(buf);
+            const { text } = getMarkedDocumentTextWithSlots(buf);
             if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
           } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
             const buf = await fsLib.readFile(tf.path);
-            const text = getXlsxMarkedText(buf);
+            const { text } = getXlsxMarkedTextWithSlots(buf);
             if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
           } else if (tf.content) {
             bodies.push(`### ${tf.name}\n\`\`\`\n${tf.content}\n\`\`\``);
@@ -126,7 +129,15 @@ export async function POST(request: NextRequest) {
         } catch { /* skip unreadable */ }
       }
       if (bodies.length > 0) {
-        templateBodies = `\n## 作成予定書類のテンプレ本体（★前案件の値★ がスロット）\n\n${bodies.join("\n\n")}\n`;
+        templateBodies = `\n## 作成予定書類のテンプレ本体
+
+各書類の \`［要入力_N《前案件:○○》］\` の部分が **これから埋めるべきスロット** です。
+- \`要入力_N\` (N は番号): スロットID。後続ターンで「要入力_3 にはこの値を入れる」のように参照する
+- \`《前案件:○○》\`: **過去の別案件の値**。型判定の参考にだけ使い、絶対にこの値を採用してはいけない
+  - 例: \`代表取締役 ［要入力_0《前案件:福田峻介》］ が...\` → 「過去案件では福田峻介だった、人名スロット」と判定しつつ、**今回の代表取締役は今回の案件データから引く**
+
+${bodies.join("\n\n")}
+`;
       }
 
       // プレースホルダー方式 ({{X}} / 【X】): その名前自体が意味ラベルなのでそのまま使う
@@ -217,6 +228,11 @@ ${lines.join("\n")}
 以下の「案件資料」を確認し、**上記の「必要な項目」だけ**を抽出・整理してください。
 案件整理の目的は **書類生成に必要な値を全て揃える** ことです。テンプレ本体の前後の文脈を見て、
 各スロットに何が入るべきかを正確に判断してください。
+
+**重要**: テンプレ本体内の \`［要入力_N《前案件:○○》］\` は **過去の別案件の値が記載されたスロット**です。
+\`《前案件:福田峻介》\` を見ても「現在の代表取締役は福田峻介」と判断してはいけません。
+**今回の案件データ（基本情報・案件資料）から得た値だけを採用**してください。
+《前案件:○○》 の値は型のヒント（人名/日付/会社名等）にだけ使います。
 
 ${templateContext}
 ${templateBodies}
