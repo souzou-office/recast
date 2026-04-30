@@ -378,22 +378,26 @@ export async function POST(request: NextRequest) {
     : "";
 
   // 各書類の slot 一覧をプロンプトに明示する（ターン1で見せたが、ここで再掲することで「キーの形式」を固定）
+  // **前案件の値は出さない**。AI が前案件の値に引きずられて同じ値を返すのを防ぐため、
+  // ラベル・形式・出典候補だけ載せる。元の値の参照は produce 側の決定的処理で内部的にやる。
   const docPromptLines: string[] = [];
   for (const a of analyses) {
     docPromptLines.push(`### ${a.file.name}`);
     if (a.kind === "highlight-docx") {
-      for (const [slotId, origValue] of a.docSlots) {
+      for (const [slotId] of a.docSlots) {
         const meta = a.slotLabels.get(slotId);
         const labelPart = meta?.label ? ` — ${meta.label}` : "";
         const formatPart = meta?.format ? ` 形式: ${meta.format}` : "";
-        docPromptLines.push(`- 要入力_${slotId}${labelPart}${formatPart}（前案件: ${origValue}）`);
+        const sourcePart = meta?.sourceHint ? ` 出典候補: ${meta.sourceHint}` : "";
+        docPromptLines.push(`- 要入力_${slotId}${labelPart}${formatPart}${sourcePart}`);
       }
     } else if (a.kind === "highlight-xlsx") {
-      for (const [slotId, origValue] of a.xlSlots) {
+      for (const [slotId] of a.xlSlots) {
         const meta = a.slotLabels.get(slotId);
         const labelPart = meta?.label ? ` — ${meta.label}` : "";
         const formatPart = meta?.format ? ` 形式: ${meta.format}` : "";
-        docPromptLines.push(`- 要入力_${slotId}${labelPart}${formatPart}（前案件: ${origValue}）`);
+        const sourcePart = meta?.sourceHint ? ` 出典候補: ${meta.sourceHint}` : "";
+        docPromptLines.push(`- 要入力_${slotId}${labelPart}${formatPart}${sourcePart}`);
       }
     } else {
       // placeholder
@@ -451,9 +455,9 @@ ${conditionFlagBlock}
 - **金額・株数**: テンプレ前後に「円」「株」等の単位がある場合、値には単位を含めない（テンプレ側に既に書かれているため）
 - **割合**: 5% は「5.00%」のようなパーセント文字列
 
-### 前案件のヒントの扱い（ハイライト方式）
-- \`（前案件: ○○）\` は **過去の別案件の値**。型判定にだけ使い、必ず今回の案件データの値に置き換える
-- 前案件と完全一致する返答は禁止
+### スロットの中身は空欄
+- \`要入力_N\` は **空のスロット** です。前案件の値は隠してあるので AI には見えません
+- 各スロットが何を表すかは「ラベル」「形式」「出典候補」と前後の文脈から判断してください
 
 ### スロット分割（住所・氏名等が複数スロットに分かれている場合）
 - 住所が「東京都渋谷区...」「クレール西原102」のように2スロット → 先頭=全体, 後続=空文字 ""

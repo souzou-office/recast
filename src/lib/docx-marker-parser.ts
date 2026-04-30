@@ -197,9 +197,12 @@ function findTopLevelParagraphs(xml: string): ParaRange[] {
   return results;
 }
 
-// 文書全体のテキストを、ハイライト部分を［要入力_N:前案件の値］に置き換えて返す。
-// 「前案件の値」は AI への型ヒント（これは前案件の値なので必ず差し替える、と指示する）。
-// 周辺に文脈がないスロット（役職も氏名も両方ハイライト等）でも、型ヒントで AI が判断できる。
+// 文書全体のテキストを、ハイライト部分を［要入力_N］に置き換えて返す。
+// **前案件の値は AI に見せない**（型ヒントとして見せた時期もあったが、AI がそれに引きずられて
+// 同じ値を返すケースが頻発したため、826ca83 で完全に隠す方針に戻した）。
+// AI には周辺文脈と .labels.json のラベルから型・意味を判断させる。
+// 元の値（前案件の値）は slots Map に保持（produce/regenerate で originalValue→newValue の
+// 置換マップを作るため必要）。
 export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
   const zip = new PizZip(buffer);
   let docXml = zip.file("word/document.xml")?.asText();
@@ -219,8 +222,8 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; 
     const flushGroup = () => {
       if (currentGroupText) {
         slots.set(slotId, currentGroupText);
-        // 《前案件:...》 で前案件の値を明示。AI は型判定のヒントにしつつ必ず新値に置換。
-        lineText += `［要入力_${slotId}《前案件:${currentGroupText}》］`;
+        // ★前案件の値は出力テキストに含めない★。番号だけ。AI には文脈から型を判断させる。
+        lineText += `［要入力_${slotId}］`;
         slotId++;
         currentGroupText = "";
       }

@@ -575,8 +575,8 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
         if (/<f\b/.test(inner)) { rowTexts.push(val); continue; } // 数式セルは素通し
         if (isYellow) {
           slots.set(slotId, val);
-          // 《前案件:...》 で前案件の値を明示（型判定用ヒント）
-          rowTexts.push(`［要入力_${slotId}《前案件:${val}》］`);
+          // ★前案件の値は AI に見せない★。文脈と labels.json から型を判断させる。
+          rowTexts.push(`［要入力_${slotId}］`);
           slotId++;
         } else {
           rowTexts.push(val);
