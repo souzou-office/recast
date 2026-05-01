@@ -22,23 +22,24 @@ const MODEL = "claude-sonnet-4-6";
  * 旧設計: テンプレ一覧・基本情報・案件整理テキストを毎回プロンプトに詰めて Claude に送り直していた。
  *   結果として「organize で迷った末に三上春香にした」というような判断が引き継がれず、
  *   clarify が同じことを再度 0 から判断していた。
- * 新設計: organize で書き込んだ会話履歴の続きとしてユーザーターンを追加するだけ。
- *   Claude は organize で自分が出した整理結果を覚えているので、テンプレや基本情報を
- *   再送する必要がない。
+ *   さらに organize 出力の「⚠ 要確認事項」セクションをテキストパースして knownMissing として
+ *   AI に渡し、AI が答え忘れたら自動追加する「安全網」が入っていた。
+ *   → 安全網は AI が文言を綺麗に書き直すと「同じ topic」と認識できず、重複質問を量産していた。
+ * 新設計: clarify (ターン2) の AI は organize (ターン1) の会話そのものを覚えているため、
+ *   自分が ⚠ 要確認 と書いた項目を再質問するのは AI の責務。安全網は廃止。
  *
  * 入力:
  *  - threadId（必須）: aiMessages の保存先
- *  - knownMissing: 案件整理で *要確認* となった項目（必ず質問にする）
  *  - previousQA: 過去の Q&A（同スレッド内で再度 clarify を呼ぶ場合の重複回避）
  */
 export async function POST(request: NextRequest) {
-  const { companyId, previousQA, knownMissing, threadId } = await request.json() as {
+  const { companyId, previousQA, threadId } = await request.json() as {
     companyId: string;
     templateFolderPath?: string; // 互換のため残すが、ターン1で既に渡している
     previousQA?: { question: string; answer: string }[];
     folderPath?: string;
     disabledFiles?: string[];
-    knownMissing?: string[];
+    knownMissing?: string[]; // 互換のため受け取るが現在は未使用（安全網廃止）
     threadId?: string;
   };
 
@@ -55,17 +56,11 @@ export async function POST(request: NextRequest) {
   // 案件整理（ターン1）の内容を Claude が既に覚えている前提で、続きとしてターン2を書く
   let aiMessages = await loadAiMessages(company.id, threadId);
   if (!hasStage(aiMessages, "organize")) {
-    // 旧スレッドや、organize がまだの状態 → 質問できない
     return NextResponse.json({ questions: [] });
   }
 
-  // clarify を再実行する場合は、過去の clarify ターンを切り戻す（organize までは保持）
+  // clarify を再実行する場合は、過去の clarify ターンを切り戻す
   aiMessages = truncateBeforeStage(aiMessages, "clarify");
-
-  // ユーザーターン: 「不足項目を質問JSONで」
-  const knownMissingBlock = (knownMissing && knownMissing.length > 0)
-    ? `\n## 必ず質問する項目（案件整理で *要確認* になったもの）\n${knownMissing.map(m => `- ${m}`).join("\n")}\n\nこの項目は全て質問リストに含めてください。必要に応じて、資料から推測される候補を options に入れて選択肢として提示します。\n`
-    : "";
 
   const previousQABlock = (previousQA && previousQA.length > 0)
     ? `\n## これまでの確認結果（既に確定済み。再質問しないこと）\n${previousQA.map(qa => `- Q: ${qa.question}\n  A: ${qa.answer}`).join("\n")}\n`
@@ -78,15 +73,19 @@ export async function POST(request: NextRequest) {
 
 判断基準:
 - ターン1の整理結果で値が \`*要確認*\` になっているもの → 必ず質問
+- ターン1で「⚠ 要確認事項」セクションに書いた項目 → 必ず質問（ただし1つの懸念に対して質問1個。重複させない）
 - ターン1で値を出せたが、自信がない・複数解釈ができる → 質問
 - ターン1で確実に出せた値 → 質問しない
+
+**重要**: 同じ topic を別の表現で 2 回質問しないこと。たとえば「会社商号の表記ゆれ」と
+「会社名（商号）」は同じ topic なので、1 つの質問にまとめる。
 
 各質問には可能な限り候補を 1〜3 件 options に含める:
 - 案件整理で挙げた候補・基本情報の値などを options に入れる
 - それぞれ source に出典（どの資料か）を書く
 - 手動入力ができる（フロントエンドが自動で追加）ので、分からなければ空の options でも可
 
-${knownMissingBlock}${previousQABlock}
+${previousQABlock}
 ## 出力形式（JSONのみ）
 \`\`\`json
 [
@@ -105,6 +104,7 @@ ${knownMissingBlock}${previousQABlock}
 - ターン1の整理結果で確定した値の確認（既に確定済み）
 - 基本情報内の変更履歴・過去の辞任・過去の住所移転等、今回の手続きと関係ない過去の事実
 - 「これまでの確認結果」に含まれる項目
+- 同じ topic の別表現での重複質問
 
 JSON配列のみ返してください。説明文・前置き不要。`;
 
@@ -144,7 +144,7 @@ JSON配列のみ返してください。説明文・前置き不要。`;
       }
     }
 
-    // previousQA に既に答えた質問を除外
+    // previousQA に既に答えた質問を除外（AI が重複させないか念のためのフィルタ）
     if (previousQA && previousQA.length > 0 && questions.length > 0) {
       const answeredPlaceholders = new Set(
         previousQA.map(qa => {
@@ -156,42 +156,6 @@ JSON配列のみ返してください。説明文・前置き不要。`;
       questions = questions.filter(q => !answeredPlaceholders.has(q.placeholder));
       if (before !== questions.length) {
         console.log(`[clarify] filtered ${before - questions.length} duplicate questions (already answered)`);
-      }
-    }
-
-    // knownMissing にあるのに AI が質問に含め忘れた項目を追加（安全網）
-    const normalize = (s: string): string =>
-      s.replace(/[（）\(\)【】「」『』《》<>\[\]/／\\\\\-－‐ー−・,，、。\s　]/g, "")
-        .replace(/^日付/, "")
-        .replace(/の値$/, "");
-
-    if (knownMissing && knownMissing.length > 0) {
-      const answeredNormalized = new Set(
-        (previousQA || []).map(qa => {
-          const m = qa.question.match(/【([^】]+)】/);
-          return normalize(m ? m[1] : "");
-        }).filter(Boolean)
-      );
-      const existingNormalized = new Set([
-        ...questions.map(q => normalize(q.placeholder || "")),
-        ...questions.map(q => normalize(q.question || "")),
-      ].filter(Boolean));
-
-      for (const missing of knownMissing) {
-        const norm = normalize(missing);
-        if (!norm) continue;
-        if (answeredNormalized.has(norm)) continue;
-        const alreadyCovered = existingNormalized.has(norm) ||
-          [...existingNormalized].some(e => e.includes(norm) || norm.includes(e));
-        if (!alreadyCovered) {
-          questions.push({
-            id: `auto_${questions.length + 1}`,
-            placeholder: missing,
-            question: `${missing} の値を入力してください（案件整理で特定できませんでした）`,
-            options: [],
-          });
-          existingNormalized.add(norm);
-        }
       }
     }
 

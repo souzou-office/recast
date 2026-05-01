@@ -9,55 +9,6 @@ import ActionCardRenderer from "./cards/ActionCardRenderer";
 import FilePreview from "./FilePreview";
 import { Icon } from "./ui/Icon";
 
-// 案件整理の出力テキストから「値が *要確認* / （要確認）」になってる行の項目名を抽出
-// 例: | 払込期日 | *要確認* | ─ |  →  "払込期日"
-function extractMissingFromOrganize(organizeText: string): string[] {
-  if (!organizeText) return [];
-  const items: string[] = [];
-  const pushLabel = (label: string) => {
-    const t = label.trim();
-    if (!t) return;
-    if (/^項目$|^-+$/.test(t)) return;
-    if (items.includes(t)) return;
-    items.push(t);
-  };
-
-  // 1) 表形式の値が *要確認* になっている行
-  for (const rawLine of organizeText.split("\n")) {
-    const line = rawLine.trim();
-    if (!line.startsWith("|") || !line.includes("|")) continue;
-    const cols = line.split("|").map(s => s.trim()).filter(Boolean);
-    if (cols.length < 2) continue;
-    const value = cols[1] || "";
-    if (/(?:^|[*\s（(])要確認(?:[*\s）)]|$)/.test(value)) {
-      pushLabel(cols[0]);
-    }
-  }
-
-  // 2) 末尾の「## ⚠ 要確認事項」セクション内の箇条書き
-  //    各箇条書きから「：」より前をラベルとして拾う（例: "商号の表記揺れ：..." → "商号の表記揺れ"）
-  let inSection = false;
-  for (const rawLine of organizeText.split("\n")) {
-    const line = rawLine.trim();
-    if (/^#+\s*[⚠️⚠]?\s*(要確認事項|確認事項|要確認)/.test(line)) {
-      inSection = true;
-      continue;
-    }
-    if (inSection && /^#+\s/.test(line)) {
-      inSection = false;
-      continue;
-    }
-    if (!inSection) continue;
-    const m = line.match(/^[・\-*•]\s*(.+)$/);
-    if (!m) continue;
-    const content = m[1].trim();
-    // 「：」または「:」より前をラベルに（無ければ全体の先頭40文字）
-    const labelMatch = content.match(/^(.+?)[：:]/);
-    pushLabel(labelMatch ? labelMatch[1] : content.slice(0, 40));
-  }
-  return items;
-}
-
 interface Props {
   company: Company | null;
   threadId: string | null;
@@ -341,11 +292,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
       }
 
-      // 案件整理の *要確認* 項目を再抽出（前と同じ内容だが、前回答後の状態から再確認のため）
-      const organizeMsg = updatedThread.messages.find(m => m.role === "assistant" && (m.content || "").length > 500);
-      const knownMissingContinue = extractMissingFromOrganize(organizeMsg?.content || "");
-
-      // もう一度 clarify を呼ぶ
+      // もう一度 clarify を呼ぶ。会話履歴から AI が自分で「⚠ 要確認」項目を覚えているので
+      // knownMissing の安全網は不要。
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -356,7 +304,6 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           previousQA,
           folderPath: updatedThread.folderPath,
           disabledFiles: updatedThread.disabledFiles,
-          knownMissing: knownMissingContinue,
         }),
       });
       const clarifyData = await clarifyRes.json();
@@ -583,11 +530,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         messages: [...currentThread.messages, organizeMsg],
       };
 
-      // 案件整理の出力から *要確認* / （要確認） となった項目を機械的に抽出
-      // これは clarify AI の判断に頼らず、確実に質問する対象
-      const knownMissing = extractMissingFromOrganize(organizeMsg.content);
-
       // 2. 確認質問（clarify）
+      // 会話履歴から AI が自分で organize の「⚠ 要確認事項」を覚えているので
+      // knownMissing 安全網は不要（旧設計の遺物。重複質問の原因だった）
       const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -597,7 +542,6 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           templateFolderPath: templatePath,
           folderPath: currentThread.folderPath,
           disabledFiles: currentThread.disabledFiles,
-          knownMissing,
         }),
       });
       const clarifyData = await clarifyRes.json();
