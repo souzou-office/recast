@@ -323,43 +323,48 @@ ${allTexts.join("\n\n")}`;
 
   try {
     const encoder = new TextEncoder();
+    const send = (controller: ReadableStreamDefaultController, data: object) => {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+    };
     const stream = new ReadableStream({
       async start(controller) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-          type: "meta",
-          sourceFiles,
-        })}\n\n`));
-
-        const aiStream = client.messages.stream({
-          model: MODEL,
-          max_tokens: 8192,
-          messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
-        });
-
-        let assistantText = "";
-        for await (const event of aiStream) {
-          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-            assistantText += event.delta.text;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-              type: "text",
-              text: event.delta.text,
-            })}\n\n`));
-          }
-        }
-
         try {
-          const final = await aiStream.finalMessage();
-          logTokenUsage("/api/templates/execute", MODEL, final.usage);
-        } catch { /* ignore */ }
+          send(controller, { type: "meta", sourceFiles });
 
-        // assistant ターンを保存（次の clarify/produce/verify が読む）
-        if (threadId) {
-          const finalMessages = appendAssistantTurn(messagesWithUserTurn, assistantText, "organize");
-          await saveAiMessages(company.id, threadId, finalMessages);
+          const aiStream = client.messages.stream({
+            model: MODEL,
+            max_tokens: 8192,
+            messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
+          });
+
+          let assistantText = "";
+          for await (const event of aiStream) {
+            if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+              assistantText += event.delta.text;
+              send(controller, { type: "text", text: event.delta.text });
+            }
+          }
+
+          try {
+            const final = await aiStream.finalMessage();
+            logTokenUsage("/api/templates/execute", MODEL, final.usage);
+          } catch { /* ignore */ }
+
+          // assistant ターンを保存（次の clarify/produce/verify が読む）
+          if (threadId) {
+            const finalMessages = appendAssistantTurn(messagesWithUserTurn, assistantText, "organize");
+            await saveAiMessages(company.id, threadId, finalMessages);
+          }
+
+          send(controller, { type: "done" });
+        } catch (e) {
+          // ERR_EMPTY_RESPONSE 防止: 例外を必ず SSE で返してから close する
+          const errMsg = e instanceof Error ? `${e.message}\n${e.stack || ""}` : String(e);
+          console.error("[execute] stream failed:", errMsg);
+          try { send(controller, { type: "error", error: e instanceof Error ? e.message : "実行に失敗" }); } catch { /* controller already closed */ }
+        } finally {
+          try { controller.close(); } catch { /* already closed */ }
         }
-
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
-        controller.close();
       },
     });
 
