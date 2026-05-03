@@ -16,6 +16,8 @@ interface Props {
   }) => void;
   // 書類ごとに「問題なし」を手動でマークする（確認済み扱い）
   onMarkOk?: (fileName: string) => void;
+  // 個別の指摘を「確認済み」にする/戻す（slotId に紐付かない指摘でも使える）
+  onIssueAck?: (fileName: string, issueIndex: number, ack: boolean) => void;
   // 編集タブで保存された変更を一括で再生成する
   onBulkRegenerate?: () => void;
 }
@@ -65,12 +67,14 @@ function severityDot(sev: CheckIssue["severity"]) {
   return <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${color}`} />;
 }
 
-function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; onPreview?: Props["onPreview"]; onMarkOk?: Props["onMarkOk"] }) {
+function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentResultItem; onPreview?: Props["onPreview"]; onMarkOk?: Props["onMarkOk"]; onIssueAck?: Props["onIssueAck"] }) {
   const ext = doc.fileName.split(".").pop()?.toLowerCase() || "";
   const iconName = ext === "pdf" ? "FileType" : ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" : "FileText";
-  // acknowledged な指摘は「解決済み」扱いで表示・カウントから除く
-  const activeIssues = (doc.issues || []).filter(iss => !iss.acknowledged);
-  const hasIssues = activeIssues.length > 0;
+  // 全指摘 + 元のインデックス（確認済みの「戻す」リンク用）。ack 済みは末尾に薄く表示。
+  const allIssuesIndexed = (doc.issues || []).map((iss, idx) => ({ iss, idx }));
+  const activeIssues = allIssuesIndexed.filter(({ iss }) => !iss.acknowledged);
+  const ackedIssues = allIssuesIndexed.filter(({ iss }) => iss.acknowledged);
+  const hasIssues = activeIssues.length > 0 || ackedIssues.length > 0;
   const isOk = doc.checkStatus === "ok";
 
   return (
@@ -118,8 +122,8 @@ function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; on
       {hasIssues && (
         <div className="px-3 pb-2.5 pt-0.5 border-t border-[var(--color-border-soft)] bg-[var(--color-warn-bg)]/30">
           <ul className="space-y-1.5 mt-2">
-            {activeIssues.map((iss, i) => (
-              <li key={i} className="flex items-start gap-2 text-[12px]">
+            {activeIssues.map(({ iss, idx }) => (
+              <li key={idx} className="flex items-start gap-2 text-[12px]">
                 {severityDot(iss.severity)}
                 <div className="flex-1 leading-relaxed">
                   <span className="text-[var(--color-fg)]">{iss.problem}</span>
@@ -130,8 +134,41 @@ function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; on
                     <span className="ml-2 text-[10.5px] text-[var(--color-fg-subtle)]">[{iss.aspect}]</span>
                   )}
                 </div>
+                {onIssueAck && (
+                  <button
+                    onClick={() => onIssueAck(doc.fileName, idx, true)}
+                    className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-white border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-muted)] hover:bg-[var(--color-ok-bg)] hover:text-[var(--color-ok-fg)] hover:border-[var(--color-ok-fg)]"
+                    title="この指摘を確認済みにする"
+                  >
+                    <Icon name="CheckCircle2" size={10} /> 確認済み
+                  </button>
+                )}
               </li>
             ))}
+            {ackedIssues.length > 0 && (
+              <li className="pt-1.5 border-t border-[var(--color-border-soft)] mt-1.5">
+                <div className="text-[10px] text-[var(--color-fg-subtle)] mb-1">確認済みの指摘 ({ackedIssues.length}件)</div>
+                <ul className="space-y-1">
+                  {ackedIssues.map(({ iss, idx }) => (
+                    <li key={idx} className="flex items-start gap-2 text-[11px] opacity-60">
+                      <Icon name="CheckCircle2" size={11} className="text-[var(--color-ok-fg)] mt-0.5 shrink-0" />
+                      <div className="flex-1 leading-relaxed line-through">
+                        {iss.problem}
+                      </div>
+                      {onIssueAck && (
+                        <button
+                          onClick={() => onIssueAck(doc.fileName, idx, false)}
+                          className="shrink-0 text-[10px] text-[var(--color-fg-subtle)] underline hover:text-[var(--color-fg)]"
+                          title="確認済みを解除"
+                        >
+                          戻す
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            )}
           </ul>
         </div>
       )}
@@ -139,7 +176,7 @@ function DocumentRow({ doc, onPreview, onMarkOk }: { doc: DocumentResultItem; on
   );
 }
 
-export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onBulkRegenerate }: Props) {
+export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssueAck, onBulkRegenerate }: Props) {
   // 編集タブで保存されたが未反映の書類数
   const pendingCount = card.documents.filter(d => d.pendingChanges).length;
   // 解決済み (acknowledged) の指摘はカウントから除外
@@ -193,7 +230,7 @@ export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onBulk
       </div>
       <div className="p-3 space-y-1.5">
         {card.documents.map((doc, i) => (
-          <DocumentRow key={i} doc={doc} onPreview={onPreview} onMarkOk={onMarkOk} />
+          <DocumentRow key={i} doc={doc} onPreview={onPreview} onMarkOk={onMarkOk} onIssueAck={onIssueAck} />
         ))}
       </div>
       {card.checkSummary && (

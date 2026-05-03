@@ -662,6 +662,39 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     onThreadUpdate();
   };
 
+  // 個別の指摘を「確認済み」にする/戻す（slotId に紐付かない指摘でも使える）
+  // 書類カード上の各指摘行のチェックボタンから呼ばれる
+  const handleIssueAckByIndex = (messageId: string, cardIndex: number, fileName: string, issueIndex: number, ack: boolean) => {
+    if (!thread || !company) return;
+    const updatedMessages = thread.messages.map(m => {
+      if (m.id !== messageId) return m;
+      const newCards = (m.cards || []).map((c, i) => {
+        if (i !== cardIndex || c.type !== "document-result") return c;
+        const newDocs = c.documents.map(d => {
+          if (d.fileName !== fileName) return d;
+          const newIssues = (d.issues || []).map((iss, k) =>
+            k === issueIndex ? { ...iss, acknowledged: ack } : iss
+          );
+          // 残りの未解決 issue 数で status を再計算
+          const unresolved = newIssues.filter(i => !i.acknowledged);
+          const newStatus: "ok" | "warn" | "error" =
+            unresolved.length === 0 ? "ok" :
+            unresolved.some(i => i.severity === "error") ? "error" : "warn";
+          return { ...d, issues: newIssues, checkStatus: newStatus };
+        });
+        return { ...c, documents: newDocs };
+      });
+      return { ...m, cards: newCards };
+    });
+    const updatedThread: ChatThread = { ...thread, messages: updatedMessages };
+    setThread(updatedThread);
+    fetch(`/api/chat-threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: company.id, messages: updatedMessages }),
+    }).catch(() => { /* ignore */ });
+  };
+
   // チェック実行
   // 編集タブで [保存] された pendingChanges のある書類だけを一括再生成
   const handleBulkRegenerate = async (messageId: string, cardIndex: number) => {
@@ -958,6 +991,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                         onPreview={setPreviewFile}
                         onGoBackToFolder={goBack}
                         onBulkRegenerate={card.type === "document-result" ? () => handleBulkRegenerate(msg.id, ci) : undefined}
+                        onIssueAck={card.type === "document-result"
+                          ? (fileName, issueIndex, ack) => handleIssueAckByIndex(msg.id, ci, fileName, issueIndex, ack)
+                          : undefined}
                       />
                     </div>
                   ))}
