@@ -692,7 +692,15 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const data = await res.json();
             const idx = updatedDocs.findIndex(d => d.fileName === doc.fileName);
             if (idx >= 0) {
-              updatedDocs[idx] = { ...updatedDocs[idx], docxBase64: data.docxBase64, pendingChanges: false };
+              // 再生成したら issues は古い情報なのでクリア（status も ok に戻す）
+              // 改めて検証したい場合は「検証」ボタンで verify を再実行する
+              updatedDocs[idx] = {
+                ...updatedDocs[idx],
+                docxBase64: data.docxBase64,
+                pendingChanges: false,
+                checkStatus: "ok",
+                issues: [],
+              };
             }
           }
         } catch { /* 1 件失敗しても他は続ける */ }
