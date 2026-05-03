@@ -37,18 +37,22 @@ function downloadDocx(base64: string, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-async function downloadAllZip(docs: { docxBase64: string; fileName: string }[]) {
-  const PizZip = (await import("pizzip")).default;
-  const zip = new PizZip();
+// 全書類を「個別ファイル」として連続ダウンロード。
+// 初回 Chrome は「複数ファイルの自動 DL を許可」のダイアログを出すので、許可すれば以降スムーズ。
+async function downloadAllIndividually(docs: { docxBase64: string; fileName: string }[]) {
   for (const d of docs) {
-    zip.file(d.fileName, base64ToBytes(d.docxBase64));
+    const isXlsx = /\.xlsx?$/i.test(d.fileName);
+    const mime = isXlsx
+      ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const blob = new Blob([base64ToBytes(d.docxBase64)], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = d.fileName; a.click();
+    URL.revokeObjectURL(url);
+    // ブラウザによっては連続クリックを束ねてしまうので少し待つ
+    await new Promise(r => setTimeout(r, 150));
   }
-  const blob = zip.generate({ type: "blob" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  const ts = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  a.href = url; a.download = `書類一式_${ts}.zip`; a.click();
-  URL.revokeObjectURL(url);
 }
 
 function statusBadge(status?: "ok" | "warn" | "error") {
@@ -220,10 +224,11 @@ export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssu
           )}
           {card.documents.length > 1 && (
             <button
-              onClick={() => downloadAllZip(card.documents)}
+              onClick={() => downloadAllIndividually(card.documents)}
               className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90"
+              title="全書類を個別ファイルとして連続ダウンロード（初回ブラウザ確認あり）"
             >
-              <Icon name="Download" size={11} /> すべてZIP
+              <Icon name="Download" size={11} /> 全部DL
             </button>
           )}
         </div>
