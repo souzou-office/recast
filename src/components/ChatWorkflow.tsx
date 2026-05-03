@@ -97,6 +97,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       .catch(() => setThread(null));
   }, [threadId, company?.id]);
 
+  // スレッドや会社が変わったらプレビューを閉じる
+  // （前のセッションの書類が右ペインに残ったままだと混乱の元）
+  useEffect(() => {
+    setPreviewFile(null);
+  }, [threadId, company?.id]);
+
   // 空スレッドに初期カード（フォルダ選択）を遅延生成して追加する。
   // POST /api/chat-threads が軽量化されて messages が空で返ってくるので、ここで補完。
   useEffect(() => {
