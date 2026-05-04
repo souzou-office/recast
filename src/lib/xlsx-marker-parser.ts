@@ -334,15 +334,22 @@ export function replaceXlsxMarkedCells(
   const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   // sharedStrings.xml の置換
-  // 2 ケース:
-  //   A) 単純 <si><t>原値</t></si> → 全体を新値で置換（黄色セル等）
-  //   B) <si> 内に複数 <r> がある（赤い run を含む混合）→ 赤 run の <t> だけ置換、他は維持
+  // 優先順位:
+  //   1) <si> の全文 (origValue) が replacements にあれば → 全体を <si><t>NEW</t></si> で置換
+  //      （黄色セル方式。書式情報を全部破棄して通常色に戻す）
+  //   2) それ以外で <r> 構造があり、赤 run のテキストが replacements にあれば → 赤 run だけ部分置換
+  //      （他の run は維持）
   if (ssXml) {
     let newSsXml = ssXml;
     let siIndex = 0;
     newSsXml = newSsXml.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (whole: string, siInner: string) => {
       const origValue = sharedStrings[siIndex++];
-      // ケース B: <r> 構造があり、その中の赤 run が replacements に含まれていれば部分置換
+      // 1) 全文置換（黄色セル方式）。複数 run でも、全文一致なら全部捨てて新値に
+      const newFullValue = replacements[origValue];
+      if (newFullValue !== undefined) {
+        return `<si><t>${xmlEscape(newFullValue)}</t></si>`;
+      }
+      // 2) 赤 run の部分置換（混在セル）
       if (/<r\b/.test(siInner)) {
         let modified = siInner;
         let anyChanged = false;
@@ -370,12 +377,8 @@ export function replaceXlsxMarkedCells(
             .replace(/<phoneticPr\b[^>]*\/>/g, "");
           return `<si>${modified}</si>`;
         }
-        return whole;
       }
-      // ケース A: 単純 <si><t>...</t></si>
-      const newValue = replacements[origValue];
-      if (newValue === undefined) return whole;
-      return `<si><t>${xmlEscape(newValue)}</t></si>`;
+      return whole;
     });
     zip.file("xl/sharedStrings.xml", newSsXml);
   }
