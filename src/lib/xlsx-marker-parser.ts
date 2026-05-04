@@ -1,8 +1,14 @@
 // xlsx-marker-parser.ts
-// Excelのセル背景色（黄色）をマーカーとして検出し、値を差し替えるユーティリティ。
+// Excelの2種類のマーカーを検出し、値を差し替えるユーティリティ:
+//   A) セル背景色「黄色」(FFFF00) → セル全体が可変
+//   B) フォント色「赤」(FF0000)   → セル内の赤い文字 run だけが可変
+// A はセル全体を AI が書き換える。B は赤い文字だけを書き換え、他は固定で残す。
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const PizZip = require("pizzip");
+
+// 「標準の色：赤」が指定されたときの XML 値。Excel が固定で書き込む値。
+const RED_FONT_COLOR = /\bcolor\s+rgb="FFFF0000"/i;
 
 export interface XlsxMarkedCell {
   ref: string;       // "B14"
@@ -129,19 +135,80 @@ function getSharedStrings(ssXml: string): string[] {
     let tm;
     let text = "";
     while ((tm = tRe.exec(stripped)) !== null) text += tm[1];
-    strings.push(text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'"));
+    strings.push(decodeXmlEntities(text));
   }
   return strings;
 }
 
-// xlsx Buffer → 黄色セルの一覧を返す
+function decodeXmlEntities(s: string): string {
+  return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+
+// 1 つの <si> 内の run 構造を分解して [{ text, isRed }] を返す。
+// 例: 「代表取締役　」(黒) + 「岩井康洋」(赤) → [{text:"代表取締役　", isRed:false}, {text:"岩井康洋", isRed:true}]
+// 単一テキストの <si><t>...</t></si> 形式は [{ text, isRed:false }] を返す。
+type SiRun = { text: string; isRed: boolean };
+function parseSiRuns(siInner: string): SiRun[] {
+  // <rPh> ふりがなと <phoneticPr> を除去
+  const stripped = siInner
+    .replace(/<rPh\b[\s\S]*?<\/rPh>/g, "")
+    .replace(/<phoneticPr\b[^>]*\/>/g, "");
+
+  const runs: SiRun[] = [];
+  // 通常 run 形式: <r><rPr>...</rPr><t>text</t></r>
+  const rRe = /<r\b[^>]*>([\s\S]*?)<\/r>/g;
+  let rm;
+  let foundAnyRun = false;
+  while ((rm = rRe.exec(stripped)) !== null) {
+    foundAnyRun = true;
+    const inner = rm[1];
+    const rPrMatch = inner.match(/<rPr>([\s\S]*?)<\/rPr>/);
+    const isRed = rPrMatch ? RED_FONT_COLOR.test(rPrMatch[1]) : false;
+    const tMatch = inner.match(/<t\b[^>]*>([\s\S]*?)<\/t>/);
+    if (tMatch) {
+      runs.push({ text: decodeXmlEntities(tMatch[1]), isRed });
+    }
+  }
+  if (foundAnyRun) return runs;
+
+  // <r> なし → 単純な <si><t>...</t></si>。1 つの非赤 run として返す。
+  const tRe = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+  let tm;
+  let text = "";
+  while ((tm = tRe.exec(stripped)) !== null) text += tm[1];
+  if (text) runs.push({ text: decodeXmlEntities(text), isRed: false });
+  return runs;
+}
+
+// sharedStrings の各 <si> ごとに、赤い run があるかを返す。
+// 戻り値: Map<siIndex, SiRun[]>。赤い run を1つでも含む si のみ含まれる。
+function findRedSharedStrings(ssXml: string): Map<number, SiRun[]> {
+  const result = new Map<number, SiRun[]>();
+  const siRe = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
+  let m;
+  let i = 0;
+  while ((m = siRe.exec(ssXml)) !== null) {
+    const runs = parseSiRuns(m[1]);
+    if (runs.some(r => r.isRed)) {
+      result.set(i, runs);
+    }
+    i++;
+  }
+  return result;
+}
+
+// xlsx Buffer → 黄色セル + 赤い文字 run の一覧を返す。
+// produce 側で「マーカーあるか？」のチェックに使うため、赤い run があるだけでも 1 件以上返す。
 export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText();
   if (!stylesXml) return [];
 
   const yellowStyles = findYellowStyleIndexes(stylesXml);
-  if (yellowStyles.size === 0) return [];
+  // 黄色セルが無くても赤テキストがあれば検出を続行する（後段で確認）
+  const ssXmlEarly = zip.file("xl/sharedStrings.xml")?.asText();
+  const redSiMap = ssXmlEarly ? findRedSharedStrings(ssXmlEarly) : new Map();
+  if (yellowStyles.size === 0 && redSiMap.size === 0) return [];
   // 日付フォーマットのセルを特定。数値を「46062」のような生のシリアルで AI に
   // 渡すと誤解（管理番号等と解釈）される。ISO 日付に変換してから渡す。
   const dateStyles = findDateStyleIndexes(stylesXml);
@@ -220,6 +287,30 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
 
       cells.push({ ref, value, sheetName });
     }
+
+    // 赤いテキスト run を含むセルを「赤 run の元テキスト」単位でも cells に追加。
+    // produce 側で「マーカーあるか？」の判定に使うほか、replaceXlsxMarkedCells の置換キーとしても機能する。
+    if (redSiMap.size > 0) {
+      const cellRe2 = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+      let cm2;
+      while ((cm2 = cellRe2.exec(sheetXml)) !== null) {
+        const attrs = cm2[1];
+        const inner = cm2[2] || "";
+        const tMatch = attrs.match(/\bt="([^"]*)"/);
+        const rMatch = attrs.match(/\br="([A-Z]+\d+)"/);
+        if (!rMatch || tMatch?.[1] !== "s") continue;
+        const vMatch = inner.match(/<v>([^<]*)<\/v>/);
+        if (!vMatch) continue;
+        const idx = parseInt(vMatch[1]);
+        const runs = redSiMap.get(idx);
+        if (!runs) continue;
+        for (const run of runs) {
+          if (run.isRed && run.text.trim()) {
+            cells.push({ ref: rMatch[1], value: run.text, sheetName });
+          }
+        }
+      }
+    }
   }
 
   return cells;
@@ -243,14 +334,47 @@ export function replaceXlsxMarkedCells(
   const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   // sharedStrings.xml の置換
+  // 2 ケース:
+  //   A) 単純 <si><t>原値</t></si> → 全体を新値で置換（黄色セル等）
+  //   B) <si> 内に複数 <r> がある（赤い run を含む混合）→ 赤 run の <t> だけ置換、他は維持
   if (ssXml) {
     let newSsXml = ssXml;
     let siIndex = 0;
-    newSsXml = newSsXml.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (whole: string) => {
+    newSsXml = newSsXml.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (whole: string, siInner: string) => {
       const origValue = sharedStrings[siIndex++];
+      // ケース B: <r> 構造があり、その中の赤 run が replacements に含まれていれば部分置換
+      if (/<r\b/.test(siInner)) {
+        let modified = siInner;
+        let anyChanged = false;
+        modified = modified.replace(/<r\b[^>]*>([\s\S]*?)<\/r>/g, (rWhole: string, rInner: string) => {
+          const rPrMatch = rInner.match(/<rPr>([\s\S]*?)<\/rPr>/);
+          const isRed = rPrMatch ? RED_FONT_COLOR.test(rPrMatch[1]) : false;
+          if (!isRed) return rWhole;
+          const tMatch = rInner.match(/(<t\b[^>]*>)([\s\S]*?)(<\/t>)/);
+          if (!tMatch) return rWhole;
+          const origRunText = decodeXmlEntities(tMatch[2]);
+          const newRunText = replacements[origRunText];
+          if (newRunText === undefined) return rWhole;
+          anyChanged = true;
+          // <rPr> を残しつつ <t> の中身だけ差し替え
+          const newInner = rInner.replace(
+            /(<t\b[^>]*>)[\s\S]*?(<\/t>)/,
+            `$1${xmlEscape(newRunText)}$2`
+          );
+          return rWhole.replace(rInner, newInner);
+        });
+        if (anyChanged) {
+          // <rPh> ふりがなはオフセットがズレるので除去（既存処理と同じ）
+          modified = modified
+            .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
+            .replace(/<phoneticPr\b[^>]*\/>/g, "");
+          return `<si>${modified}</si>`;
+        }
+        return whole;
+      }
+      // ケース A: 単純 <si><t>...</t></si>
       const newValue = replacements[origValue];
       if (newValue === undefined) return whole;
-      // 新しい値で <si><t>...</t></si> に置換
       return `<si><t>${xmlEscape(newValue)}</t></si>`;
     });
     zip.file("xl/sharedStrings.xml", newSsXml);
@@ -523,9 +647,12 @@ export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffe
   return zip.generate({ type: "nodebuffer" });
 }
 
-// Excelの全体テキストを ［要入力_N］ 付きで返す（黄色セルの値は隠す）。
+// Excelの全体テキストを ［要入力_N］ 付きで返す。
+// 2 つのマーカーを処理する:
+//   A) 黄色セル全体 → セル全体が ［要入力_N］
+//   B) 赤いテキスト run → セル内の赤い部分だけ ［要入力_N］、他は固定で残す
 // AIは前案件の値に引きずられず文脈だけで判断できる。
-// slots: N → セルの元値（originalValue）。extractXlsxMarkedCells と同じ順序。
+// slots: N → セルの元値（originalValue）。produce 側で {origValue → newValue} の置換マップを作る用。
 export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
@@ -533,6 +660,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
   const dateStyles = findDateStyleIndexes(stylesXml);
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
+  const redSiMap = ssXml ? findRedSharedStrings(ssXml) : new Map<number, SiRun[]>();
 
   const slots = new Map<number, string>();
   let slotId = 0;
@@ -558,8 +686,10 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
         const sMatch = attrs.match(/\bs="(\d+)"/);
         const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
         let val = "";
+        let siIndex = -1;
         if (tMatch?.[1] === "s") {
-          val = sharedStrings[parseInt(vMatch[1])] || "";
+          siIndex = parseInt(vMatch[1]);
+          val = sharedStrings[siIndex] || "";
         } else {
           const raw = vMatch[1];
           // 日付セルの数値は ISO 日付に変換
@@ -575,9 +705,22 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
         if (/<f\b/.test(inner)) { rowTexts.push(val); continue; } // 数式セルは素通し
         if (isYellow) {
           slots.set(slotId, val);
-          // ★前案件の値は AI に見せない★。文脈と labels.json から型を判断させる。
           rowTexts.push(`［要入力_${slotId}］`);
           slotId++;
+        } else if (siIndex >= 0 && redSiMap.has(siIndex)) {
+          // 赤 run 含むセル: 赤部分だけ slot 化、他は固定文字として残す
+          const runs = redSiMap.get(siIndex)!;
+          let cellText = "";
+          for (const run of runs) {
+            if (run.isRed) {
+              slots.set(slotId, run.text);
+              cellText += `［要入力_${slotId}］`;
+              slotId++;
+            } else {
+              cellText += run.text;
+            }
+          }
+          rowTexts.push(cellText);
         } else {
           rowTexts.push(val);
         }

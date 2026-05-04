@@ -31,9 +31,16 @@ function getRunText(runXml: string): string {
   return decodeXml(texts.join(""));
 }
 
-// <w:r> にハイライトがあるか
+// <w:r> にハイライト（黄色塗り）または赤い文字色があるか。
+// どちらも「ここはこれから埋めるべきスロット」のマーカーとして扱う。
 function hasHighlight(runXml: string): boolean {
-  return /<w:highlight\s+w:val="[^"]*"\s*\/>/.test(runXml);
+  return /<w:highlight\s+w:val="[^"]*"\s*\/>/.test(runXml) || hasRedColor(runXml);
+}
+
+// 「標準の色：赤」を Word が書き込むときの XML。FF0000 が固定値。
+// (Word ribbon で「フォントの色 → 標準の色 → 赤」を選んだとき出力される)
+function hasRedColor(runXml: string): boolean {
+  return /<w:color\s+w:val="FF0000"\s*\/>/i.test(runXml);
 }
 
 // 段落全体のテキストを取得
@@ -374,10 +381,12 @@ export function replaceMarkedFields(
         // （間に挟まる "other" メタ要素は温存する）
         for (let j = group.endIdx; j >= group.startIdx; j--) {
           if (j === group.startIdx) {
-            // 最初のラン: テキストを新しい値に、ハイライトを除去
+            // 最初のラン: テキストを新しい値に、ハイライトと赤い文字色を除去
             let newRun = parts[j].content;
             // ハイライト属性を除去
             newRun = newRun.replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "");
+            // 赤い文字色 <w:color w:val="FF0000"/> を除去（テキストを通常色に戻す）
+            newRun = newRun.replace(/<w:color\s+w:val="FF0000"\s*\/>/gi, "");
             // テキストを置換
             newRun = newRun.replace(
               /<w:t\b[^>]*>[\s\S]*?<\/w:t>/g,
@@ -385,7 +394,7 @@ export function replaceMarkedFields(
             );
             parts[j] = { ...parts[j], content: newRun };
           } else if (parts[j].type === "run" && parts[j].highlighted) {
-            // 残りのハイライトラン: 削除（メタ要素は温存）
+            // 残りのハイライト/赤ラン: 削除（メタ要素は温存）
             parts.splice(j, 1);
           }
         }
@@ -429,10 +438,12 @@ export function replaceMarkedFields(
     }
   }
 
-  // 最終確認: 残っているハイライトを全て除去（置換漏れのフォールバック）
-  let finalXml = zip.file("word/document.xml")?.asText();
+  // 最終確認: 残っているハイライト + 赤い文字色を全て除去（置換漏れのフォールバック）
+  const finalXml = zip.file("word/document.xml")?.asText();
   if (finalXml) {
-    const cleaned = finalXml.replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "");
+    const cleaned = finalXml
+      .replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "")
+      .replace(/<w:color\s+w:val="FF0000"\s*\/>/gi, "");
     if (cleaned !== finalXml) zip.file("word/document.xml", cleaned);
   }
 
