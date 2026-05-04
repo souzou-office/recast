@@ -37,8 +37,8 @@ function downloadDocx(base64: string, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-// 全書類を「個別ファイル」として連続ダウンロード。
-// 初回 Chrome は「複数ファイルの自動 DL を許可」のダイアログを出すので、許可すれば以降スムーズ。
+// 全書類を「個別ファイル」として連続ダウンロード（フォールバック）。
+// ブラウザの DL フォルダに自動で入る。連続 DL は初回ブラウザ確認あり。
 async function downloadAllIndividually(docs: { docxBase64: string; fileName: string }[]) {
   for (const d of docs) {
     const isXlsx = /\.xlsx?$/i.test(d.fileName);
@@ -52,6 +52,48 @@ async function downloadAllIndividually(docs: { docxBase64: string; fileName: str
     URL.revokeObjectURL(url);
     // ブラウザによっては連続クリックを束ねてしまうので少し待つ
     await new Promise(r => setTimeout(r, 150));
+  }
+}
+
+// File System Access API（Chrome/Edge）対応ブラウザでは保存先フォルダを選べる
+// 非対応ブラウザ（Safari/Firefox）は通常の個別 DL にフォールバック
+type DirHandle = {
+  getFileHandle: (name: string, opts?: { create?: boolean }) => Promise<{
+    createWritable: () => Promise<{ write: (data: ArrayBuffer | Blob | Uint8Array) => Promise<void>; close: () => Promise<void>; }>;
+  }>;
+};
+type WithPicker = Window & { showDirectoryPicker?: (opts?: { id?: string; mode?: "read" | "readwrite"; startIn?: string }) => Promise<DirHandle> };
+
+async function downloadAllToFolder(docs: { docxBase64: string; fileName: string }[]) {
+  const w = window as WithPicker;
+  if (typeof w.showDirectoryPicker !== "function") {
+    // 非対応ブラウザ → 個別 DL にフォールバック
+    await downloadAllIndividually(docs);
+    return;
+  }
+  let dirHandle: DirHandle;
+  try {
+    dirHandle = await w.showDirectoryPicker({ id: "recast-output", mode: "readwrite", startIn: "downloads" });
+  } catch {
+    // ユーザーがキャンセル → 何もしない
+    return;
+  }
+  let written = 0;
+  for (const d of docs) {
+    try {
+      const fileHandle = await dirHandle.getFileHandle(d.fileName, { create: true });
+      const writable = await fileHandle.createWritable();
+      // Uint8Array はそのまま書き込み可（File System Access API）
+      const bytes = base64ToBytes(d.docxBase64);
+      await writable.write(bytes as unknown as Uint8Array);
+      await writable.close();
+      written++;
+    } catch (e) {
+      console.error(`[downloadAllToFolder] ${d.fileName} failed:`, e);
+    }
+  }
+  if (written < docs.length) {
+    alert(`${docs.length} 件中 ${written} 件のみ保存できました。残りは権限エラー等で失敗しました。`);
   }
 }
 
@@ -223,13 +265,22 @@ export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssu
             </button>
           )}
           {card.documents.length > 1 && (
-            <button
-              onClick={() => downloadAllIndividually(card.documents)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90"
-              title="全書類を個別ファイルとして連続ダウンロード（初回ブラウザ確認あり）"
-            >
-              <Icon name="Download" size={11} /> 全部DL
-            </button>
+            <>
+              <button
+                onClick={() => downloadAllToFolder(card.documents)}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[10px] font-medium text-[var(--color-bg)] hover:opacity-90"
+                title="保存先フォルダを選んで全書類を保存（Chrome/Edge）"
+              >
+                <Icon name="FolderDown" size={11} /> フォルダ指定DL
+              </button>
+              <button
+                onClick={() => downloadAllIndividually(card.documents)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border)] bg-white px-3 py-1 text-[10px] font-medium text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
+                title="ブラウザの DL フォルダに個別ファイルとして連続保存"
+              >
+                <Icon name="Download" size={11} /> DLフォルダへ
+              </button>
+            </>
           )}
         </div>
       </div>
