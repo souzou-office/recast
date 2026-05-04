@@ -356,11 +356,11 @@ export function replaceXlsxMarkedCells(
           const newRunText = replacements[origRunText];
           if (newRunText === undefined) return rWhole;
           anyChanged = true;
-          // <rPr> を残しつつ <t> の中身だけ差し替え
-          const newInner = rInner.replace(
-            /(<t\b[^>]*>)[\s\S]*?(<\/t>)/,
-            `$1${xmlEscape(newRunText)}$2`
-          );
+          // <rPr> 内の赤い文字色 <color rgb="FFFF0000"/> を除去（生成書類は黒文字に戻す）
+          // <t> の中身も新しい値に差し替え
+          const newInner = rInner
+            .replace(/<color\s+rgb="FFFF0000"\s*\/>/gi, "")
+            .replace(/(<t\b[^>]*>)[\s\S]*?(<\/t>)/, `$1${xmlEscape(newRunText)}$2`);
           return rWhole.replace(rInner, newInner);
         });
         if (anyChanged) {
@@ -410,12 +410,14 @@ export function replaceXlsxMarkedCells(
     if (changed) zip.file(fileName, sheetXml);
   }
 
-  // rPh/phoneticPr を除去
+  // rPh/phoneticPr を除去 + 残った赤色マーカー (<color rgb="FFFF0000"/>) を全て除去
+  // → 生成書類では赤マーカーが消えて通常色（黒）になる
   const finalSs = zip.file("xl/sharedStrings.xml")?.asText();
   if (finalSs) {
     const cleaned = finalSs
       .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
-      .replace(/<phoneticPr\b[^>]*\/>/g, "");
+      .replace(/<phoneticPr\b[^>]*\/>/g, "")
+      .replace(/<color\s+rgb="FFFF0000"\s*\/>/gi, "");
     if (cleaned !== finalSs) zip.file("xl/sharedStrings.xml", cleaned);
   }
 
