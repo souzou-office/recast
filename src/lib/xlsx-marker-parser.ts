@@ -422,11 +422,21 @@ export function replaceXlsxMarkedCells(
   }
 
   // 黄色フィルを透明（none）に変更 → セルの背景色が消える
+  // <fill> ブロック単位でパースして、中身に黄色 (FFFFFF00 / FFFF00) の fgColor が
+  // 含まれていれば patternType="none" に書き換える。
+  // bgColor の有無、属性順、6/8桁hex どれでもマッチする。
   const updatedStyles = zip.file("xl/styles.xml")?.asText();
   if (updatedStyles) {
     const cleaned = updatedStyles.replace(
-      /<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"[^/]*\/><bgColor[^/]*\/><\/patternFill><\/fill>/gi,
-      '<fill><patternFill patternType="none"/></fill>'
+      /<fill>([\s\S]*?)<\/fill>/g,
+      (whole: string, inner: string) => {
+        // patternType が none / 既に透明 ならそのまま
+        if (/patternType="none"/i.test(inner)) return whole;
+        // fgColor が黄色のフィルを「none」に置換
+        const isYellow = /<fgColor\s+[^>]*\brgb="(?:FF)?FFFF00"/i.test(inner);
+        if (!isYellow) return whole;
+        return `<fill><patternFill patternType="none"/></fill>`;
+      }
     );
     if (cleaned !== updatedStyles) zip.file("xl/styles.xml", cleaned);
   }
