@@ -345,9 +345,11 @@ export function replaceXlsxMarkedCells(
     newSsXml = newSsXml.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (whole: string, siInner: string) => {
       const origValue = sharedStrings[siIndex++];
       // 1) 全文置換（黄色セル方式）。複数 run でも、全文一致なら全部捨てて新値に
+      // xml:space="preserve" を付けて改行・先頭/末尾空白を維持する
+      // （セル内 alt+Enter 改行や、書式整え用のインデントが崩れないように）
       const newFullValue = replacements[origValue];
       if (newFullValue !== undefined) {
-        return `<si><t>${xmlEscape(newFullValue)}</t></si>`;
+        return `<si><t xml:space="preserve">${xmlEscape(newFullValue)}</t></si>`;
       }
       // 2) 赤 run の部分置換（混在セル）
       if (/<r\b/.test(siInner)) {

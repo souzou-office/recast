@@ -76,14 +76,25 @@ function toFullWidth(str: string): string {
 }
 
 function toHalfWidth(str: string): string {
+  // 改行を含む値（複数行セル）は行ごとに処理して整合をとる
+  if (/\r?\n/.test(str)) {
+    return str.split(/(\r?\n)/).map(part => /\r?\n/.test(part) ? part : toHalfWidth(part)).join("");
+  }
   let result = str
     .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
     .replace(/．/g, ".").replace(/，/g, ",").replace(/－/g, "-").replace(/＋/g, "+")
     .replace(/（/g, "(").replace(/）/g, ")").replace(/％/g, "%").replace(/＆/g, "&")
     .replace(/　/g, " ");
-  const isPureNumber = /^-?[\d,]+(\.\d+)?$/.test(result.trim());
-  const isDate = /年/.test(result) || (/月/.test(result) && /日/.test(result));
-  if (isDate) {
+  const trimmed = result.trim();
+  const isPureNumber = /^-?[\d,]+(\.\d+)?$/.test(trimmed);
+  // 「日付値」とみなすのは、その行の主要部分が日付パターンの場合のみ
+  // 「令和X年X月X日」「2025年X月X日」「X月X日」「YYYY-MM-DD」など
+  // 行内に他の文字（会社名、氏名、住所等）が混ざってるときは日付扱いしない
+  const isDateOnly =
+    /^(?:令和|平成|昭和|大正|明治|西暦)?\d{1,4}年\d{1,2}月\d{1,2}日$/.test(trimmed) ||
+    /^\d{1,2}月\d{1,2}日$/.test(trimmed) ||
+    /^\d{4}-\d{1,2}-\d{1,2}$/.test(trimmed);
+  if (isDateOnly) {
     result = result.replace(/[0-9]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
   } else if (!isPureNumber) {
     result = result.replace(/[A-Za-z0-9]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xFEE0));
@@ -468,6 +479,12 @@ ${conditionFlagBlock}
 
 ### 全角/半角
 - AI 側では考えず、上記の生の値を返す（半角→全角変換はサーバー側で実施）
+
+### 複数行を含むスロット（Excel の alt+Enter セル）
+- 元のスロットが複数行（\\n を含む）なら、新しい値も**同じ構造の改行で返す**
+- 例: 元「日付\\n\\n会社名\\n代表取締役名」→ 新「新日付\\n\\n新会社名\\n新代表取締役名」
+- 行頭の全角空白（インデント）も維持する
+- 1 行に潰さない
 
 ### データに無い値
 - ターン1の整理・ユーザー確定回答・基本情報のいずれにも無い値は \`"（要確認）"\` を返す
