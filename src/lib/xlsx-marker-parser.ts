@@ -84,6 +84,41 @@ function excelSerialToDateString(serial: number): string {
   return `${y}-${m}-${day}`;
 }
 
+// styles.xml から「セル全体が赤い文字」のスタイルインデックスを特定。
+// ① <fonts> 内の <font> で <color rgb="FFFF0000"/> を持つ font の index を集める
+// ② <cellXfs> の各 xf で fontId が該当 index を指すなら、その xf index を返す
+function findRedFontStyleIndexes(stylesXml: string): Set<number> {
+  const fontsMatch = stylesXml.match(/<fonts[^>]*>([\s\S]*?)<\/fonts>/);
+  if (!fontsMatch) return new Set();
+  const redFontIds: number[] = [];
+  const fontRe = /<font>([\s\S]*?)<\/font>/g;
+  let fm;
+  let fi = 0;
+  while ((fm = fontRe.exec(fontsMatch[1])) !== null) {
+    if (/<color\s+[^/>]*\brgb="FFFF0000"[^/>]*\/>/i.test(fm[1])) {
+      redFontIds.push(fi);
+    }
+    fi++;
+  }
+  if (redFontIds.length === 0) return new Set();
+
+  const xfsMatch = stylesXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/);
+  if (!xfsMatch) return new Set();
+
+  const redStyles = new Set<number>();
+  const xfRe = /<xf\b([^>]*)(?:\/>|>[\s\S]*?<\/xf>)/g;
+  let xm;
+  let xi = 0;
+  while ((xm = xfRe.exec(xfsMatch[1])) !== null) {
+    const fontMatch = xm[1].match(/fontId="(\d+)"/);
+    if (fontMatch && redFontIds.includes(parseInt(fontMatch[1]))) {
+      redStyles.add(xi);
+    }
+    xi++;
+  }
+  return redStyles;
+}
+
 // styles.xml から黄色背景のスタイルインデックスを特定
 function findYellowStyleIndexes(stylesXml: string): Set<number> {
   // fills から黄色の fillId を特定
@@ -197,18 +232,22 @@ function findRedSharedStrings(ssXml: string): Map<number, SiRun[]> {
   return result;
 }
 
-// xlsx Buffer → 黄色セル + 赤い文字 run の一覧を返す。
-// produce 側で「マーカーあるか？」のチェックに使うため、赤い run があるだけでも 1 件以上返す。
+// xlsx Buffer → 黄色セル + 赤フォントセル + 赤い文字 run の一覧を返す。
+// 3 種類のマーカー:
+//   A) セル背景色「黄色」 → セル全体が可変
+//   B) セル全体「赤い文字」(<fonts> 経由) → セル全体が可変
+//   C) セル内の「赤い <r>」(rich text run) → 赤部分だけが可変
+// produce 側で「マーカーあるか？」のチェックに使うため、どれか 1 つでもあれば 1 件以上返す。
 export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText();
   if (!stylesXml) return [];
 
   const yellowStyles = findYellowStyleIndexes(stylesXml);
-  // 黄色セルが無くても赤テキストがあれば検出を続行する（後段で確認）
+  const redFontStyles = findRedFontStyleIndexes(stylesXml);
   const ssXmlEarly = zip.file("xl/sharedStrings.xml")?.asText();
   const redSiMap = ssXmlEarly ? findRedSharedStrings(ssXmlEarly) : new Map();
-  if (yellowStyles.size === 0 && redSiMap.size === 0) return [];
+  if (yellowStyles.size === 0 && redFontStyles.size === 0 && redSiMap.size === 0) return [];
   // 日付フォーマットのセルを特定。数値を「46062」のような生のシリアルで AI に
   // 渡すと誤解（管理番号等と解釈）される。ISO 日付に変換してから渡す。
   const dateStyles = findDateStyleIndexes(stylesXml);
@@ -251,7 +290,8 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
       if (!sMatch || !rMatch) continue;
 
       const styleIdx = parseInt(sMatch[1]);
-      if (!yellowStyles.has(styleIdx)) continue;
+      // 黄色セル または 赤フォントセル を検出対象に
+      if (!yellowStyles.has(styleIdx) && !redFontStyles.has(styleIdx)) continue;
 
       const ref = rMatch[1];
       const tMatch = attrs.match(/\bt="([^"]*)"/);
@@ -326,7 +366,11 @@ export function replaceXlsxMarkedCells(
   if (!stylesXml) return buffer;
 
   const yellowStyles = findYellowStyleIndexes(stylesXml);
-  if (yellowStyles.size === 0) return buffer;
+  const redFontStyles = findRedFontStyleIndexes(stylesXml);
+  // どれか 1 つでもマーカーがあれば処理続行
+  const ssXmlForCheck = zip.file("xl/sharedStrings.xml")?.asText();
+  const hasRedRuns = ssXmlForCheck ? findRedSharedStrings(ssXmlForCheck).size > 0 : false;
+  if (yellowStyles.size === 0 && redFontStyles.size === 0 && !hasRedRuns) return buffer;
 
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
@@ -385,20 +429,20 @@ export function replaceXlsxMarkedCells(
     zip.file("xl/sharedStrings.xml", newSsXml);
   }
 
-  // 数値セル（t="s"でない黄色セル）の直接置換
+  // 数値セル（t="s"でない、黄色 or 赤フォントセル）の直接置換
   for (const fileName of Object.keys(zip.files)) {
     if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
     let sheetXml = zip.file(fileName)?.asText();
     if (!sheetXml) continue;
     let changed = false;
 
-    // 自己閉じの <c .../> は <v> を持たないので処理対象外（内容あり形式だけ変換）
-    // 属性内に / が混入しないよう [^>\/] で制限し、後続セルを巻き込まないようにする
     sheetXml = sheetXml.replace(
       /<c\b([^>\/]*)>([\s\S]*?)<\/c>/g,
       (whole: string, attrs: string, inner: string) => {
         const sMatch = attrs.match(/\bs="(\d+)"/);
-        if (!sMatch || !yellowStyles.has(parseInt(sMatch[1]))) return whole;
+        if (!sMatch) return whole;
+        const styleIdx = parseInt(sMatch[1]);
+        if (!yellowStyles.has(styleIdx) && !redFontStyles.has(styleIdx)) return whole;
         const tMatch = attrs.match(/\bt="([^"]*)"/);
         if (tMatch?.[1] === "s") return whole; // 共有文字列は上で処理済み
         const vMatch = inner.match(/<v>([^<]*)<\/v>/);
@@ -673,15 +717,17 @@ export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffe
 }
 
 // Excelの全体テキストを ［要入力_N］ 付きで返す。
-// 2 つのマーカーを処理する:
-//   A) 黄色セル全体 → セル全体が ［要入力_N］
-//   B) 赤いテキスト run → セル内の赤い部分だけ ［要入力_N］、他は固定で残す
+// 3 種類のマーカーを処理する:
+//   A) 黄色セル全体        → セル全体が ［要入力_N］
+//   B) 赤フォントセル全体   → セル全体が ［要入力_N］（黄色と同じ扱い）
+//   C) 赤いテキスト run    → セル内の赤い部分だけ ［要入力_N］、他は固定で残す
 // AIは前案件の値に引きずられず文脈だけで判断できる。
 // slots: N → セルの元値（originalValue）。produce 側で {origValue → newValue} の置換マップを作る用。
 export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
   const yellowStyles = findYellowStyleIndexes(stylesXml);
+  const redFontStyles = findRedFontStyleIndexes(stylesXml);
   const dateStyles = findDateStyleIndexes(stylesXml);
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
@@ -726,9 +772,11 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
           }
         }
         const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
+        const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
         if (!val.trim()) continue;
         if (/<f\b/.test(inner)) { rowTexts.push(val); continue; } // 数式セルは素通し
-        if (isYellow) {
+        if (isYellow || isRedFont) {
+          // セル全体が可変（黄色塗り or セル全体赤フォント）
           slots.set(slotId, val);
           rowTexts.push(`［要入力_${slotId}］`);
           slotId++;
