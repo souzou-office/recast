@@ -518,17 +518,21 @@ export function replaceXlsxMarkedCells(
   return zip.generate({ type: "nodebuffer" });
 }
 
-// 黄色データ行（連続した黄色値入り行）が不足している場合、最終行を複製して必要件数まで増やす。
+// マーカー付きデータ行（連続したマーカー値入り行）が不足している場合、最終行を複製して必要件数まで増やす。
 // 各新規行のセル値は "__ROW_N_COL__" 形式の一意プレースホルダーにしてAIが行ごとに識別できるようにする。
 // 後続行の row 番号とセル参照（r="A12" 等）もシフトする。
 // mergeCells, formulas 等の参照更新は簡易（SUM(A9:A18) 等は元の範囲のままで、追加行が含まれる想定）。
+// マーカー対象: 黄色塗り or 赤フォント (どちらも「セル全体可変」を意味する)
 export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffer {
   if (desiredRows <= 0) return buffer;
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText();
   if (!stylesXml) return buffer;
   const yellowStyles = findYellowStyleIndexes(stylesXml);
-  if (yellowStyles.size === 0) return buffer;
+  const redFontStyles = findRedFontStyleIndexes(stylesXml);
+  if (yellowStyles.size === 0 && redFontStyles.size === 0) return buffer;
+  // マーカースタイルかどうかの統一判定
+  const isMarkerStyle = (idx: number) => yellowStyles.has(idx) || redFontStyles.has(idx);
 
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   let sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
@@ -558,7 +562,7 @@ export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffe
         const attrs = cm[1];
         const inner = cm[2] || "";
         const s = attrs.match(/\bs="(\d+)"/);
-        if (!s || !yellowStyles.has(parseInt(s[1]))) continue;
+        if (!s || !isMarkerStyle(parseInt(s[1]))) continue;
         const vm = inner.match(/<v>([^<]*)<\/v>/);
         if (!vm) continue;
         if (/<f\b/.test(inner)) continue; // 数式セルは除外
