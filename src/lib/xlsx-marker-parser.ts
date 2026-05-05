@@ -415,32 +415,40 @@ export function replaceXlsxMarkedCells(
     if (changed) zip.file(fileName, sheetXml);
   }
 
-  // rPh/phoneticPr を除去 + 残った赤色マーカー (<color rgb="FFFF0000"/>) を全て除去
+  // rPh/phoneticPr を除去 + 残った赤色マーカーを全て除去
   // → 生成書類では赤マーカーが消えて通常色（黒）になる
+  // 属性順や追加属性 (theme, indexed 等) があっても対応
   const finalSs = zip.file("xl/sharedStrings.xml")?.asText();
   if (finalSs) {
     const cleaned = finalSs
       .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
       .replace(/<phoneticPr\b[^>]*\/>/g, "")
-      .replace(/<color\s+rgb="FFFF0000"\s*\/>/gi, "");
+      .replace(/<color\s+[^/>]*\brgb="FFFF0000"[^/>]*\/>/gi, "");
     if (cleaned !== finalSs) zip.file("xl/sharedStrings.xml", cleaned);
   }
 
-  // 黄色フィルを透明（none）に変更 → セルの背景色が消える
-  // <fill> ブロック単位でパースして、中身に黄色 (FFFFFF00 / FFFF00) の fgColor が
-  // 含まれていれば patternType="none" に書き換える。
-  // bgColor の有無、属性順、6/8桁hex どれでもマッチする。
+  // styles.xml クリーンアップ:
+  //   1) 黄色フィルを透明 (none) に変更
+  //   2) <fonts> 内の <font> から赤い文字色 <color rgb="FFFF0000"/> を除去
+  //      → セルが「セル全体が赤」スタイルでも、フォント自体が黒（デフォルト）になる
+  //   3) <color rgb="FFFF0000"/> 単独形（属性なし）は念のためグローバル除去
   const updatedStyles = zip.file("xl/styles.xml")?.asText();
   if (updatedStyles) {
-    const cleaned = updatedStyles.replace(
+    let cleaned = updatedStyles.replace(
       /<fill>([\s\S]*?)<\/fill>/g,
       (whole: string, inner: string) => {
-        // patternType が none / 既に透明 ならそのまま
         if (/patternType="none"/i.test(inner)) return whole;
-        // fgColor が黄色のフィルを「none」に置換
         const isYellow = /<fgColor\s+[^>]*\brgb="(?:FF)?FFFF00"/i.test(inner);
         if (!isYellow) return whole;
         return `<fill><patternFill patternType="none"/></fill>`;
+      }
+    );
+    // <font> 内の赤色を除去（"セル全体が赤"パターンの解除）
+    cleaned = cleaned.replace(
+      /<font>([\s\S]*?)<\/font>/g,
+      (whole: string, inner: string) => {
+        const stripped = inner.replace(/<color\s+[^/>]*\brgb="FFFF0000"[^/>]*\/>/gi, "");
+        return stripped === inner ? whole : `<font>${stripped}</font>`;
       }
     );
     if (cleaned !== updatedStyles) zip.file("xl/styles.xml", cleaned);
