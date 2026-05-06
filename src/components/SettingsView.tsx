@@ -5,7 +5,7 @@ import type { WorkspaceConfig } from "@/types";
 import TemplateLabelsSection from "./TemplateLabelsSection";
 
 import { Icon } from "./ui/Icon";
-type SettingsSection = "basepath" | "templatepath" | "common" | "template-labels";
+type SettingsSection = "basepath" | "templatepath" | "recordspath" | "common" | "template-labels";
 
 interface BrowseDir {
   name: string;
@@ -28,7 +28,13 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
       const raw = sessionStorage.getItem("recast-settings-target");
       if (!raw) return;
       const target = JSON.parse(raw) as { section?: string };
-      if (target.section === "template-labels" || target.section === "basepath" || target.section === "templatepath" || target.section === "common") {
+      if (
+        target.section === "template-labels" ||
+        target.section === "basepath" ||
+        target.section === "templatepath" ||
+        target.section === "recordspath" ||
+        target.section === "common"
+      ) {
         setSection(target.section as SettingsSection);
       }
       sessionStorage.removeItem("recast-settings-target");
@@ -45,6 +51,7 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
   const sections: { id: SettingsSection; label: string }[] = [
     { id: "basepath", label: "ベースフォルダ" },
     { id: "templatepath", label: "書類テンプレート" },
+    { id: "recordspath", label: "作業記録の保存先" },
     { id: "template-labels", label: "テンプレート解釈" },
     { id: "common", label: "共通パターン" },
   ];
@@ -67,24 +74,26 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
 
   // 初回読み込み
   useEffect(() => {
-    if (section === "basepath") {
-      if (config?.basePath) {
-        // 既存basePath → その親を表示
-        browse(config.basePath);
-        const parts = config.basePath.replace(/\\/g, "/").split("/").filter(Boolean);
+    const initFromPath = (p: string | undefined) => {
+      if (p) {
+        browse(p);
+        const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
         const crumbs: { name: string; path: string }[] = [];
         let acc = "";
-        for (const p of parts) {
-          acc += (acc.endsWith("\\") || acc.endsWith("/") || acc === "") ? p : `/${p}`;
-          if (acc.length <= 3) acc += "\\"; // C:\ のような形
-          crumbs.push({ name: p, path: acc });
+        for (const x of parts) {
+          acc += (acc.endsWith("\\") || acc.endsWith("/") || acc === "") ? x : `/${x}`;
+          if (acc.length <= 3) acc += "\\";
+          crumbs.push({ name: x, path: acc });
         }
         setBreadcrumbs(crumbs);
       } else {
         browse();
         setBreadcrumbs([]);
       }
-    }
+    };
+    if (section === "basepath") initFromPath(config?.basePath);
+    else if (section === "templatepath") initFromPath(config?.templateBasePath);
+    else if (section === "recordspath") initFromPath(config?.recordsBasePath);
   }, [section]);
 
   const navigateTo = (dirPath: string, dirName: string) => {
@@ -330,6 +339,89 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
                       method: "PATCH",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ action: "setTemplateBasePath", templateBasePath: browseCurrent }),
+                    });
+                    onUpdateConfig();
+                    setSaving(false);
+                  }}
+                  disabled={saving}
+                  className="ml-auto rounded-lg bg-[var(--color-fg)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
+                >
+                  {saving ? "設定中..." : "このフォルダに設定"}
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-2">
+              {browseLoading ? (
+                <p className="py-4 text-center text-sm text-[var(--color-fg-subtle)]">読み込み中...</p>
+              ) : (
+                <ul>
+                  {browseParent !== null && (
+                    <li><button onClick={navigateUp} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] w-full text-left">↑ 上の階層へ</button></li>
+                  )}
+                  {browseDirs.map(dir => (
+                    <li key={dir.path}>
+                      <button onClick={() => navigateTo(dir.path, dir.name)} className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-[var(--color-fg)] hover:bg-[var(--color-hover)] w-full text-left">
+                        <Icon name="Folder" size={13} className="text-[var(--color-fg-muted)] shrink-0" /><span className="truncate">{dir.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+
+        {section === "recordspath" && (
+          <div className="flex flex-col h-full">
+            <div className="px-6 pt-6 pb-3">
+              <h2 className="text-lg font-semibold text-[var(--color-fg)] mb-1">作業記録の保存先</h2>
+              <p className="text-xs text-[var(--color-fg-muted)]">
+                ここで指定したフォルダに、案件ごとの作業記録（案件整理・質問回答・生成書類・検証結果）が
+                <strong>自動で書き出されます</strong>。<br />
+                Google Drive 等のクラウドストレージのフォルダを指定すれば、自動同期で別 PC・他のメンバーと
+                即共有可能。設定しなければ何も書き出されません（任意機能）。
+              </p>
+              {config?.recordsBasePath && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs text-[var(--color-fg-muted)]">現在:</span>
+                  <span className="text-xs font-medium text-[var(--color-accent)] truncate">{config.recordsBasePath}</span>
+                  <button
+                    onClick={async () => {
+                      if (!confirm("作業記録の自動保存を無効化します。よろしいですか？\n（既に保存済みの記録は削除されません）")) return;
+                      setSaving(true);
+                      await fetch("/api/workspace", {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "setRecordsBasePath", recordsBasePath: "" }),
+                      });
+                      onUpdateConfig();
+                      setSaving(false);
+                    }}
+                    className="ml-auto text-[10px] text-[var(--color-fg-muted)] underline hover:text-[var(--color-fg)]"
+                  >
+                    無効化
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1 border-y border-[var(--color-border-soft)] px-6 py-2 bg-[var(--color-hover)]">
+              <button onClick={() => { navigateBreadcrumb(-1); }} className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]">PC</button>
+              {breadcrumbs.map((bc, i) => (
+                <span key={bc.path} className="flex items-center gap-1">
+                  <span className="text-[var(--color-fg-subtle)] text-xs">/</span>
+                  <button onClick={() => navigateBreadcrumb(i)} className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] truncate max-w-[120px]">{bc.name}</button>
+                </span>
+              ))}
+              {browseCurrent && (
+                <button
+                  onClick={async () => {
+                    setSaving(true);
+                    await fetch("/api/workspace", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "setRecordsBasePath", recordsBasePath: browseCurrent }),
                     });
                     onUpdateConfig();
                     setSaving(false);
