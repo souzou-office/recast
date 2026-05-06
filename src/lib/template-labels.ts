@@ -17,8 +17,15 @@ export interface TemplateSlotLabel {
   sourceHint?: string;   // 推定される出典（例: 基本情報の役員、案件スケジュール表）
 }
 
+// パーサーバージョン: マーカー検出ロジック（黄色塗り/赤フォント/赤rich text）が変わったら
+// インクリメントする。これにより、ファイルが同じでもキャッシュが無効化されて再生成される。
+//   v1: 黄色塗りのみ
+//   v2: 黄色塗り + 赤フォント (セル全体) + 赤rich text (Excel) / 赤い文字色 (Word)
+const PARSER_VERSION = 2;
+
 export interface TemplateLabels {
   templateHash: string;
+  parserVersion?: number; // 古い labels.json (v1相当) には無い
   generatedAt: string;
   slots: TemplateSlotLabel[];
 }
@@ -35,8 +42,9 @@ async function loadCachedLabels(templatePath: string, expectedHash: string): Pro
   try {
     const raw = await fs.readFile(labelsPathFor(templatePath), "utf-8");
     const parsed = JSON.parse(raw) as TemplateLabels;
-    if (parsed.templateHash === expectedHash) return parsed;
-    return null; // ハッシュ不一致 → 再生成
+    if (parsed.templateHash !== expectedHash) return null; // ハッシュ不一致 → 再生成
+    if ((parsed.parserVersion ?? 1) !== PARSER_VERSION) return null; // パーサー変更 → 再生成
+    return parsed;
   } catch {
     return null; // ファイルなし
   }
@@ -142,6 +150,7 @@ export async function ensureDocxLabels(templatePath: string): Promise<TemplateLa
 
     const result: TemplateLabels = {
       templateHash: hash,
+      parserVersion: PARSER_VERSION,
       generatedAt: new Date().toISOString(),
       slots,
     };
@@ -188,6 +197,7 @@ export async function ensureXlsxLabels(templatePath: string): Promise<TemplateLa
 
     const result: TemplateLabels = {
       templateHash: hash,
+      parserVersion: PARSER_VERSION,
       generatedAt: new Date().toISOString(),
       slots,
     };

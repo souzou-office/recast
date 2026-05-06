@@ -6,16 +6,37 @@ import { readAllFilesInFolder } from "@/lib/files";
 import { mimeFromExtension } from "@/lib/file-parsers";
 import { isPathDisabled } from "@/lib/disabled-filter";
 import { logTokenUsage } from "@/lib/token-logger";
+import {
+  loadAiMessages,
+  saveAiMessages,
+  truncateBeforeStage,
+  appendUserTurn,
+  appendAssistantTurn,
+  toAnthropicMessages,
+} from "@/lib/case-conversation";
+import type { CaseAiContentBlock } from "@/types";
 
 const client = new Anthropic();
 const MODEL = "claude-sonnet-4-6";
 
+/**
+ * 案件整理 = 「1案件1会話」のターン1。
+ *
+ * 旧設計: 毎回ステートレスに Claude を呼んでいた。clarify/produce/verify は本ステップが
+ *   作った「表」だけを引き継ぎ、その背後の判断・迷いは消えていた。
+ * 新設計: スレッドの aiMessages にユーザーターン+アシスタント応答を追記する。
+ *   後続ステップ（clarify/produce/verify）は同じ aiMessages にターンを足していくため、
+ *   Claude は「自分が前のターンで何をどう判断したか」を全部覚えている。
+ *
+ * 再実行のときは aiMessages を「organize より前」に切り戻してからターンを追加する。
+ */
 export async function POST(request: NextRequest) {
-  const { companyId, folderPath, disabledFiles, templateFolderPath } = await request.json() as {
+  const { companyId, folderPath, disabledFiles, templateFolderPath, threadId } = await request.json() as {
     companyId: string;
     folderPath?: string;
     disabledFiles?: string[];
     templateFolderPath?: string;
+    threadId?: string;
   };
 
   const config = await getWorkspaceConfig();
@@ -71,17 +92,51 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
 
-  // テンプレートごとに「意味ラベル付きのスロット一覧」を準備する。
-  // 初回は Haiku で解析してキャッシュ（.labels.json）、以降はキャッシュから即返し。
-  // これで案件整理 AI は各スロットの意味（例: "取締役決定書の作成日"）＋記載形式
-  // （例: "令和○年○月○日"）＋推定出典（"案件スケジュール表"）が分かる。
+  // テンプレ本体・ラベル一覧（後続ターンでも参照される共通知識として、ターン1の中に埋め込む）
   let templateContext = "";
+  let templateBodies = "";
   type FlatLabel = { docName: string; label: string; format: string; sourceHint?: string };
   const allLabels: FlatLabel[] = [];
   if (templateFolderPath) {
     try {
       const templateFiles = await readAllFilesInFolder(templateFolderPath);
       const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
+      const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
+      const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
+      const fsLib = await import("fs/promises");
+
+      // テンプレ本体を「［要入力_N］」形式で取得（前案件の値は隠れている）。
+      // produce ターンでも同じ番号付けを使うので、会話を通じて一貫した参照ができる。
+      const bodies: string[] = [];
+      for (const tf of templateFiles) {
+        if (tf.base64) continue;
+        const ext = tf.name.toLowerCase().split(".").pop() || "";
+        const baseName = tf.name.replace(/\.[^.]+$/, "");
+        try {
+          if (ext === "docx" || ext === "docm") {
+            const buf = await fsLib.readFile(tf.path);
+            const { text } = getMarkedDocumentTextWithSlots(buf);
+            if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
+          } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+            const buf = await fsLib.readFile(tf.path);
+            const { text } = getXlsxMarkedTextWithSlots(buf);
+            if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
+          } else if (tf.content) {
+            bodies.push(`### ${tf.name}\n\`\`\`\n${tf.content}\n\`\`\``);
+          }
+        } catch { /* skip unreadable */ }
+      }
+      if (bodies.length > 0) {
+        templateBodies = `\n## 作成予定書類のテンプレ本体
+
+各書類の \`［要入力_N］\` の部分が **これから埋めるべきスロット** です（N は番号）。
+- スロットの中身は **空欄** として扱ってください
+- 各スロットが何を表すかは前後の文脈と「## 必要な項目」のラベル一覧から判断してください
+- 後続ターンで「要入力_3 に〜を入れる」のように番号で参照します
+
+${bodies.join("\n\n")}
+`;
+      }
 
       // プレースホルダー方式 ({{X}} / 【X】): その名前自体が意味ラベルなのでそのまま使う
       const placeholderExists = new Set<string>();
@@ -113,7 +168,6 @@ export async function POST(request: NextRequest) {
           labels = await ensureXlsxLabels(tf.path);
         }
         if (!labels) continue;
-        // 同一 label が重複する場合は排除（ハイライトが複数あっても同じ意味ラベルなら1行）
         const seen = new Set<string>();
         for (const s of labels.slots) {
           const labelKey = s.label;
@@ -129,7 +183,6 @@ export async function POST(request: NextRequest) {
       }
 
       if (allLabels.length > 0) {
-        // 書類別にグループ化して AI に渡す
         const byDoc: Record<string, FlatLabel[]> = {};
         for (const l of allLabels) {
           if (!byDoc[l.docName]) byDoc[l.docName] = [];
@@ -156,15 +209,31 @@ ${lines.join("\n")}
     } catch { /* ignore */ }
   }
 
-  // 会社の基本情報（profile.structured）も参考データとして添付する。
-  // 案件資料に書かれていない値が基本情報にあれば、そこから採用してよい（根拠は「基本情報」と表示）。
+  // 会社の基本情報（profile.structured）も参考データとして添付する
   const profileBlock = company.profile?.structured
     ? `\n## 会社の基本情報（参照データ）\n\`\`\`json\n${JSON.stringify(company.profile.structured, null, 2)}\n\`\`\`\n`
     : "";
 
-  const promptText = `以下の「案件資料」を確認し、**上記の「必要な項目」だけ**を抽出・整理してください。
+  const promptText = `あなたは司法書士事務所の書類作成担当者です。これからこの案件を **最初から最後まで** 1人で担当してもらいます。
+今後の流れ:
+  ターン1（今）: 案件整理
+  ターン2: 不足項目の確認質問を作る
+  ターン3: 書類のスロットに入れる値を決める
+  ターン4: 原本と生成書類を突き合わせて検証
+各ターンで、自分が前のターンで何を判断したかを覚えておいてください。
+
+## あなたが今やること（ターン1: 案件整理）
+以下の「案件資料」を確認し、**上記の「必要な項目」だけ**を抽出・整理してください。
+案件整理の目的は **書類生成に必要な値を全て揃える** ことです。テンプレ本体の前後の文脈を見て、
+各スロットに何が入るべきかを正確に判断してください。
+
+**重要**: テンプレ本体内の \`［要入力_N］\` は **これから埋めるべき空のスロット** です。
+中身は何も書かれていません（前案件の値は隠してあります）。各スロットが何を表すかは
+**前後の文脈**（例: 「代表取締役 ［要入力_0］ が」→ 代表取締役の氏名）と
+**「## 必要な項目」のラベル一覧** から判断してください。
 
 ${templateContext}
+${templateBodies}
 ${profileBlock}
 
 ## 出力の作り方（ユーザーが読む内容）
@@ -233,57 +302,69 @@ ${profileBlock}
 ## 案件資料
 ${allTexts.join("\n\n")}`;
 
-  type ContentBlock =
-    | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
-    | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string; cache_control?: { type: "ephemeral" } }
-    | { type: "image"; source: { type: "base64"; media_type: string; data: string }; cache_control?: { type: "ephemeral" } };
-
-  // 画像は案件整理では送らない（テキスト+PDFで十分、壊れた画像でAPIエラーになるリスク回避）
-  const contentBlocks: ContentBlock[] = [];
+  // ターン1のユーザー content: PDF添付 + プロンプトテキスト
+  const userTurnContent: CaseAiContentBlock[] = [];
   for (const pdf of pdfFiles) {
     if (pdf.mimeType === "application/pdf") {
-      contentBlocks.push({
+      userTurnContent.push({
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: pdf.base64 },
         title: pdf.name,
       });
     }
   }
-  // 案件整理は 1 案件に 1 回しか呼ばれないので cache_control を付けない。
-  // （cache_write は通常入力の 1.25 倍なので、2回目の読み込みが無ければ損になる）
-  contentBlocks.push({ type: "text", text: promptText });
+  userTurnContent.push({ type: "text", text: promptText });
+
+  // 既存 aiMessages を読み込み、organize より前に切り戻す（再実行対応）
+  const priorMessages = threadId
+    ? truncateBeforeStage(await loadAiMessages(company.id, threadId), "organize")
+    : [];
+  const messagesWithUserTurn = appendUserTurn(priorMessages, userTurnContent, "organize");
 
   try {
     const encoder = new TextEncoder();
+    const send = (controller: ReadableStreamDefaultController, data: object) => {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+    };
     const stream = new ReadableStream({
       async start(controller) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-          type: "meta",
-          sourceFiles,
-        })}\n\n`));
-
-        const aiStream = client.messages.stream({
-          model: MODEL,
-          max_tokens: 8192,
-          messages: [{ role: "user", content: contentBlocks as Anthropic.ContentBlockParam[] }],
-        });
-
-        for await (const event of aiStream) {
-          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-              type: "text",
-              text: event.delta.text,
-            })}\n\n`));
-          }
-        }
-
         try {
-          const final = await aiStream.finalMessage();
-          logTokenUsage("/api/templates/execute", MODEL, final.usage);
-        } catch { /* ignore */ }
+          send(controller, { type: "meta", sourceFiles });
 
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
-        controller.close();
+          const aiStream = client.messages.stream({
+            model: MODEL,
+            max_tokens: 8192,
+            messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
+          });
+
+          let assistantText = "";
+          for await (const event of aiStream) {
+            if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+              assistantText += event.delta.text;
+              send(controller, { type: "text", text: event.delta.text });
+            }
+          }
+
+          try {
+            const final = await aiStream.finalMessage();
+            logTokenUsage("/api/templates/execute", MODEL, final.usage);
+          } catch { /* ignore */ }
+
+          // assistant ターンを保存（次の clarify/produce/verify が読む）
+          if (threadId) {
+            const finalMessages = appendAssistantTurn(messagesWithUserTurn, assistantText, "organize");
+            await saveAiMessages(company.id, threadId, finalMessages);
+          }
+
+          send(controller, { type: "done" });
+        } catch (e) {
+          // ERR_EMPTY_RESPONSE 防止: 例外を必ず SSE で返してから close する
+          const errMsg = e instanceof Error ? `${e.message}\n${e.stack || ""}` : String(e);
+          console.error("[execute] stream failed:", errMsg);
+          try { send(controller, { type: "error", error: e instanceof Error ? e.message : "実行に失敗" }); } catch { /* controller already closed */ }
+        } finally {
+          try { controller.close(); } catch { /* already closed */ }
+        }
       },
     });
 

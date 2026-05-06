@@ -10,10 +10,15 @@ interface Props {
 }
 
 export default function ClarificationCardUI({ card, onAction }: Props) {
-  const [answers, setAnswers] = useState<Record<string, { optionId?: string; manual?: string }>>(
+  const [answers, setAnswers] = useState<Record<string, { optionId?: string; manual?: string }>>(() =>
     Object.fromEntries(card.questions.map(q => [q.id, { optionId: q.selectedOptionId, manual: q.manualInput }]))
   );
   const isLocked = !!card.answered;
+
+  // 選択を即時反映するためのヘルパー（label 内 input + onChange だと一部ブラウザで反映が遅れる症状あり）
+  const selectOption = (qid: string, optionId: string) => {
+    setAnswers(prev => ({ ...prev, [qid]: { optionId, manual: optionId === "_manual" ? (prev[qid]?.manual || "") : undefined } }));
+  };
 
   const allAnswered = card.questions.every(q => {
     const a = answers[q.id];
@@ -45,35 +50,45 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
               Q{qi + 1}. <span className="text-[var(--color-fg-muted)]">【{q.placeholder}】</span> {q.question}
             </p>
             <div className="space-y-1.5 ml-4">
-              {q.options.map(opt => (
-                <label key={opt.id} className="flex items-start gap-2.5 cursor-pointer">
-                  <input
-                    type="radio"
-                    name={q.id}
-                    checked={answers[q.id]?.optionId === opt.id}
-                    onChange={() => setAnswers(prev => ({ ...prev, [q.id]: { optionId: opt.id } }))}
-                    disabled={isLocked}
-                    className="w-4 h-4 mt-0.5"
-                  />
-                  <span className="flex-1">
-                    <span className="text-[13px] text-[var(--color-fg)]">{opt.label}</span>
-                    {opt.source && (
-                      <span className="ml-2 text-[11.5px] text-[var(--color-fg-subtle)]">{opt.source}</span>
-                    )}
-                  </span>
-                </label>
-              ))}
-              <label className="flex items-center gap-2.5 cursor-pointer">
+              {q.options.map(opt => {
+                const checked = answers[q.id]?.optionId === opt.id;
+                return (
+                  <div
+                    key={opt.id}
+                    onClick={() => !isLocked && selectOption(q.id, opt.id)}
+                    className={`flex items-start gap-2.5 ${isLocked ? "" : "cursor-pointer hover:bg-[var(--color-hover)] -mx-2 px-2 py-0.5 rounded"}`}
+                  >
+                    <input
+                      type="radio"
+                      name={q.id}
+                      checked={checked}
+                      onChange={() => selectOption(q.id, opt.id)}
+                      disabled={isLocked}
+                      className="w-4 h-4 mt-0.5 pointer-events-none"
+                    />
+                    <span className="flex-1">
+                      <span className="text-[13px] text-[var(--color-fg)]">{opt.label}</span>
+                      {opt.source && (
+                        <span className="ml-2 text-[11.5px] text-[var(--color-fg-subtle)]">{opt.source}</span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+              <div
+                onClick={() => !isLocked && selectOption(q.id, "_manual")}
+                className={`flex items-center gap-2.5 ${isLocked ? "" : "cursor-pointer hover:bg-[var(--color-hover)] -mx-2 px-2 py-0.5 rounded"}`}
+              >
                 <input
                   type="radio"
                   name={q.id}
                   checked={answers[q.id]?.optionId === "_manual"}
-                  onChange={() => setAnswers(prev => ({ ...prev, [q.id]: { optionId: "_manual", manual: "" } }))}
+                  onChange={() => selectOption(q.id, "_manual")}
                   disabled={isLocked}
-                  className="w-4 h-4"
+                  className="w-4 h-4 pointer-events-none"
                 />
                 <span className="text-[13px] text-[var(--color-fg)]">手動入力</span>
-              </label>
+              </div>
               {answers[q.id]?.optionId === "_manual" && !isLocked && (
                 <input
                   type="text"

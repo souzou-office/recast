@@ -107,6 +107,7 @@ export interface GeneratedDocument {
   fileName: string;
   createdAt: string;
   filledSlots?: FilledSlot[];  // 埋めた値の履歴（直接編集・再生成用）。後方互換で optional
+  pendingChanges?: boolean;    // 値が変更されたが docxBase64 にまだ反映されていない
 }
 
 export interface CaseRoom {
@@ -240,6 +241,7 @@ export interface DocumentResultItem {
   // 値の直接編集・再生成用（後方互換のため optional）
   templatePath?: string;
   filledSlots?: FilledSlot[];
+  pendingChanges?: boolean; // 編集された値が docxBase64 にまだ反映されていない
 }
 
 export interface DocumentResultCard {
@@ -301,9 +303,26 @@ export interface ChatThread {
   masterSheet?: MasterSheet;
   generatedDocuments?: GeneratedDocument[];
   checkResult?: string;
+  // 1案件=1会話: 案件整理→質問→書類生成→検証 を Claude の同じ会話履歴で進める
+  // （別人感をなくし、各ステップが前段の判断・迷いを継承するため）
+  aiMessages?: CaseAiMessage[];
   // メタ
   createdAt: string;
   updatedAt: string;
+}
+
+// 1案件1会話: Claude に送る生のメッセージ履歴
+// 各ターンに stage を打って「どのステップで書かれたか」を区別する（再実行時の切り戻し位置にも使う）
+export type CaseAiContentBlock =
+  | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }
+  | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string; cache_control?: { type: "ephemeral" } }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string }; cache_control?: { type: "ephemeral" } };
+
+export interface CaseAiMessage {
+  role: "user" | "assistant";
+  content: string | CaseAiContentBlock[];
+  // どのステップが書き込んだか
+  stage?: "organize" | "clarify" | "produce" | "verify";
 }
 
 // 右パネル

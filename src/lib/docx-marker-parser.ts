@@ -31,9 +31,16 @@ function getRunText(runXml: string): string {
   return decodeXml(texts.join(""));
 }
 
-// <w:r> にハイライトがあるか
+// <w:r> にハイライト（黄色塗り）または赤い文字色があるか。
+// どちらも「ここはこれから埋めるべきスロット」のマーカーとして扱う。
 function hasHighlight(runXml: string): boolean {
-  return /<w:highlight\s+w:val="[^"]*"\s*\/>/.test(runXml);
+  return /<w:highlight\s+w:val="[^"]*"\s*\/>/.test(runXml) || hasRedColor(runXml);
+}
+
+// 「標準の色：赤」を Word が書き込むときの XML。FF0000 が固定値。
+// (Word ribbon で「フォントの色 → 標準の色 → 赤」を選んだとき出力される)
+function hasRedColor(runXml: string): boolean {
+  return /<w:color\s+w:val="FF0000"\s*\/>/i.test(runXml);
 }
 
 // 段落全体のテキストを取得
@@ -197,9 +204,12 @@ function findTopLevelParagraphs(xml: string): ParaRange[] {
   return results;
 }
 
-// 文書全体のテキストを、ハイライト部分を［要入力_N:前案件の値］に置き換えて返す。
-// 「前案件の値」は AI への型ヒント（これは前案件の値なので必ず差し替える、と指示する）。
-// 周辺に文脈がないスロット（役職も氏名も両方ハイライト等）でも、型ヒントで AI が判断できる。
+// 文書全体のテキストを、ハイライト部分を［要入力_N］に置き換えて返す。
+// **前案件の値は AI に見せない**（型ヒントとして見せた時期もあったが、AI がそれに引きずられて
+// 同じ値を返すケースが頻発したため、826ca83 で完全に隠す方針に戻した）。
+// AI には周辺文脈と .labels.json のラベルから型・意味を判断させる。
+// 元の値（前案件の値）は slots Map に保持（produce/regenerate で originalValue→newValue の
+// 置換マップを作るため必要）。
 export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
   const zip = new PizZip(buffer);
   let docXml = zip.file("word/document.xml")?.asText();
@@ -219,8 +229,8 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; 
     const flushGroup = () => {
       if (currentGroupText) {
         slots.set(slotId, currentGroupText);
-        // 《前案件:...》 で前案件の値を明示。AI は型判定のヒントにしつつ必ず新値に置換。
-        lineText += `［要入力_${slotId}《前案件:${currentGroupText}》］`;
+        // ★前案件の値は出力テキストに含めない★。番号だけ。AI には文脈から型を判断させる。
+        lineText += `［要入力_${slotId}］`;
         slotId++;
         currentGroupText = "";
       }
@@ -371,10 +381,12 @@ export function replaceMarkedFields(
         // （間に挟まる "other" メタ要素は温存する）
         for (let j = group.endIdx; j >= group.startIdx; j--) {
           if (j === group.startIdx) {
-            // 最初のラン: テキストを新しい値に、ハイライトを除去
+            // 最初のラン: テキストを新しい値に、ハイライトと赤い文字色を除去
             let newRun = parts[j].content;
             // ハイライト属性を除去
             newRun = newRun.replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "");
+            // 赤い文字色 <w:color w:val="FF0000"/> を除去（テキストを通常色に戻す）
+            newRun = newRun.replace(/<w:color\s+w:val="FF0000"\s*\/>/gi, "");
             // テキストを置換
             newRun = newRun.replace(
               /<w:t\b[^>]*>[\s\S]*?<\/w:t>/g,
@@ -382,7 +394,7 @@ export function replaceMarkedFields(
             );
             parts[j] = { ...parts[j], content: newRun };
           } else if (parts[j].type === "run" && parts[j].highlighted) {
-            // 残りのハイライトラン: 削除（メタ要素は温存）
+            // 残りのハイライト/赤ラン: 削除（メタ要素は温存）
             parts.splice(j, 1);
           }
         }
@@ -426,10 +438,12 @@ export function replaceMarkedFields(
     }
   }
 
-  // 最終確認: 残っているハイライトを全て除去（置換漏れのフォールバック）
-  let finalXml = zip.file("word/document.xml")?.asText();
+  // 最終確認: 残っているハイライト + 赤い文字色を全て除去（置換漏れのフォールバック）
+  const finalXml = zip.file("word/document.xml")?.asText();
   if (finalXml) {
-    const cleaned = finalXml.replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "");
+    const cleaned = finalXml
+      .replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "")
+      .replace(/<w:color\s+w:val="FF0000"\s*\/>/gi, "");
     if (cleaned !== finalXml) zip.file("word/document.xml", cleaned);
   }
 
