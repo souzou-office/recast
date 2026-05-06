@@ -241,6 +241,13 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "setRecordsBasePath": {
+      // 作業記録の自動保存先フォルダを設定
+      // クラウドストレージ (Google Drive 等) のフォルダを指定すれば、自動同期で他 PC・他人と即共有可能
+      config.recordsBasePath = body.recordsBasePath || "";
+      break;
+    }
+
     case "setDefaultCommonPatterns": {
       config.defaultCommonPatterns = body.patterns;
       break;
@@ -431,6 +438,7 @@ export async function DELETE() {
   const config = {
     basePaths: [],
     templateBasePath: "",
+    recordsBasePath: "",
     defaultCommonPatterns: [],
     companies: [],
     selectedCompanyId: null,

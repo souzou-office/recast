@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
 import type { ChatThread } from "@/types";
+import { getWorkspaceConfig } from "@/lib/folders";
+import { writeThreadRecords } from "@/lib/records-writer";
 
 const DATA_DIR = path.join(process.cwd(), "data", "chat-threads");
 
@@ -80,6 +82,21 @@ export async function PATCH(
 
   thread.updatedAt = new Date().toISOString();
   await saveThread(thread);
+
+  // recordsBasePath が設定されていれば、自動で書き出す（best-effort、失敗しても 200 を返す）
+  // Google Drive 等のクラウドストレージのフォルダを指定すれば自動同期で他 PC・他人と即共有できる
+  try {
+    const config = await getWorkspaceConfig();
+    if (config.recordsBasePath) {
+      const company = config.companies.find(c => c.id === companyId);
+      if (company) {
+        const r = await writeThreadRecords(thread, company, config.recordsBasePath);
+        if (!r.ok) console.warn(`[chat-threads PATCH] records write failed: ${r.error}`);
+      }
+    }
+  } catch (e) {
+    console.warn("[chat-threads PATCH] records write threw:", e);
+  }
 
   return NextResponse.json({ thread });
 }

@@ -137,6 +137,10 @@ export interface WorkspaceConfig {
   basePath?: string;       // 後方互換
   basePaths: string[];     // 顧問先フォルダのローカルパス（複数）
   templateBasePath: string; // 書類テンプレートフォルダのローカルパス
+  // 作業記録の自動保存先（クラウドストレージ等を指定すれば他 PC・他人と自動共有可能）
+  // 設定されていれば、スレッド更新時に <recordsBasePath>/<会社名>/<案件名>/ 以下に
+  // 案件整理.md / 生成書類/ / 質問回答.json / 検証結果.md を自動書き出す
+  recordsBasePath?: string;
   defaultCommonPatterns: string[];
   companies: Company[];
   selectedCompanyId: string | null;

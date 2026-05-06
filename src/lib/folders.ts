@@ -27,6 +27,7 @@ export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
     const config: WorkspaceConfig = {
       basePaths,
       templateBasePath: data.templateBasePath || "",
+      recordsBasePath: data.recordsBasePath || "",
       defaultCommonPatterns: data.defaultCommonPatterns || [],
       companies: data.companies || [],
       selectedCompanyId: data.selectedCompanyId || null,
