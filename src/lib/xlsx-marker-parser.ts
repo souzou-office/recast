@@ -276,77 +276,60 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
       }
     }
 
-    // セルを走査
-    // 自己閉じ <c .../> と内容あり <c ...>...</c> の両方を正しく分離
-    // （貪欲な [^>]* が自己閉じの / を吸収し、後続セルを巻き込むバグを防ぐ）
-    const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
-    let cm;
-    while ((cm = cellRe.exec(sheetXml)) !== null) {
-      const attrs = cm[1];
-      const inner = cm[2] || "";
+    // セルを「行順 × 列順」で1パス走査。
+    // 各セルで以下を順に処理（getXlsxMarkedTextWithSlots と同じ順序）:
+    //   ① 黄色塗り or 赤フォント → セル全体を slot として cells に追加
+    //   ② 赤い rich text run を含むセル → 各赤 run を順に cells に追加
+    // この順序を 2 関数で揃えないと slot id がズレる。
+    const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+    let rm;
+    while ((rm = rowRe.exec(sheetXml)) !== null) {
+      const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+      let cm;
+      while ((cm = cellRe.exec(rm[1])) !== null) {
+        const attrs = cm[1];
+        const inner = cm[2] || "";
+        const sMatch = attrs.match(/\bs="(\d+)"/);
+        const rMatch = attrs.match(/\br="([A-Z]+\d+)"/);
+        if (!rMatch) continue;
+        const ref = rMatch[1];
 
-      const sMatch = attrs.match(/\bs="(\d+)"/);
-      const rMatch = attrs.match(/\br="([A-Z]+\d+)"/);
-      if (!sMatch || !rMatch) continue;
+        const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
+        const tMatch = attrs.match(/\bt="([^"]*)"/);
+        const vMatch = inner.match(/<v>([^<]*)<\/v>/);
+        if (!vMatch) continue;
 
-      const styleIdx = parseInt(sMatch[1]);
-      // 黄色セル または 赤フォントセル を検出対象に
-      if (!yellowStyles.has(styleIdx) && !redFontStyles.has(styleIdx)) continue;
-
-      const ref = rMatch[1];
-      const tMatch = attrs.match(/\bt="([^"]*)"/);
-      const vMatch = inner.match(/<v>([^<]*)<\/v>/);
-
-      let value = "";
-      if (vMatch) {
+        // 値抽出（共有文字列 or 数値、日付シリアルは ISO 日付に変換）
+        let value = "";
+        let siIndex = -1;
         if (tMatch?.[1] === "s") {
-          // 共有文字列参照
-          const idx = parseInt(vMatch[1]);
-          value = sharedStrings[idx] || "";
+          siIndex = parseInt(vMatch[1]);
+          value = sharedStrings[siIndex] || "";
         } else {
           const raw = vMatch[1];
-          // 日付フォーマットで数値が入っていれば Excel シリアル → ISO 日付に変換
-          if (dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
+          if (styleIdx >= 0 && dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
             const serial = parseFloat(raw);
-            if (serial > 0 && serial < 2958466) {
-              // 1900-01-01 〜 9999-12-31 の範囲内で変換
-              value = excelSerialToDateString(serial);
-            } else {
-              value = raw;
-            }
+            value = (serial > 0 && serial < 2958466) ? excelSerialToDateString(serial) : raw;
           } else {
             value = raw;
           }
         }
-      }
+        if (!value.trim()) continue;
+        if (/<f\b/.test(inner)) continue; // 数式セルはスキップ
 
-      // 空セルや数式セル（合計行等）はスキップ
-      if (!value.trim()) continue;
-      // 数式があるセルはスキップ（合計・割合等の計算セル）
-      if (/<f\b/.test(inner)) continue;
+        const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
+        const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
 
-      cells.push({ ref, value, sheetName });
-    }
-
-    // 赤いテキスト run を含むセルを「赤 run の元テキスト」単位でも cells に追加。
-    // produce 側で「マーカーあるか？」の判定に使うほか、replaceXlsxMarkedCells の置換キーとしても機能する。
-    if (redSiMap.size > 0) {
-      const cellRe2 = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
-      let cm2;
-      while ((cm2 = cellRe2.exec(sheetXml)) !== null) {
-        const attrs = cm2[1];
-        const inner = cm2[2] || "";
-        const tMatch = attrs.match(/\bt="([^"]*)"/);
-        const rMatch = attrs.match(/\br="([A-Z]+\d+)"/);
-        if (!rMatch || tMatch?.[1] !== "s") continue;
-        const vMatch = inner.match(/<v>([^<]*)<\/v>/);
-        if (!vMatch) continue;
-        const idx = parseInt(vMatch[1]);
-        const runs = redSiMap.get(idx);
-        if (!runs) continue;
-        for (const run of runs) {
-          if (run.isRed && run.text.trim()) {
-            cells.push({ ref: rMatch[1], value: run.text, sheetName });
+        if (isYellow || isRedFont) {
+          // ① セル全体マーカー
+          cells.push({ ref, value, sheetName });
+        } else if (siIndex >= 0 && redSiMap.has(siIndex)) {
+          // ② 赤 run マーカー（赤い部分だけを順に push）
+          const runs = redSiMap.get(siIndex)!;
+          for (const run of runs) {
+            if (run.isRed && run.text.trim()) {
+              cells.push({ ref, value: run.text, sheetName });
+            }
           }
         }
       }
