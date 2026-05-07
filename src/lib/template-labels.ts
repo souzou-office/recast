@@ -21,7 +21,9 @@ export interface TemplateSlotLabel {
 // インクリメントする。これにより、ファイルが同じでもキャッシュが無効化されて再生成される。
 //   v1: 黄色塗りのみ
 //   v2: 黄色塗り + 赤フォント (セル全体) + 赤rich text (Excel) / 赤い文字色 (Word)
-const PARSER_VERSION = 2;
+//   v3: extractXlsxMarkedCells と getXlsxMarkedTextWithSlots の slot 順序を統一（行順×列順、
+//       各セルで「セル全体マーカー → 赤 run」の順）。v2 までは順序がズレてラベルがズレていた。
+const PARSER_VERSION = 3;
 
 export interface TemplateLabels {
   templateHash: string;
