@@ -513,16 +513,24 @@ ${conditionFlagBlock}
 
 ### 株主毎の繰り返し
 - 共通ルールに「株主毎に1枚」等の指示があれば、その書類だけ \`values\` の代わりに \`copies\` を使う
-- \`copies\` は要入力_N をキーとするオブジェクトの配列。instanceLabel/values のようなネストは禁止
+- \`copies\` は要入力_N をキーとするオブジェクトの配列。\`values\` フィールドのネストは禁止
   - 正: copies: [ { "要入力_0": "山田" }, { "要入力_0": "鈴木" } ]
-  - 誤: copies: [ { instanceLabel: "山田", values: { "要入力_0": "山田" } } ]
+  - 誤: copies: [ { values: { "要入力_0": "山田" } } ]
+- \`instanceLabel\` は要入力_N と同じ階層に並べて OK（個人/法人テンプレの振り分けで使う）
+  - 例: copies: [ { "instanceLabel": "山田太郎(個人)", "要入力_0": "山田太郎" } ]
 
 ### 個人/法人テンプレの variant 振り分け
 - テンプレ名末尾に \`_個人\` または \`_法人\` が付いていれば、その株主タイプ専用テンプレ。
   例:「2-1.提案書兼同意書_個人.docx」「2-1.提案書兼同意書_法人.docx」
-- どちらの場合も copies には**全株主分**を返してよい。サーバー側で
-  株主の種別 (株式会社/有限会社/組合 等の有無) を見て、その種別に合う copy だけ
-  自動でフィルタする。ただし可能であれば最適化として、テンプレ別に該当株主だけ返してもよい。
+- **両テンプレとも、copies には必ず全株主分を返すこと。** テンプレ別に該当株主だけ返す最適化はしない（取りこぼし防止）。
+- 各 copy には **\`instanceLabel\`** を必ず設定し、末尾に \`(個人)\` または \`(法人)\` を含めること。
+  これがサーバーがテンプレ振り分けに使う最重要シグナル。
+  例:
+    copies: [
+      { "instanceLabel": "山田太郎(個人)", "要入力_0": "山田太郎", "要入力_1": "..." },
+      { "instanceLabel": "株式会社Deep30(法人)", "要入力_0": "株式会社Deep30", "要入力_1": "..." }
+    ]
+- サーバー側で instanceLabel の \`(個人)/(法人)\` タグを見て、テンプレに合う copy だけ自動で残す。
 
 ### 全角/半角
 - AI 側では考えず、上記の生の値を返す（半角→全角変換はサーバー側で実施）
@@ -616,20 +624,46 @@ ${conditionFlagBlock}
     // テンプレ名の末尾に「_個人」「_法人」が付いていれば、その名簿の copy だけ生成する。
     // 例: 「2-1.提案書兼同意書_個人.docx」は 個人株主の copy だけ、
     //     「2-1.提案書兼同意書_法人.docx」は 法人株主の copy だけ生成する。
-    // copy が法人かどうかの判定:
-    //   ① AI が返す instanceLabel に「法人」を含む
-    //   ② 値のどれかが「株式会社/有限会社/合同会社/(社団|財団)法人/組合」等を含む
-    //   いずれかなら法人とみなす（保守的に判定）
+    //
+    // 判定の優先順位:
+    //   ① AI が返す instanceLabel に \`(個人)\` / \`(法人)\` タグがあればそれを採用（最優先）
+    //   ② 「株主」を表すスロット（labels.json の label に「株主」を含み、かつ「提案」を含まない）の
+    //      値だけスキャンして「株式会社/有限会社/組合」等のキーワードがあれば法人扱い
+    //
+    // 旧実装は copy 内の全スロットをスキャンしていたが、提案会社の商号スロット (=「株式会社○○」)
+    // が個人テンプレにも含まれるため、個人 copy がほぼ常に法人扱いされ `_個人.docx` が
+    // 黙って消える不具合があった。株主自身を表すスロットだけ見るようにして解消。
     const variantSuffix = (() => {
       const m = a.baseName.match(/_(個人|法人)$/);
       return m ? m[1] as "個人" | "法人" : null;
     })();
-    const isLegalEntityCopy = (raw: Record<string, string | string[] | boolean>, label?: string): boolean => {
-      if (label && /法人/.test(label)) return true;
-      const LEGAL_RE = /(株式|有限|合同|合資|合名|社団|財団)(会社|法人)|組合/;
-      for (const v of Object.values(raw)) {
+    const LEGAL_RE = /(株式|有限|合同|合資|合名|社団|財団)(会社|法人)|組合/;
+    const isShareholderFieldLabel = (lbl: string | undefined): boolean =>
+      !!lbl && /株主/.test(lbl) && !/提案/.test(lbl);
+    const isLegalEntityCopy = (
+      raw: Record<string, string | string[] | boolean>,
+      instanceLabel: string | undefined,
+      getKeyLabel: (key: string) => string | undefined
+    ): boolean => {
+      // ① instanceLabel の (個人)/(法人) タグを最優先
+      if (instanceLabel) {
+        if (/[(（]法人[)）]/.test(instanceLabel)) return true;
+        if (/[(（]個人[)）]/.test(instanceLabel)) return false;
+        // タグが無くても「法人」を含めば法人扱い（後方互換）
+        if (/法人/.test(instanceLabel)) return true;
+      }
+      // ② 株主自身のスロットだけスキャン
+      let scannedAny = false;
+      for (const [k, v] of Object.entries(raw)) {
+        if (k === "instanceLabel") continue;
+        const lbl = getKeyLabel(k);
+        if (!isShareholderFieldLabel(lbl)) continue;
+        scannedAny = true;
         if (typeof v === "string" && LEGAL_RE.test(v)) return true;
         if (Array.isArray(v) && v.some(x => typeof x === "string" && LEGAL_RE.test(x))) return true;
+      }
+      if (!scannedAny) {
+        console.warn(`[produce/variant] ${a.baseName}: 株主ラベルのスロットが見つからず instanceLabel タグも無いので 個人 にフォールバック`);
       }
       return false;
     };
@@ -645,12 +679,18 @@ ${conditionFlagBlock}
 
         if (variantSuffix && normalizedCopies && Array.isArray(aiDoc.copies)) {
           const labels = (aiDoc.copies as { instanceLabel?: string }[]).map(c => c.instanceLabel);
+          // highlight-docx: スロットID→labels.json のラベルを引く
+          const getKeyLabel = (key: string): string | undefined => {
+            const m = key.match(/要入力_(\d+)/);
+            if (!m) return undefined;
+            return a.slotLabels.get(parseInt(m[1]))?.label;
+          };
           setsRaw = setsRaw.filter((set, i) => {
-            const isLegal = isLegalEntityCopy(set, labels[i]);
+            const isLegal = isLegalEntityCopy(set, labels[i], getKeyLabel);
             return variantSuffix === "法人" ? isLegal : !isLegal;
           });
           if (setsRaw.length === 0) {
-            console.log(`[produce/variant] ${a.baseName}: no matching ${variantSuffix} copies, skipping`);
+            console.warn(`[produce/variant] ${a.baseName}: no matching ${variantSuffix} copies (instanceLabel=${JSON.stringify(labels)}), skipping`);
             continue;
           }
           console.log(`[produce/variant] ${a.baseName}: kept ${setsRaw.length}/${normalizedCopies.length} copies for ${variantSuffix}`);
@@ -746,12 +786,14 @@ ${conditionFlagBlock}
         // variant フィルター（_個人 / _法人 テンプレ）
         if (variantSuffix && normalizedCopies && Array.isArray(aiDoc.copies)) {
           const labels = (aiDoc.copies as { instanceLabel?: string }[]).map(c => c.instanceLabel);
+          // placeholder-docx: プレースホルダー名そのものがラベル
+          const getKeyLabel = (key: string): string | undefined => key;
           setsRaw = setsRaw.filter((set, i) => {
-            const isLegal = isLegalEntityCopy(set, labels[i]);
+            const isLegal = isLegalEntityCopy(set, labels[i], getKeyLabel);
             return variantSuffix === "法人" ? isLegal : !isLegal;
           });
           if (setsRaw.length === 0) {
-            console.log(`[produce/variant-ph] ${a.baseName}: no matching ${variantSuffix} copies, skipping`);
+            console.warn(`[produce/variant-ph] ${a.baseName}: no matching ${variantSuffix} copies (instanceLabel=${JSON.stringify(labels)}), skipping`);
             continue;
           }
         }
