@@ -308,16 +308,38 @@ export async function POST(request: NextRequest) {
         }
         // それ以外のテンプレでは拡張しない（既存テンプレの行数を信じる）
         let workingBuffer: Buffer = rawBuffer;
+        let didExpand = false;
         if (desiredRows > 0) {
           const expanded = expandYellowRowBlock(rawBuffer, desiredRows);
-          if (expanded !== rawBuffer) workingBuffer = expanded;
+          if (expanded !== rawBuffer) {
+            workingBuffer = expanded;
+            didExpand = true;
+          }
         }
 
         const cells = extractXlsxMarkedCells(workingBuffer);
         if (cells.length === 0) continue; // 何も無ければスキップ
 
         const { text: xlMarkedText, slots: xlSlots } = getXlsxMarkedTextWithSlots(workingBuffer);
-        const slotLabels = await loadSlotLabelsFor(df.path);
+        // 拡張した場合は labels.json (拡張前のテンプレ基準) と slot ID がズレるので、
+        // 拡張後のバッファに対して on-the-fly でラベルを再生成する。
+        // キャッシュには書かない（拡張は案件ごとに件数が変わるため）。
+        let slotLabels = await loadSlotLabelsFor(df.path);
+        if (didExpand) {
+          try {
+            const { generateXlsxLabelsForBuffer } = await import("@/lib/template-labels");
+            const fresh = await generateXlsxLabelsForBuffer(workingBuffer);
+            if (fresh) {
+              const m = new Map<number, { label: string; format: string; sourceHint?: string }>();
+              for (const s of fresh.slots) m.set(s.slotId, { label: s.label, format: s.format, sourceHint: s.sourceHint });
+              slotLabels = m;
+              console.log(`[produce/xlsx] regenerated ${fresh.slots.length} labels for expanded ${df.name}`);
+            }
+          } catch (e) {
+            console.warn(`[produce/xlsx] label regen failed for ${df.name}:`, e instanceof Error ? e.message : e);
+            // フォールバック: 元の labels.json をそのまま使う（slot ID ズレは残るが致命傷は避ける）
+          }
+        }
 
         analyses.push({
           kind: "highlight-xlsx",

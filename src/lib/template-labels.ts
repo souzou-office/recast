@@ -165,6 +165,38 @@ export async function ensureDocxLabels(templatePath: string): Promise<TemplateLa
   }
 }
 
+// 任意の xlsx Buffer に対してラベルを生成する（キャッシュなし、produce での行拡張後等で使う）。
+// templatePath が無いケース（メモリ上で行拡張した buffer）でも動くように、
+// Haiku 1 回呼び出しで完結させる。生成結果は呼び出し側で必要に応じて使用。
+export async function generateXlsxLabelsForBuffer(buf: Buffer): Promise<TemplateLabels | null> {
+  try {
+    const { extractXlsxMarkedCells, getXlsxMarkedText } = await import("./xlsx-marker-parser");
+    const cells = extractXlsxMarkedCells(buf);
+    if (cells.length === 0) return null;
+    const markedText = getXlsxMarkedText(buf);
+    const oldValues = cells.map((c, idx) => ({ slotId: idx, value: c.value }));
+    const aiLabels = await askAiForLabels(markedText, oldValues);
+    const bySlot = new Map<number, TemplateSlotLabel>();
+    for (const l of aiLabels) bySlot.set(l.slotId, l);
+    const slots: TemplateSlotLabel[] = cells.map((c, idx) => {
+      const existing = bySlot.get(idx);
+      return existing ?? { slotId: idx, oldValue: c.value, label: `セル${c.ref}`, format: "", sourceHint: "" };
+    });
+    for (const s of slots) {
+      const c = cells[s.slotId];
+      if (c) s.oldValue = c.value;
+    }
+    return {
+      templateHash: sha256(buf),
+      parserVersion: PARSER_VERSION,
+      generatedAt: new Date().toISOString(),
+      slots,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // xlsx テンプレートのラベル集（黄色セル）。docx 同様キャッシュ。
 export async function ensureXlsxLabels(templatePath: string): Promise<TemplateLabels | null> {
   try {
