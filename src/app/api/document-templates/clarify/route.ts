@@ -159,6 +159,20 @@ JSON配列のみ返してください。説明文・前置き不要。`;
       }
     }
 
+    // 末尾に「その他注意点」フリーテキスト質問を追加（任意回答）。
+    // AI が想定した特定スロット質問では拾えない、ユーザー側の業務知識（書式の好み・案件特有の事情）を
+    // 拾うための受け皿。previousQA に既に答えがあれば再追加しない。
+    const generalNoteId = "general_note";
+    const alreadyHasGeneralNote = (previousQA || []).some(qa => qa.question.includes("【案件全体の注意点】"));
+    if (!alreadyHasGeneralNote) {
+      questions.push({
+        id: generalNoteId,
+        placeholder: "案件全体の注意点",
+        question: "他に書類作成時に注意すべき点があれば教えてください（任意・空白OK）",
+        options: [],
+      });
+    }
+
     return NextResponse.json({ questions });
   } catch (e) {
     console.error("[clarify] failed:", e);
