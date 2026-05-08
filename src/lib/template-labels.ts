@@ -23,7 +23,9 @@ export interface TemplateSlotLabel {
 //   v2: 黄色塗り + 赤フォント (セル全体) + 赤rich text (Excel) / 赤い文字色 (Word)
 //   v3: extractXlsxMarkedCells と getXlsxMarkedTextWithSlots の slot 順序を統一（行順×列順、
 //       各セルで「セル全体マーカー → 赤 run」の順）。v2 までは順序がズレてラベルがズレていた。
-const PARSER_VERSION = 3;
+//   v4: docx で <w:pict>/<w:txbxContent>（テキストボックス）を含む段落の終端を取り違えて
+//       後続のハイライトラン（同意書テンプレの議決権数等）を取りこぼしていたバグを修正。
+const PARSER_VERSION = 4;
 
 export interface TemplateLabels {
   templateHash: string;
