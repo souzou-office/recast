@@ -20,7 +20,12 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
     setAnswers(prev => ({ ...prev, [qid]: { optionId, manual: optionId === "_manual" ? (prev[qid]?.manual || "") : undefined } }));
   };
 
+  // 「その他注意点」(general_note) は任意回答。空白でもOKで全体回答済みフラグに影響しない。
+  const isOptional = (q: { id: string; placeholder: string }) =>
+    q.id === "general_note" || q.placeholder === "案件全体の注意点";
+
   const allAnswered = card.questions.every(q => {
+    if (isOptional(q)) return true; // 任意質問は常に「答えた扱い」
     const a = answers[q.id];
     if (!a?.optionId) return false;
     if (a.optionId === "_manual") return !!(a.manual && a.manual.trim());
@@ -44,7 +49,28 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
         {card.questions.length}点確認があります
       </div>
       <div className="p-4 space-y-5">
-        {card.questions.map((q, qi) => (
+        {card.questions.map((q, qi) => {
+          // 任意のフリーテキスト質問（その他注意点）は単純なテキストエリアで描画
+          if (isOptional(q)) {
+            return (
+              <div key={q.id}>
+                <p className="text-[13.5px] font-medium text-[var(--color-fg)] mb-2 leading-relaxed">
+                  Q{qi + 1}. <span className="text-[var(--color-fg-muted)]">【{q.placeholder}】</span> {q.question}
+                </p>
+                <div className="ml-4">
+                  <textarea
+                    value={answers[q.id]?.manual || ""}
+                    onChange={e => setAnswers(prev => ({ ...prev, [q.id]: { optionId: "_manual", manual: e.target.value } }))}
+                    disabled={isLocked}
+                    rows={3}
+                    placeholder="例: 払込期日を厳守 / 印鑑は実印で / 〇〇は法人実印不要 など"
+                    className="w-full rounded-lg border border-[var(--color-border)] px-3 py-2 text-[13px] focus:border-[var(--color-accent)] focus:outline-none bg-[var(--color-panel)] disabled:bg-[var(--color-hover)] resize-none"
+                  />
+                </div>
+              </div>
+            );
+          }
+          return (
           <div key={q.id}>
             <p className="text-[13.5px] font-medium text-[var(--color-fg)] mb-2 leading-relaxed">
               Q{qi + 1}. <span className="text-[var(--color-fg-muted)]">【{q.placeholder}】</span> {q.question}
@@ -100,7 +126,8 @@ export default function ClarificationCardUI({ card, onAction }: Props) {
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
         {!isLocked && (
           <div className="flex items-center gap-3 pt-2">
             <button
