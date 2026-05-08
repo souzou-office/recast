@@ -490,7 +490,10 @@ ${conditionFlagBlock}
 - 氏名が「福田」「峻介」のように2スロット → 先頭=全体, 後続=空文字 ""
 
 ### 株主毎の繰り返し
-- 共通ルールに「株主毎に1枚」等の指示があれば、その書類だけ \`values\` の代わりに \`copies: [{ ... }, { ... }]\` で複数組返してよい
+- 共通ルールに「株主毎に1枚」等の指示があれば、その書類だけ \`values\` の代わりに \`copies\` を使う
+- \`copies\` は要入力_N をキーとするオブジェクトの配列。instanceLabel/values のようなネストは禁止
+  - 正: copies: [ { "要入力_0": "山田" }, { "要入力_0": "鈴木" } ]
+  - 誤: copies: [ { instanceLabel: "山田", values: { "要入力_0": "山田" } } ]
 
 ### 全角/半角
 - AI 側では考えず、上記の生の値を返す（半角→全角変換はサーバー側で実施）
@@ -559,11 +562,34 @@ ${conditionFlagBlock}
       continue;
     }
 
+    // AI が返す copies の形式は 2 通り受け付ける:
+    //   フラット: copies: [ { "要入力_0": "...", ... } ]
+    //   ネスト:  copies: [ { instanceLabel: "...", values: { "要入力_0": "...", ... } } ]
+    // ネスト形式の場合は values を取り出してフラットに正規化
+    const normalizeCopies = (copies: unknown): Record<string, string | string[] | boolean>[] | null => {
+      if (!Array.isArray(copies) || copies.length === 0) return null;
+      return copies.map((c: unknown) => {
+        if (c && typeof c === "object" && !Array.isArray(c)) {
+          const obj = c as Record<string, unknown>;
+          // ネスト形式: values フィールドがオブジェクトで、要入力_N キーを含む
+          if (obj.values && typeof obj.values === "object" && !Array.isArray(obj.values)) {
+            const inner = obj.values as Record<string, unknown>;
+            const hasSlotKeys = Object.keys(inner).some(k => /要入力_\d+/.test(k));
+            if (hasSlotKeys) return inner as Record<string, string | string[] | boolean>;
+          }
+          // フラット形式: 自身が要入力_N キーを持つ
+          return obj as Record<string, string | string[] | boolean>;
+        }
+        return {};
+      });
+    };
+
     try {
       if (a.kind === "highlight-docx") {
         // AI 応答は文字列だけの想定だが、型上は string|string[]|boolean を許容（後段の typeof で除外）
-        const setsRaw: Record<string, string | string[] | boolean>[] = aiDoc.copies && aiDoc.copies.length > 0
-          ? aiDoc.copies
+        const normalizedCopies = normalizeCopies(aiDoc.copies);
+        const setsRaw: Record<string, string | string[] | boolean>[] = normalizedCopies
+          ? normalizedCopies
           : [aiDoc.values || {}];
 
         for (let ci = 0; ci < setsRaw.length; ci++) {
@@ -647,8 +673,10 @@ ${conditionFlagBlock}
       if (a.kind === "placeholder-docx") {
         const valuesObj = aiDoc.values || {};
         const flags = aiDoc.conditionFlags || {};
-        const setsRaw: Record<string, string | boolean>[] = aiDoc.copies && aiDoc.copies.length > 0
-          ? aiDoc.copies.map(c => ({ ...c, ...flags }))
+        // copies のネスト形式 (values フィールド入り) も正規化してから使う
+        const normalizedCopies = normalizeCopies(aiDoc.copies);
+        const setsRaw: Record<string, string | string[] | boolean>[] = normalizedCopies
+          ? normalizedCopies.map(c => ({ ...c, ...flags }))
           : [{ ...valuesObj as Record<string, string>, ...flags }];
 
         for (let ci = 0; ci < setsRaw.length; ci++) {
