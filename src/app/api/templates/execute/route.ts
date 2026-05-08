@@ -214,6 +214,36 @@ ${lines.join("\n")}
     ? `\n## 会社の基本情報（参照データ）\n\`\`\`json\n${JSON.stringify(company.profile.structured, null, 2)}\n\`\`\`\n`
     : "";
 
+  // 共通ルール（テンプレフォルダの上位にある共通ルール集 + テンプレ別注意事項メモ）を読む。
+  // ターン1で渡しておけば clarify/produce/verify でも会話履歴経由で参照される。
+  // 旧設計では各ステップが個別に loadGlobalRules していたが、会話化リファクタで execute に
+  // 入れ忘れていた → 「共通ルールに書いた指示が無視される」バグの原因。
+  let globalRulesBlock = "";
+  if (templateFolderPath && config.templateBasePath) {
+    try {
+      const { loadGlobalRules } = await import("@/lib/global-rules");
+      const rules = await loadGlobalRules(config.templateBasePath, templateFolderPath);
+      if (rules && rules.trim()) {
+        globalRulesBlock = `\n## 共通ルール（最優先で従うこと）\n${rules}\n`;
+      }
+    } catch { /* ignore */ }
+  }
+
+  // テンプレフォルダ内のメモファイル (.txt/.md) もテンプレ固有のルールとして渡す
+  let templateMemoBlock = "";
+  if (templateFolderPath) {
+    try {
+      const tpFiles = await readAllFilesInFolder(templateFolderPath);
+      const memoText = tpFiles
+        .filter(f => !f.base64 && (f.name.endsWith(".txt") || f.name.endsWith(".md")))
+        .map(f => `【${f.name}】\n${f.content}`)
+        .join("\n\n");
+      if (memoText.trim()) {
+        templateMemoBlock = `\n## テンプレート注意事項（このテンプレ固有のルール）\n${memoText}\n`;
+      }
+    } catch { /* ignore */ }
+  }
+
   const promptText = `あなたは司法書士事務所の書類作成担当者です。これからこの案件を **最初から最後まで** 1人で担当してもらいます。
 今後の流れ:
   ターン1（今）: 案件整理
@@ -232,6 +262,8 @@ ${lines.join("\n")}
 **前後の文脈**（例: 「代表取締役 ［要入力_0］ が」→ 代表取締役の氏名）と
 **「## 必要な項目」のラベル一覧** から判断してください。
 
+${globalRulesBlock}
+${templateMemoBlock}
 ${templateContext}
 ${templateBodies}
 ${profileBlock}
