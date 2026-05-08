@@ -285,13 +285,28 @@ export async function POST(request: NextRequest) {
       }
       // ハイライト方式
       try {
-        // 株主構成等の配列件数を見て黄色行ブロック拡張
+        // 行ブロック拡張: 株主リスト等で「マーカー付き行が足りない場合」に最終行を複製する。
+        // 旧: 全配列の最大長 (Math.max(events, 株主, 役員, ...)) を使っていたため、事業目的6項目が
+        //     2人株主の株主リストに 6 行分の Deep30 コピーを生成 → SI キー衝突で空欄化バグ。
+        // 新: 「株主」「役員」など、テンプレ名に対応する配列だけを使う保守的な方針に変更。
+        //     対応が分からない場合は拡張しない（テンプレで予め十分な行数を用意しておく前提）。
         const structured = (company.profile?.structured || {}) as Record<string, unknown>;
-        const arrayCounts: number[] = [];
-        for (const v of Object.values(structured)) {
-          if (Array.isArray(v) && v.length >= 2) arrayCounts.push(v.length);
+        const lowerName = df.name.toLowerCase();
+        const baseLowerName = baseName.toLowerCase();
+        let desiredRows = 0;
+        const findArrayByKeyword = (keywords: string[]): number => {
+          for (const [k, v] of Object.entries(structured)) {
+            if (!Array.isArray(v) || v.length < 2) continue;
+            if (keywords.some(kw => k.includes(kw))) return v.length;
+          }
+          return 0;
+        };
+        if (lowerName.includes("株主") || baseLowerName.includes("株主")) {
+          desiredRows = findArrayByKeyword(["株主", "発起人"]);
+        } else if (lowerName.includes("役員") || baseLowerName.includes("役員") || lowerName.includes("取締役")) {
+          desiredRows = findArrayByKeyword(["役員", "取締役"]);
         }
-        const desiredRows = arrayCounts.length > 0 ? Math.max(...arrayCounts) : 0;
+        // それ以外のテンプレでは拡張しない（既存テンプレの行数を信じる）
         let workingBuffer: Buffer = rawBuffer;
         if (desiredRows > 0) {
           const expanded = expandYellowRowBlock(rawBuffer, desiredRows);
