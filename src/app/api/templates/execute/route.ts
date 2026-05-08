@@ -49,9 +49,16 @@ export async function POST(request: NextRequest) {
   }
 
   // 全資料を収集
+  // - allTexts:    案件資料（PDF以外のテキスト系。原本データ）
+  // - caseRules:   案件フォルダ直下のメモ系ファイル（.txt/.md）→ 「案件ルール」として高優先度で渡す
+  // - pdfFiles:    PDF/画像（base64）
   const allTexts: string[] = [];
+  const caseRules: string[] = [];
   const pdfFiles: { name: string; base64: string; mimeType: string }[] = [];
   const sourceFiles: { id: string; name: string; mimeType: string }[] = [];
+
+  // メモ系ファイル判定: .txt/.md 拡張子（ファイル名に「メモ」「ルール」を含むものは特に優先）
+  const isMemoFile = (name: string): boolean => /\.(txt|md)$/i.test(name);
 
   if (folderPath) {
     // チャットのフォルダ選択カードで指定されたパスを読む
@@ -64,6 +71,9 @@ export async function POST(request: NextRequest) {
       sourceFiles.push({ id: content.path, name: content.name, mimeType: mime });
       if (content.base64) {
         pdfFiles.push({ name: content.name, base64: content.base64, mimeType: content.mimeType || "application/pdf" });
+      } else if (isMemoFile(content.name)) {
+        // メモ/ルールは「案件ルール」として独立ブロックに格納（=高優先度で AI に届く）
+        caseRules.push(`【案件ルール: ${content.name}】\n${content.content}`);
       } else {
         allTexts.push(`--- ${content.name} ---\n${content.content}`);
       }
@@ -81,6 +91,8 @@ export async function POST(request: NextRequest) {
         sourceFiles.push({ id: content.path, name: content.name, mimeType: mime });
         if (content.base64) {
           pdfFiles.push({ name: content.name, base64: content.base64, mimeType: content.mimeType || "application/pdf" });
+        } else if (isMemoFile(content.name)) {
+          caseRules.push(`【案件ルール: ${content.name}】\n${content.content}`);
         } else {
           allTexts.push(`--- ${content.name} ---\n${content.content}`);
         }
@@ -88,9 +100,14 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  if (allTexts.length === 0 && pdfFiles.length === 0) {
+  if (allTexts.length === 0 && pdfFiles.length === 0 && caseRules.length === 0) {
     return NextResponse.json({ error: "案件フォルダに読み取れるファイルがありません" }, { status: 400 });
   }
+
+  // 案件ルールブロック（あれば）
+  const caseRulesBlock = caseRules.length > 0
+    ? `\n## 案件ルール（この案件特有のルール、必ず従うこと）\n${caseRules.join("\n\n")}\n`
+    : "";
 
   // テンプレ本体・ラベル一覧（後続ターンでも参照される共通知識として、ターン1の中に埋め込む）
   let templateContext = "";
@@ -264,6 +281,7 @@ ${lines.join("\n")}
 
 ${globalRulesBlock}
 ${templateMemoBlock}
+${caseRulesBlock}
 ${templateContext}
 ${templateBodies}
 ${profileBlock}
