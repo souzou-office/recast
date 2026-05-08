@@ -293,7 +293,15 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               const opt = q.options.find(o => o.id === q.selectedOptionId);
               ans = opt?.label || "";
             }
-            if (ans) previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+            // 「その他注意点」(general_note) は任意回答。空白で submit した場合も
+            // 「答え終わった」扱いにして previousQA に含める。さもないと clarify route の
+            // alreadyHasGeneralNote 判定が常に false になり、毎回再質問されてしまう。
+            const isGeneralNote = q.id === "general_note" || q.placeholder === "案件全体の注意点";
+            if (ans) {
+              previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+            } else if (isGeneralNote && c.answered) {
+              previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: "（特になし）" });
+            }
           }
         }
       }
