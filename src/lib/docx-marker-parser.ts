@@ -88,13 +88,17 @@ export function extractMarkedFields(buffer: Buffer): MarkedField[] {
   const fields: MarkedField[] = [];
   let fieldId = 0;
 
-  // 段落ごと
-  const pRe = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g;
-  let pm;
-  while ((pm = pRe.exec(docXml)) !== null) {
-    const pXml = pm[0];
-    const pStart = pm.index;
+  // 段落ごと（ネスト <w:p> 対応の findTopLevelParagraphs を使う。テキストボックスを含む段落で
+  // 終端を取り違えないように。同意書テンプレの議決権数等を取りこぼすバグ対策。）
+  const paragraphs = findTopLevelParagraphs(docXml);
+  for (const p of paragraphs) {
+    const pXml = docXml.slice(p.start, p.end);
+    const pStart = p.start;
     const context = getParagraphText(pXml);
+
+    // テキストボックス内の <w:p> は別段落として扱いたいので除外
+    const inner = docXml.slice(p.openEnd, p.end - "</w:p>".length);
+    const cleanInner = inner.replace(/<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g, "");
 
     // この段落内のランを順に走査、ハイライト付きランを連続グループにまとめる
     const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
@@ -121,13 +125,13 @@ export function extractMarkedFields(buffer: Buffer): MarkedField[] {
       currentGroup = [];
     };
 
-    while ((rm = runRe.exec(pm[1])) !== null) {
+    while ((rm = runRe.exec(cleanInner)) !== null) {
       if (hasHighlight(rm[0])) {
         const text = getRunText(rm[0]);
         if (currentGroup.length === 0) {
-          groupStartOffset = pStart + pm[0].indexOf(rm[0]);
+          groupStartOffset = pStart + cleanInner.indexOf(rm[0]);
         }
-        groupEndOffset = pStart + pm[0].indexOf(rm[0]) + rm[0].length;
+        groupEndOffset = pStart + cleanInner.indexOf(rm[0]) + rm[0].length;
         currentGroup.push(text);
       } else {
         flushGroup();
@@ -144,7 +148,11 @@ function stripAlternateContent(xml: string): string {
   return xml.replace(/<mc:AlternateContent\b[\s\S]*?<\/mc:AlternateContent>/g, "");
 }
 
-// トップレベルの <w:p>...</w:p> を、<mc:AlternateContent> 内の偽 <w:p> を無視して列挙
+// トップレベルの <w:p>...</w:p> を、<mc:AlternateContent> 内の偽 <w:p> を無視して列挙。
+// **また、<w:pict> や <w:drawing> 内のテキストボックス (<w:txbxContent>) に含まれる
+// 子 <w:p> も「入れ子」として扱い、外側の <w:p> 終端を見つけるために <w:p> 深さを数える**。
+// これを怠ると、テキストボックスを含む段落（例: 同意書テンプレ）の終端を取り違えて、
+// 後ろのハイライトラン（議決権数など）が処理対象から外れるバグが発生する。
 type ParaRange = { start: number; end: number; openEnd: number };
 function findTopLevelParagraphs(xml: string): ParaRange[] {
   const results: ParaRange[] = [];
@@ -172,11 +180,17 @@ function findTopLevelParagraphs(xml: string): ParaRange[] {
       scanPos = absE;
     }
     if (inAlt) { pos = mOpen.index + mOpen[0].length; continue; }
+    // Skip if inside another already-found top-level paragraph (= ネストされた <w:p>)
+    if (results.some(r => r.start < mOpen.index && mOpen.index < r.end)) {
+      pos = mOpen.index + mOpen[0].length;
+      continue;
+    }
     // Find matching </w:p> at same nesting level
     const openEnd = mOpen.index + mOpen[0].length;
-    // Scan forward, counting mc:AlternateContent nesting
+    // Scan forward, counting nested <w:p> AND <mc:AlternateContent>
     let i = openEnd;
     let altDepth = 0;
+    let pDepth = 0; // ネストされた <w:p> の深さ（テキストボックス内など）
     let closeAt = -1;
     while (i < xml.length) {
       if (xml.startsWith("<mc:AlternateContent", i) && /^<mc:AlternateContent\b/.test(xml.slice(i))) {
@@ -191,9 +205,22 @@ function findTopLevelParagraphs(xml: string): ParaRange[] {
         i += "</mc:AlternateContent>".length;
         continue;
       }
-      if (altDepth === 0 && xml.startsWith("</w:p>", i)) {
-        closeAt = i;
-        break;
+      // ネスト <w:p> の開始 (空でない要素として認識)
+      if (altDepth === 0 && /^<w:p[\s>]/.test(xml.slice(i, i + 5))) {
+        pDepth++;
+        const tagEnd = xml.indexOf(">", i);
+        if (tagEnd < 0) break;
+        i = tagEnd + 1;
+        continue;
+      }
+      if (xml.startsWith("</w:p>", i)) {
+        if (altDepth === 0 && pDepth === 0) {
+          closeAt = i;
+          break;
+        }
+        if (altDepth === 0 && pDepth > 0) pDepth--;
+        i += "</w:p>".length;
+        continue;
       }
       i++;
     }
@@ -219,9 +246,18 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; 
   const slots = new Map<number, string>();
   let slotId = 0;
   const lines: string[] = [];
-  const pRe = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g;
-  let pm;
-  while ((pm = pRe.exec(docXml)) !== null) {
+  // 段落の境界は「ネストされた <w:p> を考慮した」findTopLevelParagraphs で取得する。
+  // 単純な非貪欲 regex だと、テキストボックス内の <w:p> で </w:p> を取り違えて
+  // 後続のハイライトラン（同意書テンプレの議決権数等）を取りこぼす。
+  const paragraphs = findTopLevelParagraphs(docXml);
+  for (const p of paragraphs) {
+    // <w:p> 内の <w:r> を、ネストされた <w:p>（テキストボックス内）の <w:r> も含めて拾う。
+    // ただしテキストボックス内の run は別段落として扱いたいので、まず外側 <w:p> 直下の
+    // run だけを取り、テキストボックスは画像扱いでスキップ。
+    const inner = docXml.slice(p.openEnd, p.end - "</w:p>".length);
+    // テキストボックス content 内の <w:p> はここでは処理しない（後で別に処理）
+    // → 簡易的に <w:txbxContent>...</w:txbxContent> を除去してから run を拾う
+    const cleanInner = inner.replace(/<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g, "");
     const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
     let rm;
     let lineText = "";
@@ -235,7 +271,7 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; 
         currentGroupText = "";
       }
     };
-    while ((rm = runRe.exec(pm[1])) !== null) {
+    while ((rm = runRe.exec(cleanInner)) !== null) {
       const text = getRunText(rm[0]);
       if (!text) continue;
       if (hasHighlight(rm[0])) {
