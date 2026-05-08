@@ -517,6 +517,13 @@ ${conditionFlagBlock}
   - 正: copies: [ { "要入力_0": "山田" }, { "要入力_0": "鈴木" } ]
   - 誤: copies: [ { instanceLabel: "山田", values: { "要入力_0": "山田" } } ]
 
+### 個人/法人テンプレの variant 振り分け
+- テンプレ名末尾に \`_個人\` または \`_法人\` が付いていれば、その株主タイプ専用テンプレ。
+  例:「2-1.提案書兼同意書_個人.docx」「2-1.提案書兼同意書_法人.docx」
+- どちらの場合も copies には**全株主分**を返してよい。サーバー側で
+  株主の種別 (株式会社/有限会社/組合 等の有無) を見て、その種別に合う copy だけ
+  自動でフィルタする。ただし可能であれば最適化として、テンプレ別に該当株主だけ返してもよい。
+
 ### 全角/半角
 - AI 側では考えず、上記の生の値を返す（半角→全角変換はサーバー側で実施）
 
@@ -606,13 +613,48 @@ ${conditionFlagBlock}
       });
     };
 
+    // テンプレ名の末尾に「_個人」「_法人」が付いていれば、その名簿の copy だけ生成する。
+    // 例: 「2-1.提案書兼同意書_個人.docx」は 個人株主の copy だけ、
+    //     「2-1.提案書兼同意書_法人.docx」は 法人株主の copy だけ生成する。
+    // copy が法人かどうかの判定:
+    //   ① AI が返す instanceLabel に「法人」を含む
+    //   ② 値のどれかが「株式会社/有限会社/合同会社/(社団|財団)法人/組合」等を含む
+    //   いずれかなら法人とみなす（保守的に判定）
+    const variantSuffix = (() => {
+      const m = a.baseName.match(/_(個人|法人)$/);
+      return m ? m[1] as "個人" | "法人" : null;
+    })();
+    const isLegalEntityCopy = (raw: Record<string, string | string[] | boolean>, label?: string): boolean => {
+      if (label && /法人/.test(label)) return true;
+      const LEGAL_RE = /(株式|有限|合同|合資|合名|社団|財団)(会社|法人)|組合/;
+      for (const v of Object.values(raw)) {
+        if (typeof v === "string" && LEGAL_RE.test(v)) return true;
+        if (Array.isArray(v) && v.some(x => typeof x === "string" && LEGAL_RE.test(x))) return true;
+      }
+      return false;
+    };
+
     try {
       if (a.kind === "highlight-docx") {
         // AI 応答は文字列だけの想定だが、型上は string|string[]|boolean を許容（後段の typeof で除外）
         const normalizedCopies = normalizeCopies(aiDoc.copies);
-        const setsRaw: Record<string, string | string[] | boolean>[] = normalizedCopies
+        // variant テンプレなら、対応する type の copy だけにフィルター
+        let setsRaw: Record<string, string | string[] | boolean>[] = normalizedCopies
           ? normalizedCopies
           : [aiDoc.values || {}];
+
+        if (variantSuffix && normalizedCopies && Array.isArray(aiDoc.copies)) {
+          const labels = (aiDoc.copies as { instanceLabel?: string }[]).map(c => c.instanceLabel);
+          setsRaw = setsRaw.filter((set, i) => {
+            const isLegal = isLegalEntityCopy(set, labels[i]);
+            return variantSuffix === "法人" ? isLegal : !isLegal;
+          });
+          if (setsRaw.length === 0) {
+            console.log(`[produce/variant] ${a.baseName}: no matching ${variantSuffix} copies, skipping`);
+            continue;
+          }
+          console.log(`[produce/variant] ${a.baseName}: kept ${setsRaw.length}/${normalizedCopies.length} copies for ${variantSuffix}`);
+        }
 
         for (let ci = 0; ci < setsRaw.length; ci++) {
           const setObj = setsRaw[ci];
@@ -697,9 +739,22 @@ ${conditionFlagBlock}
         const flags = aiDoc.conditionFlags || {};
         // copies のネスト形式 (values フィールド入り) も正規化してから使う
         const normalizedCopies = normalizeCopies(aiDoc.copies);
-        const setsRaw: Record<string, string | string[] | boolean>[] = normalizedCopies
+        let setsRaw: Record<string, string | string[] | boolean>[] = normalizedCopies
           ? normalizedCopies.map(c => ({ ...c, ...flags }))
           : [{ ...valuesObj as Record<string, string>, ...flags }];
+
+        // variant フィルター（_個人 / _法人 テンプレ）
+        if (variantSuffix && normalizedCopies && Array.isArray(aiDoc.copies)) {
+          const labels = (aiDoc.copies as { instanceLabel?: string }[]).map(c => c.instanceLabel);
+          setsRaw = setsRaw.filter((set, i) => {
+            const isLegal = isLegalEntityCopy(set, labels[i]);
+            return variantSuffix === "法人" ? isLegal : !isLegal;
+          });
+          if (setsRaw.length === 0) {
+            console.log(`[produce/variant-ph] ${a.baseName}: no matching ${variantSuffix} copies, skipping`);
+            continue;
+          }
+        }
 
         for (let ci = 0; ci < setsRaw.length; ci++) {
           const setObj = setsRaw[ci];
