@@ -58,7 +58,41 @@ export default function Home() {
     if (res.ok) setConfig(await res.json());
   }, []);
 
+  // basePaths から会社一覧を「ファイルシステムに合わせて」再スキャンする。
+  // ファイルエクスプローラーで会社フォルダを追加/リネーム/削除した後、recast の左上プルダウンが
+  // 自動で最新になるように、ウィンドウフォーカス時 & マウント時に呼ぶ。
+  // 既存会社の subfolders は維持され、新会社だけ追加される（POST /api/workspace の挙動）。
+  const rescanCompanies = useCallback(async () => {
+    try {
+      const res = await fetch("/api/workspace");
+      if (!res.ok) return;
+      const cfg: WorkspaceConfig = await res.json();
+      const basePaths = cfg.basePaths || [];
+      if (basePaths.length === 0) {
+        setConfig(cfg);
+        return;
+      }
+      const rescanRes = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ basePaths }),
+      });
+      if (rescanRes.ok) {
+        setConfig(await rescanRes.json());
+      } else {
+        setConfig(cfg);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
+
+  // ウィンドウにフォーカスが戻ったら会社一覧を再スキャン（外部で会社フォルダ追加した場合の自動反映）
+  useEffect(() => {
+    const onFocus = () => rescanCompanies();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [rescanCompanies]);
 
   const selectedCompany = config?.companies.find(c => c.id === config.selectedCompanyId);
 
