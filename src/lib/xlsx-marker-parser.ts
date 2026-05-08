@@ -574,15 +574,20 @@ export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffe
         if (i < sortedRows.length) { curStart = sortedRows[i]; curEnd = sortedRows[i]; }
       }
     }
-    // データリスト候補: ブロック行数 >= 2 かつ 行あたり 3 セル以上黄色 なブロックのみ。
-    // これで署名欄（1-2セル/行）や単独データ行を除外し、「繰り返し入力フォーム」だけを対象にする。
-    const listCandidates = blocks.filter(b => (b.end - b.start + 1) >= 2 && b.maxCellsPerRow >= 3);
+    // データリスト候補: 行あたり 3 セル以上マーカー (=データ行) なブロックのみ。
+    // 旧: 「ブロック行数 >= 2」も必須にしていたが、それだとテンプレが 1 行しかマーカー
+    //     してない場合 (株主1人分だけマークされた株主リスト等) に拡張が効かず、
+    //     2人目以降が抜け落ちるバグがあった (取締役就任/4.株主リスト.xlsx で発生)
+    // 新: 1 行ブロックでも対象にする。代わりに「行あたりセル数」を最優先で並べ替え、
+    //     データ行（株主行=5セル等）を集計行（合計=3セル等）より優先するようにする。
+    const listCandidates = blocks.filter(b => b.maxCellsPerRow >= 3);
     if (listCandidates.length === 0) continue;
-    // 行数が多い → セル数が多い の順で優先
+    // 優先: ① 行あたりセル数が多い → ② 行数が多い → ③ 上に出てくるもの
     listCandidates.sort((a, b) => {
+      if (b.maxCellsPerRow !== a.maxCellsPerRow) return b.maxCellsPerRow - a.maxCellsPerRow;
       const sizeDiff = (b.end - b.start) - (a.end - a.start);
       if (sizeDiff !== 0) return sizeDiff;
-      return b.maxCellsPerRow - a.maxCellsPerRow;
+      return a.start - b.start;
     });
     const block = listCandidates[0];
     const blockStart = block.start;
