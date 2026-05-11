@@ -339,7 +339,230 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
   return cells;
 }
 
+/**
+ * マーカーセルを slotId 別に置換する版。
+ *
+ * 旧 `replaceXlsxMarkedCells` は `Record<origValue, newValue>` で受け取っていたため、
+ * 異なる slot が同じ origValue を持つケース（例: 株主リストで「第1位の株式数」と「合計株式数」
+ * が両方 99500 の単独株主テンプレ）で**最後に書き込んだ slot の値で全て上書きされる**バグがあった。
+ *
+ * 本関数は `Map<slotId, newValue>` を受け取り、`extractXlsxMarkedCells`/
+ * `getXlsxMarkedTextWithSlots` と**同じ走査順**でセルを回り、slot 位置で置換するので
+ * 値が重複しても干渉しない。
+ *
+ * 置換の挙動:
+ *   - 新値が純数値（カンマ・全角混じり含む）の場合: 数値セル `<c><v>N</v></c>` として書き出す
+ *   - それ以外の場合: 共有文字列に新 si を追加し、セルを `t="s"` でそこへ向ける
+ *     （既存 si を直接書き換えると、他セルから参照されてる場合に巻き添えで変わるため避ける）
+ */
+export function replaceXlsxMarkedCellsBySlot(
+  buffer: Buffer,
+  slotReplacements: Map<number, string>,
+): Buffer {
+  const zip = new PizZip(buffer);
+  const stylesXml = zip.file("xl/styles.xml")?.asText();
+  if (!stylesXml) return buffer;
+
+  const yellowStyles = findYellowStyleIndexes(stylesXml);
+  const redFontStyles = findRedFontStyleIndexes(stylesXml);
+  const ssXmlForCheck = zip.file("xl/sharedStrings.xml")?.asText();
+  const hasRedRuns = ssXmlForCheck ? findRedSharedStrings(ssXmlForCheck).size > 0 : false;
+  if (yellowStyles.size === 0 && redFontStyles.size === 0 && !hasRedRuns) return buffer;
+
+  const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
+  const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
+  const redSiMap = ssXml ? findRedSharedStrings(ssXml) : new Map<number, SiRun[]>();
+  const dateStyles = findDateStyleIndexes(stylesXml);
+
+  const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const isNumericValue = (s: string): string | null => {
+    // 全角数字 → 半角、カンマ除去で純数値判定
+    const halfWidth = s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    const cleaned = halfWidth.replace(/,/g, "").trim();
+    if (cleaned === "") return null;
+    return /^-?\d+(\.\d+)?$/.test(cleaned) ? cleaned : null;
+  };
+
+  // sharedStrings に追加する新 si エントリ（既存を破壊せずに追加）
+  const newSiAppends: string[] = [];
+  let slotCounter = 0;
+
+  // ワークシートを順に走査（extract と同じ順）
+  const sheetFiles = Object.keys(zip.files)
+    .filter(fn => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
+    .sort();
+
+  for (const fileName of sheetFiles) {
+    let sheetXml = zip.file(fileName)?.asText();
+    if (!sheetXml) continue;
+    let sheetChanged = false;
+
+    // 行ごとに、その中のセルを順に処理
+    sheetXml = sheetXml.replace(/<row\b[^>]*>([\s\S]*?)<\/row>/g, (rowWhole: string, rowInner: string) => {
+      const newRowInner = rowInner.replace(
+        /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g,
+        (cellWhole: string, attrs: string, inner: string | undefined) => {
+          const sMatch = attrs.match(/\bs="(\d+)"/);
+          const tMatch = attrs.match(/\bt="([^"]*)"/);
+          const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
+          const vMatch = inner ? inner.match(/<v>([^<]*)<\/v>/) : null;
+
+          if (!vMatch) return cellWhole;
+          if (inner && /<f\b/.test(inner)) return cellWhole; // 数式セルは extract と同じくスキップ
+
+          const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
+          const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
+          const siIndex = tMatch?.[1] === "s" ? parseInt(vMatch[1]) : -1;
+          const isRedSi = siIndex >= 0 && redSiMap.has(siIndex);
+
+          if (!isYellow && !isRedFont && !isRedSi) return cellWhole;
+
+          // extract と同じく空セルは飛ばす
+          let cellValue = "";
+          if (tMatch?.[1] === "s") {
+            cellValue = sharedStrings[siIndex] || "";
+          } else {
+            const raw = vMatch[1];
+            if (styleIdx >= 0 && dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
+              const serial = parseFloat(raw);
+              cellValue = (serial > 0 && serial < 2958466) ? excelSerialToDateString(serial) : raw;
+            } else {
+              cellValue = raw;
+            }
+          }
+          if (!cellValue.trim()) return cellWhole;
+
+          if (isYellow || isRedFont) {
+            // セル全体マーカー = 1 slot
+            const currentSlot = slotCounter++;
+            const newValue = slotReplacements.get(currentSlot);
+            if (newValue === undefined) return cellWhole;
+            sheetChanged = true;
+            const numeric = isNumericValue(newValue);
+            const cleanedAttrs = attrs.replace(/\s*\bt="[^"]*"/, "");
+            if (numeric !== null) {
+              // 数値セルとして書き出す（t 属性なし or t="n"）
+              return `<c${cleanedAttrs}><v>${numeric}</v></c>`;
+            }
+            // 文字列セル: 新 si を追加して参照
+            const newSiIdx = sharedStrings.length + newSiAppends.length;
+            newSiAppends.push(`<si><t xml:space="preserve">${xmlEscape(newValue)}</t></si>`);
+            return `<c${cleanedAttrs} t="s"><v>${newSiIdx}</v></c>`;
+          }
+
+          // 赤 run マーカー: 1 セルに複数 slot（赤い run の数だけ）
+          const runs = redSiMap.get(siIndex)!;
+          let newSiInner = "";
+          let anyReplaced = false;
+          for (const run of runs) {
+            if (run.isRed && run.text.trim()) {
+              const currentSlot = slotCounter++;
+              const newValue = slotReplacements.get(currentSlot);
+              if (newValue !== undefined) {
+                anyReplaced = true;
+                newSiInner += `<r><t xml:space="preserve">${xmlEscape(newValue)}</t></r>`;
+              } else {
+                newSiInner += `<r><t xml:space="preserve">${xmlEscape(run.text)}</t></r>`;
+              }
+            } else {
+              newSiInner += `<r><t xml:space="preserve">${xmlEscape(run.text)}</t></r>`;
+            }
+          }
+          if (!anyReplaced) return cellWhole;
+          sheetChanged = true;
+          const newSiIdx = sharedStrings.length + newSiAppends.length;
+          newSiAppends.push(`<si>${newSiInner}</si>`);
+          const cleanedAttrs = attrs.replace(/\s*\bt="[^"]*"/, "");
+          return `<c${cleanedAttrs} t="s"><v>${newSiIdx}</v></c>`;
+        }
+      );
+      return rowWhole.replace(rowInner, newRowInner);
+    });
+
+    if (sheetChanged) zip.file(fileName, sheetXml);
+  }
+
+  // sharedStrings.xml に追加 si を差し込み
+  if (newSiAppends.length > 0) {
+    let currentSsXml = zip.file("xl/sharedStrings.xml")?.asText()
+      || `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"></sst>`;
+    const insertIdx = currentSsXml.lastIndexOf("</sst>");
+    if (insertIdx !== -1) {
+      currentSsXml = currentSsXml.substring(0, insertIdx) + newSiAppends.join("") + currentSsXml.substring(insertIdx);
+    } else {
+      currentSsXml += newSiAppends.join("");
+    }
+    const siCount = (currentSsXml.match(/<si\b/g) || []).length;
+    currentSsXml = currentSsXml
+      .replace(/\bcount="\d+"/, `count="${siCount}"`)
+      .replace(/\buniqueCount="\d+"/, `uniqueCount="${siCount}"`);
+    zip.file("xl/sharedStrings.xml", currentSsXml);
+
+    // Content_Types に sharedStrings エントリが無ければ追加
+    const ctXml = zip.file("[Content_Types].xml")?.asText();
+    if (ctXml && !ctXml.includes('PartName="/xl/sharedStrings.xml"')) {
+      const updated = ctXml.replace(
+        /<\/Types>/,
+        '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>'
+      );
+      zip.file("[Content_Types].xml", updated);
+    }
+  }
+
+  // 後片付け: ふりがな・赤色マーカー除去
+  const finalSs = zip.file("xl/sharedStrings.xml")?.asText();
+  if (finalSs) {
+    const cleaned = finalSs
+      .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
+      .replace(/<phoneticPr\b[^>]*\/>/g, "")
+      .replace(/<color\s+[^/>]*\brgb="FFFF0000"[^/>]*\/>/gi, "");
+    if (cleaned !== finalSs) zip.file("xl/sharedStrings.xml", cleaned);
+  }
+
+  // styles.xml: 黄色塗り解除、フォント赤除去
+  const updatedStyles = zip.file("xl/styles.xml")?.asText();
+  if (updatedStyles) {
+    let cleaned = updatedStyles.replace(
+      /<fill>([\s\S]*?)<\/fill>/g,
+      (whole: string, inner: string) => {
+        if (/patternType="none"/i.test(inner)) return whole;
+        const isYellowFill = /<fgColor\s+[^>]*\brgb="(?:FF)?FFFF00"/i.test(inner);
+        if (!isYellowFill) return whole;
+        return `<fill><patternFill patternType="none"/></fill>`;
+      }
+    );
+    cleaned = cleaned.replace(
+      /<font>([\s\S]*?)<\/font>/g,
+      (whole: string, inner: string) => {
+        const stripped = inner.replace(/<color\s+[^/>]*\brgb="FFFF0000"[^/>]*\/>/gi, "");
+        return stripped === inner ? whole : `<font>${stripped}</font>`;
+      }
+    );
+    if (cleaned !== updatedStyles) zip.file("xl/styles.xml", cleaned);
+  }
+
+  // calcChain は範囲が変わってる可能性があるので削除（Excel が再生成）
+  if (zip.file("xl/calcChain.xml")) {
+    zip.remove("xl/calcChain.xml");
+    const relsPath = "xl/_rels/workbook.xml.rels";
+    const relsXml = zip.file(relsPath)?.asText();
+    if (relsXml) {
+      const cleaned = relsXml.replace(/<Relationship\b[^>]*\bTarget="calcChain\.xml"[^>]*\/>/g, "");
+      if (cleaned !== relsXml) zip.file(relsPath, cleaned);
+    }
+    const ctPath = "[Content_Types].xml";
+    const ctXml = zip.file(ctPath)?.asText();
+    if (ctXml) {
+      const cleaned = ctXml.replace(/<Override\b[^>]*\bPartName="\/xl\/calcChain\.xml"[^>]*\/>/g, "");
+      if (cleaned !== ctXml) zip.file(ctPath, cleaned);
+    }
+  }
+
+  return zip.generate({ type: "nodebuffer" });
+}
+
 // 黄色セルの値を差し替えた xlsx Buffer を返す
+// @deprecated 値キーだと同値スロットが衝突するため `replaceXlsxMarkedCellsBySlot` を使うこと
 export function replaceXlsxMarkedCells(
   buffer: Buffer,
   replacements: Record<string, string>,

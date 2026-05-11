@@ -18,7 +18,7 @@ import path from "path";
 //   → docxBase64 を返す
 //
 // docx: replaceMarkedFields で slotId 単位に置換
-// xlsx: replaceXlsxMarkedCells で元値→新値のマップで置換
+// xlsx: replaceXlsxMarkedCellsBySlot で slotId→新値のマップで置換
 // AI 呼び出しは完全になし。テンプレ + 値マップ → 出力 を純粋置換で行う。
 export async function POST(request: NextRequest) {
   const body = await request.json() as {
@@ -64,16 +64,15 @@ export async function POST(request: NextRequest) {
     }
 
     if (ext === ".xlsx" || ext === ".xlsm" || ext === ".xls") {
-      const { replaceXlsxMarkedCells, extractXlsxMarkedCells } = await import("@/lib/xlsx-marker-parser");
-      // xlsx は「元値 → 新値」のマップで置換する。slotId の順序で元値を取得。
+      const { replaceXlsxMarkedCellsBySlot, extractXlsxMarkedCells } = await import("@/lib/xlsx-marker-parser");
+      // slotId → newValue で渡す（旧 Record<origValue,newValue> は同値スロット衝突バグあり）
       const originalCells = extractXlsxMarkedCells(buffer);
-      const replacements: Record<string, string> = {};
+      const replacementsBySlot = new Map<number, string>();
       for (const s of body.filledSlots) {
-        const orig = originalCells[s.slotId]?.value;
-        if (!orig) continue;
-        replacements[orig] = s.value;
+        if (s.slotId < 0 || s.slotId >= originalCells.length) continue;
+        replacementsBySlot.set(s.slotId, s.value);
       }
-      const outBuffer = replaceXlsxMarkedCells(buffer, replacements);
+      const outBuffer = replaceXlsxMarkedCellsBySlot(buffer, replacementsBySlot);
       return NextResponse.json({
         docxBase64: outBuffer.toString("base64"),
         previewHtml: "",

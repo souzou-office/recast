@@ -255,7 +255,7 @@ export async function POST(request: NextRequest) {
 
   // --- 1) 各テンプレを解析: ハイライト方式 / プレースホルダー方式 のどちらか ---
   const { extractMarkedFields, replaceMarkedFields, getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
-  const { extractXlsxMarkedCells, replaceXlsxMarkedCells, getXlsxMarkedTextWithSlots, expandYellowRowBlock } = await import("@/lib/xlsx-marker-parser");
+  const { extractXlsxMarkedCells, replaceXlsxMarkedCellsBySlot, getXlsxMarkedTextWithSlots, expandYellowRowBlock } = await import("@/lib/xlsx-marker-parser");
 
   const analyses: DocAnalysis[] = [];
 
@@ -741,17 +741,17 @@ ${conditionFlagBlock}
 
       if (a.kind === "highlight-xlsx") {
         const valuesObj = aiDoc.values || {};
-        const xlReplacements: Record<string, string> = {};
+        // slotId → newValue で渡す（旧 Record<origValue,newValue> は同値スロットで衝突するバグあり）
+        const xlReplacementsBySlot = new Map<number, string>();
         const xlFilledSlots: FilledSlotOut[] = [];
         for (const [k, v] of Object.entries(valuesObj)) {
           if (typeof v !== "string") continue;
           const idMatch = k.match(/要入力_(\d+)/);
           if (!idMatch) continue;
           const id = parseInt(idMatch[1]);
-          const origValue = a.xlSlots.get(id);
-          if (!origValue) continue;
+          if (!a.xlSlots.has(id)) continue;
           const normalized = toHalfWidth(v);
-          xlReplacements[origValue] = normalized;
+          xlReplacementsBySlot.set(id, normalized);
           const meta = a.slotLabels.get(id);
           xlFilledSlots.push({
             slotId: id,
@@ -761,7 +761,7 @@ ${conditionFlagBlock}
             sourceHint: meta?.sourceHint,
           });
         }
-        const outBuf = replaceXlsxMarkedCells(a.workingBuffer, xlReplacements);
+        const outBuf = replaceXlsxMarkedCellsBySlot(a.workingBuffer, xlReplacementsBySlot);
         const fileName = `${company.name}_${a.baseName}.xlsx`;
         documents.push({
           name: a.baseName,
