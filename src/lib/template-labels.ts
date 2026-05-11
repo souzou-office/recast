@@ -25,7 +25,10 @@ export interface TemplateSlotLabel {
 //       各セルで「セル全体マーカー → 赤 run」の順）。v2 までは順序がズレてラベルがズレていた。
 //   v4: docx で <w:pict>/<w:txbxContent>（テキストボックス）を含む段落の終端を取り違えて
 //       後続のハイライトラン（同意書テンプレの議決権数等）を取りこぼしていたバグを修正。
-const PARSER_VERSION = 4;
+//   v5: ラベル生成モデルを Haiku 4.5 → Sonnet 4.6 に変更（精度向上）。
+//       旧 Haiku 生成のラベルは「99,500 が並んでる slot に『資金調達総額』」のような
+//       誤判定があり、verify の false alarm を引き起こしていた。
+const PARSER_VERSION = 5;
 
 export interface TemplateLabels {
   templateHash: string;
@@ -99,8 +102,12 @@ ${valueList}
 - 推測が難しいときは label を "不明" にしてよい（format/sourceHint は空でも可）
 - JSON のみ返す（説明文不要）`;
 
+  // テンプレラベル付けは「1テンプレ1回キャッシュ」されるので、コストは無視できる範囲。
+  // 旧 Haiku 4.5 だと「99,500 が並んでる slot を見て『資金調達総額』」と勘違いする等の誤判定が
+  // 起きていた (実際には株主の議決権数だった)。これが verify の false alarm の原因にもなる。
+  // Sonnet 4.6 でラベル精度を上げる方が、下流の produce/verify ともに恩恵がデカい。
   const response = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-sonnet-4-6",
     max_tokens: 4096,
     messages: [{ role: "user", content: prompt }],
   });
