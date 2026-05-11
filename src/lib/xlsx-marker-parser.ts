@@ -558,6 +558,56 @@ export function replaceXlsxMarkedCellsBySlot(
     }
   }
 
+  // 数式セル (`<f>` を持つセル) の **キャッシュ `<v>` を削除** して、開くソフトに再計算を強制する。
+  //
+  // 背景:
+  //   xlsx は数式セルに「数式そのもの (<f>)」と「前回計算した結果のキャッシュ (<v>)」を両方持つ。
+  //   我々のコードはマーカーセル (株式数など) の値を XML 直書き換えで差し替えるが、
+  //   依存先の合計セル・割合セルの数式は触ってない。結果、数式は最新だがキャッシュは古いまま。
+  //   Excel は通常開いた瞬間にキャッシュを表示してから再計算する設計なので、
+  //   一瞬古い値 (前案件の合計とか) が見えたり、設定によっては再計算をサボることがある。
+  //   LibreOffice (recast のプレビュー変換) もキャッシュをそのまま表示することが多い。
+  //
+  // 対策:
+  //   `<v>` を消す → キャッシュなし → 開くソフトは数式を計算するしかない → 必ず最新値が出る。
+  //   ついでに `<calcPr fullCalcOnLoad="1"/>` も立てておくと Excel がより確実に再計算する。
+  for (const fileName of sheetFiles) {
+    let sheetXml = zip.file(fileName)?.asText();
+    if (!sheetXml) continue;
+    let cleared = false;
+    sheetXml = sheetXml.replace(
+      /<c\b([^>]*?)>([\s\S]*?)<\/c>/g,
+      (whole: string, attrs: string, inner: string) => {
+        if (!/<f\b/.test(inner)) return whole;
+        // <v>...</v> を削除（<f> は残す）
+        const stripped = inner.replace(/<v\b[^>]*>[\s\S]*?<\/v>/g, "").replace(/<v\b[^>]*\/>/g, "");
+        if (stripped === inner) return whole;
+        cleared = true;
+        return `<c${attrs}>${stripped}</c>`;
+      }
+    );
+    if (cleared) zip.file(fileName, sheetXml);
+  }
+
+  // workbook.xml の <calcPr> に fullCalcOnLoad="1" を付与（Excel に強制再計算を指示）
+  const wbXml = zip.file("xl/workbook.xml")?.asText();
+  if (wbXml) {
+    let updated = wbXml;
+    if (/<calcPr\b/.test(wbXml)) {
+      // 既存の <calcPr ...> に属性を追加
+      updated = updated.replace(/<calcPr\b([^/>]*)\/?>/, (m: string, a: string) => {
+        if (/\bfullCalcOnLoad=/.test(a)) {
+          return m.replace(/\bfullCalcOnLoad="[^"]*"/, 'fullCalcOnLoad="1"');
+        }
+        return `<calcPr${a} fullCalcOnLoad="1"/>`;
+      });
+    } else {
+      // <calcPr> が無ければ </workbook> 直前に挿入
+      updated = updated.replace(/<\/workbook>/, '<calcPr fullCalcOnLoad="1"/></workbook>');
+    }
+    if (updated !== wbXml) zip.file("xl/workbook.xml", updated);
+  }
+
   return zip.generate({ type: "nodebuffer" });
 }
 
