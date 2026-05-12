@@ -20,6 +20,10 @@ interface Props {
   onIssueAck?: (fileName: string, issueIndex: number, ack: boolean) => void;
   // 編集タブで保存された変更を一括で再生成する
   onBulkRegenerate?: () => void;
+  // verify が指摘した「未確認」issue を AI 校正モードで自動修正する
+  onProofread?: () => void;
+  // 校正実行中フラグ
+  proofreading?: boolean;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -222,7 +226,7 @@ function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentRe
   );
 }
 
-export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssueAck, onBulkRegenerate }: Props) {
+export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssueAck, onBulkRegenerate, onProofread, proofreading }: Props) {
   // 編集タブで保存されたが未反映の書類数
   const pendingCount = card.documents.filter(d => d.pendingChanges).length;
   // 解決済み (acknowledged) の指摘はカウントから除外
@@ -255,6 +259,17 @@ export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssu
           <Icon name={headerIcon} size={14} /> {headerLabel}
         </span>
         <div className="flex items-center gap-2">
+          {totalIssues > 0 && onProofread && (
+            <button
+              onClick={() => !proofreading && onProofread()}
+              disabled={proofreading}
+              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-accent)] px-3 py-1 text-[10px] font-medium text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
+              title={`未確認の指摘 ${totalIssues} 件を AI に修正してもらう (置換 / 段落削除のみ。要約・改変はしない)`}
+            >
+              <Icon name={proofreading ? "Loader2" : "Wand2"} size={11} className={proofreading ? "animate-spin" : ""} />
+              {proofreading ? "修正中…" : `${totalIssues}件 まとめて修正`}
+            </button>
+          )}
           {pendingCount > 0 && onBulkRegenerate && (
             <button
               onClick={() => onBulkRegenerate()}
