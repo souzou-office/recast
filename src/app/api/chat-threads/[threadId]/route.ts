@@ -65,6 +65,10 @@ export async function PATCH(
 
   if (body.displayName !== undefined) thread.displayName = body.displayName;
   if (body.message) thread.messages.push(body.message);
+  // 複数メッセージを上書き保存（クライアント側で thread.messages 全体を再構成した場合に使う）
+  // 旧: body.message (単数) しか handle してなかったため、proofread 後の docxBase64 更新等が
+  // 永続化されない不具合があった。複数版もサポートして、call site の意図通りに保存できるように。
+  if (Array.isArray(body.messages)) thread.messages = body.messages;
   if (body.folderPath !== undefined) thread.folderPath = body.folderPath;
   if (body.disabledFiles !== undefined) thread.disabledFiles = body.disabledFiles;
   if ("masterSheet" in body) thread.masterSheet = body.masterSheet || undefined;
