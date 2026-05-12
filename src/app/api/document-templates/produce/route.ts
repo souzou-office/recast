@@ -425,32 +425,80 @@ export async function POST(request: NextRequest) {
     ? `\n## 案件整理の最新版（ユーザーが編集した可能性あり、こちらを優先）\n${directMasterContent}\n`
     : "";
 
+  // 確定回答 (clarify の Q&A) を slot key にマッチさせるための索引を作る。
+  // slot label (highlight 系) や placeholder 名 (placeholder 系) と QA の placeholder を
+  // 正規化して比較し、一致したらその slot に「✓ ユーザー確定回答」をインラインで添える。
+  //
+  // 動機: 旧設計では confirmedAnswers を「## ユーザー確定済みの質問と回答」ブロックとして
+  // 上に置くだけだったが、AI がスロット一覧を見るときに別ブロックの Q&A まで頭で紐付けし損ねて
+  // 基本情報の出典 (旧住所等) を採用してしまうケースがあった (議案3 住所バグ)。
+  // 解決策: slot 行そのものに ✓ 確定回答を併記して、AI が同じ視野で確実に紐付けできるようにする。
+  const normalizeSlotKey = (s: string): string =>
+    s.replace(/[のをにはがで・　\s（）()]/g, "").toLowerCase();
+  const qaLookup = new Map<string, string>(); // normalized placeholder → answer
+  for (const qa of confirmedQA) {
+    if (!qa.placeholder || !qa.answer) continue;
+    qaLookup.set(normalizeSlotKey(qa.placeholder), qa.answer);
+  }
+  const findInlineAnswer = (slotKey: string | undefined): string | null => {
+    if (!slotKey) return null;
+    const normSlot = normalizeSlotKey(slotKey);
+    if (!normSlot) return null;
+    // 完全一致
+    if (qaLookup.has(normSlot)) return qaLookup.get(normSlot)!;
+    // 双方向 substring 一致（slot label の方が QA placeholder より具体的、もしくは逆の場合に対応）
+    for (const [normQA, ans] of qaLookup) {
+      if (normQA && (normSlot.includes(normQA) || normQA.includes(normSlot))) return ans;
+    }
+    return null;
+  };
+
   // 各書類の slot 一覧をプロンプトに明示する（ターン1で見せたが、ここで再掲することで「キーの形式」を固定）
   // **前案件の値は出さない**。AI が前案件の値に引きずられて同じ値を返すのを防ぐため、
   // ラベル・形式・出典候補だけ載せる。元の値の参照は produce 側の決定的処理で内部的にやる。
   const docPromptLines: string[] = [];
+  const pushSlotLine = (
+    slotIdLabel: string,
+    slotKey: string | undefined,
+    formatPart: string,
+    sourcePart: string,
+    showKeyInLine: boolean,
+  ) => {
+    const labelPart = showKeyInLine && slotKey ? ` — ${slotKey}` : "";
+    docPromptLines.push(`- ${slotIdLabel}${labelPart}${formatPart}${sourcePart}`);
+    const inlineAns = findInlineAnswer(slotKey);
+    if (inlineAns) {
+      docPromptLines.push(`  ✓ ユーザー確定回答（最優先・出典より優先・例外なくこれを使う）: ${inlineAns}`);
+    }
+  };
   for (const a of analyses) {
     docPromptLines.push(`### ${a.file.name}`);
     if (a.kind === "highlight-docx") {
       for (const [slotId] of a.docSlots) {
         const meta = a.slotLabels.get(slotId);
-        const labelPart = meta?.label ? ` — ${meta.label}` : "";
-        const formatPart = meta?.format ? ` 形式: ${meta.format}` : "";
-        const sourcePart = meta?.sourceHint ? ` 出典候補: ${meta.sourceHint}` : "";
-        docPromptLines.push(`- 要入力_${slotId}${labelPart}${formatPart}${sourcePart}`);
+        pushSlotLine(
+          `要入力_${slotId}`,
+          meta?.label,
+          meta?.format ? ` 形式: ${meta.format}` : "",
+          meta?.sourceHint ? ` 出典候補: ${meta.sourceHint}` : "",
+          true,
+        );
       }
     } else if (a.kind === "highlight-xlsx") {
       for (const [slotId] of a.xlSlots) {
         const meta = a.slotLabels.get(slotId);
-        const labelPart = meta?.label ? ` — ${meta.label}` : "";
-        const formatPart = meta?.format ? ` 形式: ${meta.format}` : "";
-        const sourcePart = meta?.sourceHint ? ` 出典候補: ${meta.sourceHint}` : "";
-        docPromptLines.push(`- 要入力_${slotId}${labelPart}${formatPart}${sourcePart}`);
+        pushSlotLine(
+          `要入力_${slotId}`,
+          meta?.label,
+          meta?.format ? ` 形式: ${meta.format}` : "",
+          meta?.sourceHint ? ` 出典候補: ${meta.sourceHint}` : "",
+          true,
+        );
       }
     } else {
-      // placeholder
+      // placeholder: 「ID」と「キー」が同じ文字列 (例: 代表取締役の住所) なので併記しない
       for (const ph of a.placeholders) {
-        docPromptLines.push(`- ${ph}`);
+        pushSlotLine(ph, ph, "", "", false);
       }
     }
     docPromptLines.push("");
@@ -495,6 +543,14 @@ ${conditionFlagBlock}
 \`\`\`
 
 ## 重要ルール
+
+### ✓ ユーザー確定回答が付いている slot は、その値を例外なく使うこと（最優先）
+- 上のスロット一覧で「✓ ユーザー確定回答（最優先...）」が併記されている slot は、
+  **ユーザーが clarify で確定済みの最新の値**です。
+- この値は **基本情報・登記簿・案件整理時点の値より絶対に優先**。
+  - 例: 基本情報の住所 = 旧住所、ユーザーが clarify で「現住所は ○○」と確定 → **必ず現住所を使う**
+- 出典候補が他の場所を指していても**それは無視**し、✓ の値をそのまま slot に入れる。
+- 解釈や言い換えはせず、回答の文字列をそのまま使う（書式変換だけは下記ルールに従う）。
 
 ### 値の型と形式
 - **人名**: ターン1の整理内容・基本情報の役員/株主から正しい氏名を採用
