@@ -626,52 +626,130 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       }
     }
 
-    const produceRes = await fetch("/api/document-templates/produce", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        companyId: company.id,
-        templateFolderPath: templatePath,
-        masterContent: organizeContent,
-        confirmedAnswers,
-        folderPath: currentThread.folderPath,
-        disabledFiles: currentThread.disabledFiles,
-        threadId: currentThread.id,
-      }),
-    });
-    const produceData = await produceRes.json();
-    console.log("[ChatWorkflow] produce response:", produceData.error || `${produceData.documents?.length || 0} docs`);
+    // auto-feedback loop:
+    // produce → verify → (error あれば) → produce 再実行 → verify ... を最大 MAX_RETRY 回ループ。
+    // 「verify が指摘するなら最初から正しく入れろよ」を実現するための後付け対策。
+    // verify が分かる種類のミス (氏名表記揺れ、合計値ミス、ラベル誤読等) が自動で消える。
+    const MAX_RETRY = 2; // 初回 + 再生成 2 回 = 最大 3 回 produce
+    let previousVerifyIssues: { docName: string; slotId?: number; severity?: "error" | "warn" | "info"; problem: string; expected?: string }[] = [];
+    let lastDocs: { fileName: string }[] | null = null;
+    let resultMsgId: string | null = null;
 
-    if (produceData.documents && produceData.documents.length > 0) {
-      const resultMsg: ThreadMessage = {
-        id: `msg_${Date.now() + 2}`,
-        role: "assistant",
-        content: "書類を生成しました",
-        cards: [{
-          type: "document-result",
-          documents: produceData.documents,
-        }],
-        timestamp: new Date().toISOString(),
-      };
-      setThread(prev => prev ? { ...prev, messages: [...prev.messages, resultMsg] } : prev);
+    for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+      const isRetry = attempt > 0;
+      if (isRetry) {
+        // 再生成中の進捗メッセージを表示
+        const retryMsg: ThreadMessage = {
+          id: `msg_${Date.now()}_retry${attempt}`,
+          role: "assistant",
+          content: `verify が ${previousVerifyIssues.length} 件の修正点を指摘。再生成しています (${attempt}/${MAX_RETRY})…`,
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, retryMsg] } : prev);
+      }
+
+      const produceRes = await fetch("/api/document-templates/produce", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          templateFolderPath: templatePath,
+          masterContent: organizeContent,
+          confirmedAnswers,
+          folderPath: currentThread.folderPath,
+          disabledFiles: currentThread.disabledFiles,
+          threadId: currentThread.id,
+          previousVerifyIssues: isRetry ? previousVerifyIssues : undefined,
+        }),
+      });
+      const produceData = await produceRes.json();
+      console.log(`[ChatWorkflow] produce response (attempt ${attempt + 1}):`, produceData.error || `${produceData.documents?.length || 0} docs`);
+
+      if (produceData.error || !produceData.documents || produceData.documents.length === 0) {
+        if (produceData.error) {
+          const errorMsg: ThreadMessage = {
+            id: `msg_${Date.now()}_err`,
+            role: "assistant",
+            content: `書類生成エラー: ${produceData.error}`,
+            timestamp: new Date().toISOString(),
+          };
+          setThread(prev => prev ? { ...prev, messages: [...prev.messages, errorMsg] } : prev);
+        }
+        break;
+      }
+
+      lastDocs = produceData.documents;
+
+      // document-result カードを更新 (初回は新規作成、再生成では同 ID を保持)
+      if (!resultMsgId) {
+        resultMsgId = `msg_${Date.now() + 2}`;
+        const resultMsg: ThreadMessage = {
+          id: resultMsgId,
+          role: "assistant",
+          content: "書類を生成しました",
+          cards: [{
+            type: "document-result",
+            documents: produceData.documents,
+          }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, resultMsg] } : prev);
+      } else {
+        // 再生成: 同 ID のカードを上書き
+        setThread(prev => {
+          if (!prev) return prev;
+          const msgs = prev.messages.map(m => {
+            if (m.id !== resultMsgId) return m;
+            return {
+              ...m,
+              cards: (m.cards || []).map(c =>
+                c.type === "document-result" ? { ...c, documents: produceData.documents } : c
+              ),
+            };
+          });
+          return { ...prev, messages: msgs };
+        });
+      }
       await fetch(`/api/chat-threads/${currentThread.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: produceData.documents }),
+        body: JSON.stringify({ companyId: company.id, generatedDocuments: produceData.documents }),
       });
 
-      // 自動でチェック実行
-      await runCheck(currentThread);
-    } else if (produceData.error) {
-      const errorMsg: ThreadMessage = {
-        id: `msg_${Date.now() + 2}`,
-        role: "assistant",
-        content: `書類生成エラー: ${produceData.error}`,
-        timestamp: new Date().toISOString(),
-      };
-      setThread(prev => prev ? { ...prev, messages: [...prev.messages, errorMsg] } : prev);
+      // verify を実行して結果を取得
+      const verifyResult = await runCheck(currentThread);
+
+      // 修正可能な error 級指摘を抽出 (再生成対象)。
+      // - severity="error" のみ (warn/info はスキップ — 表記揺れ・補足注意は再生成で必ず治るわけじゃない)
+      // - expected (期待値) が示されているもの (それ以外は AI が修正できない構造的な指摘の可能性)
+      // - 議案削除・組合フォーマット等の「構造変更」系は AI が判断して無視する
+      const issues: typeof previousVerifyIssues = [];
+      for (const d of verifyResult?.documents || []) {
+        for (const iss of d.issues || []) {
+          if (iss.severity !== "error") continue;
+          if (!iss.expected) continue;
+          issues.push({
+            docName: d.docName,
+            slotId: iss.slotId,
+            severity: "error",
+            problem: iss.problem || "",
+            expected: iss.expected,
+          });
+        }
+      }
+
+      if (issues.length === 0) {
+        console.log(`[ChatWorkflow] auto-feedback: no errors after attempt ${attempt + 1}, done`);
+        break;
+      }
+      if (attempt >= MAX_RETRY) {
+        console.log(`[ChatWorkflow] auto-feedback: ${issues.length} errors remain after ${MAX_RETRY + 1} attempts, giving up`);
+        break;
+      }
+      previousVerifyIssues = issues;
     }
 
+    void lastDocs;
     setLoading(false);
     onThreadUpdate();
   };
@@ -784,8 +862,23 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     }
   };
 
-  const runCheck = async (currentThread: ChatThread) => {
-    if (!company) return;
+  // runCheck: verify を呼び、その結果（parsed JSON）を返す。
+  // 戻り値は auto-feedback loop (generateDocuments) で使う。
+  type VerifyDoc = {
+    docName: string;
+    status?: string;
+    issues?: Array<{
+      severity?: string;
+      aspect?: string;
+      problem?: string;
+      expected?: string;
+      slotId?: number;
+      candidates?: { value: string; source: string }[];
+    }>;
+  };
+  type VerifyResult = { summary?: string; documents?: VerifyDoc[] } | null;
+  const runCheck = async (currentThread: ChatThread): Promise<VerifyResult> => {
+    if (!company) return null;
     setLoading(true);
 
     // verify は SSE で AI の出力をストリームする。最後に JSON を取り出す。
@@ -801,7 +894,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
       const reader = res.body?.getReader();
-      if (!reader) return;
+      if (!reader) return null;
 
       const decoder = new TextDecoder();
       let buffer = "";
@@ -822,7 +915,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
       // JSON 抽出
       const jsonMatch = fullText.match(/```json\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
-      let parsed: { summary?: string; documents?: Array<{ docName: string; status?: string; issues?: Array<{ severity?: string; aspect?: string; problem?: string; expected?: string; slotId?: number; candidates?: { value: string; source: string }[] }> }> } | null = null;
+      let parsed: VerifyResult = null;
       if (jsonMatch) {
         try { parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]); } catch { parsed = null; }
       }
@@ -908,8 +1001,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           return prev;
         });
       }
+      return parsed;
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
+    return null;
   };
 
   if (!company) {

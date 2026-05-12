@@ -182,7 +182,15 @@ type AnalysisPlaceholderXlsx = {
 type DocAnalysis = AnalysisHighlightDocx | AnalysisHighlightXlsx | AnalysisPlaceholderDocx | AnalysisPlaceholderXlsx;
 
 export async function POST(request: NextRequest) {
-  const { companyId, templateFolderPath, mode, masterContent: directMasterContent, confirmedAnswers: rawConfirmedAnswers, threadId } = await request.json() as {
+  const {
+    companyId,
+    templateFolderPath,
+    mode,
+    masterContent: directMasterContent,
+    confirmedAnswers: rawConfirmedAnswers,
+    threadId,
+    previousVerifyIssues,
+  } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
     mode?: "fill" | "generate";
@@ -193,6 +201,14 @@ export async function POST(request: NextRequest) {
     folderPath?: string;
     disabledFiles?: string[];
     threadId?: string;
+    // 再生成時、前回の verify で指摘された問題点。AI がそれらを修正して再生成する。
+    previousVerifyIssues?: Array<{
+      docName: string;
+      slotId?: number;
+      severity?: "error" | "warn" | "info";
+      problem: string;
+      expected?: string;
+    }>;
   };
 
   if (!threadId) {
@@ -219,6 +235,42 @@ export async function POST(request: NextRequest) {
       return `- 【${qa.placeholder}】\n  ${q ? q + "\n  " : ""}${a}`;
     });
     return `\n## ユーザー確定済みの質問と回答（これらは絶対にこの値を使う。再解釈しない）\n${lines.join("\n")}\n`;
+  };
+
+  // 再生成 (auto-feedback loop) のとき: 前回 verify が指摘した問題点をプロンプトに入れて、
+  // AI に明示的に「これを直して再生成」と指示する。
+  // 期待値 (expected) があれば「この値にせよ」、slotId があれば対象 slot を特定できる。
+  const renderVerifyIssuesBlock = (): string => {
+    if (!previousVerifyIssues || previousVerifyIssues.length === 0) return "";
+    // doc 名でグループ化
+    const byDoc = new Map<string, typeof previousVerifyIssues>();
+    for (const iss of previousVerifyIssues) {
+      if (!byDoc.has(iss.docName)) byDoc.set(iss.docName, []);
+      byDoc.get(iss.docName)!.push(iss);
+    }
+    const lines: string[] = [];
+    for (const [docName, issues] of byDoc) {
+      lines.push(`### ${docName}`);
+      for (const iss of issues) {
+        const slotPart = typeof iss.slotId === "number" ? ` (slotId=${iss.slotId})` : "";
+        const sevPart = iss.severity ? `[${iss.severity}] ` : "";
+        const expectedPart = iss.expected ? `\n  → 期待値: ${iss.expected}` : "";
+        lines.push(`- ${sevPart}${iss.problem}${slotPart}${expectedPart}`);
+      }
+    }
+    return `\n## ⚠️ 前回の生成結果に対する verify の指摘事項（再生成）
+
+これは**再生成リクエスト**です。前回あなたが生成した値は以下の問題が指摘されました。
+**今回はこれらを必ず修正**してください。期待値 (→) が示されている場合はその値を採用してください。
+
+${lines.join("\n")}
+
+修正方針:
+- slotId と書類名から対象スロットを特定し、期待値を採用
+- 期待値が示されていない指摘は、案件整理 / 確認回答 / 基本情報から正しい値を導出
+- 指摘されていない slot は前回と同じ値で OK
+- 構造的に修正不能な指摘 (議案ブロック削除等) は無視してよい
+`;
   };
 
   const config = await getWorkspaceConfig();
@@ -520,7 +572,7 @@ export async function POST(request: NextRequest) {
 ターン1で整理した内容、ターン2で確認した質問の回答を踏まえて、
 **全ての書類の全てのスロット**に入れる値を JSON で返してください。
 
-${renderQABlock()}${masterUpdateBlock}
+${renderVerifyIssuesBlock()}${renderQABlock()}${masterUpdateBlock}
 ## 各書類のスロット一覧（このキー名で返答すること）
 
 ${docPromptLines.join("\n")}
