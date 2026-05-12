@@ -174,7 +174,21 @@ function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentRe
           <ul className="space-y-1.5 mt-2">
             {activeIssues.map(({ iss, idx }) => (
               <li key={idx} className="flex items-start gap-2 text-[12px]">
-                {severityDot(iss.severity)}
+                {/* チェックボックス: チェック ON = 「修正対象に含める」(=acknowledged=false / 既定状態)。
+                    user がチェック外す = 「修正対象から除外」(=acknowledged=true)。
+                    既存の「確認済み」と同じ acknowledged state を共有するので、片方触ればもう片方も同期する。 */}
+                {onIssueAck ? (
+                  <label className="shrink-0 inline-flex items-center cursor-pointer mt-1" title="チェックを外すと修正対象から除外">
+                    <input
+                      type="checkbox"
+                      checked={true}
+                      onChange={() => onIssueAck(doc.fileName, idx, true)}
+                      className="w-3.5 h-3.5 accent-[var(--color-accent)] cursor-pointer"
+                    />
+                  </label>
+                ) : (
+                  severityDot(iss.severity)
+                )}
                 <div className="flex-1 leading-relaxed">
                   <span className="text-[var(--color-fg)]">{iss.problem}</span>
                   {iss.expected && (
@@ -184,36 +198,33 @@ function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentRe
                     <span className="ml-2 text-[10.5px] text-[var(--color-fg-subtle)]">[{iss.aspect}]</span>
                   )}
                 </div>
-                {onIssueAck && (
-                  <button
-                    onClick={() => onIssueAck(doc.fileName, idx, true)}
-                    className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-white border border-[var(--color-border)] px-1.5 py-0.5 text-[10px] text-[var(--color-fg-muted)] hover:bg-[var(--color-ok-bg)] hover:text-[var(--color-ok-fg)] hover:border-[var(--color-ok-fg)]"
-                    title="この指摘を確認済みにする"
-                  >
-                    <Icon name="CheckCircle2" size={10} /> 確認済み
-                  </button>
-                )}
+                {/* severity ドットを右側に小さく表示 (情報量維持) */}
+                <span className="shrink-0 mt-1.5" title={`severity: ${iss.severity}`}>
+                  {severityDot(iss.severity)}
+                </span>
               </li>
             ))}
             {ackedIssues.length > 0 && (
               <li className="pt-1.5 border-t border-[var(--color-border-soft)] mt-1.5">
-                <div className="text-[10px] text-[var(--color-fg-subtle)] mb-1">確認済みの指摘 ({ackedIssues.length}件)</div>
+                <div className="text-[10px] text-[var(--color-fg-subtle)] mb-1">修正対象から除外 ({ackedIssues.length}件)</div>
                 <ul className="space-y-1">
                   {ackedIssues.map(({ iss, idx }) => (
                     <li key={idx} className="flex items-start gap-2 text-[11px] opacity-60">
-                      <Icon name="CheckCircle2" size={11} className="text-[var(--color-ok-fg)] mt-0.5 shrink-0" />
+                      {onIssueAck ? (
+                        <label className="shrink-0 inline-flex items-center cursor-pointer mt-0.5" title="チェック ON で修正対象に戻す">
+                          <input
+                            type="checkbox"
+                            checked={false}
+                            onChange={() => onIssueAck(doc.fileName, idx, false)}
+                            className="w-3.5 h-3.5 accent-[var(--color-accent)] cursor-pointer"
+                          />
+                        </label>
+                      ) : (
+                        <Icon name="CheckCircle2" size={11} className="text-[var(--color-ok-fg)] mt-0.5 shrink-0" />
+                      )}
                       <div className="flex-1 leading-relaxed line-through">
                         {iss.problem}
                       </div>
-                      {onIssueAck && (
-                        <button
-                          onClick={() => onIssueAck(doc.fileName, idx, false)}
-                          className="shrink-0 text-[10px] text-[var(--color-fg-subtle)] underline hover:text-[var(--color-fg)]"
-                          title="確認済みを解除"
-                        >
-                          戻す
-                        </button>
-                      )}
                     </li>
                   ))}
                 </ul>
