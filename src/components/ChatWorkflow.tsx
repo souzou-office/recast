@@ -818,7 +818,15 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       }],
       timestamp: new Date().toISOString(),
     };
-    setThread(prev => prev ? { ...prev, messages: [...prev.messages, resultMsg] } : prev);
+    // ⚠️ state にも generatedDocuments を同期保存すること。
+    // しないと後で handleProofread が thread.generatedDocuments を読んだとき空配列になり、
+    // PATCH で server 側の generatedDocuments が wipe され、次の verify が「生成済み書類なし」で
+    // 400 を返す。
+    setThread(prev => prev ? {
+      ...prev,
+      messages: [...prev.messages, resultMsg],
+      generatedDocuments: produceData.documents,
+    } : prev);
     await fetch(`/api/chat-threads/${currentThread.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
