@@ -326,7 +326,9 @@ export interface CaseAiMessage {
   role: "user" | "assistant";
   content: string | CaseAiContentBlock[];
   // どのステップが書き込んだか
-  stage?: "organize" | "clarify" | "produce" | "verify";
+  // "structure" = Pass 0 (方針決め: 議案削除など構造変更を AI が edit list で出力)
+  // clarify と produce の間に挟まる
+  stage?: "organize" | "clarify" | "structure" | "produce" | "verify";
 }
 
 // 右パネル

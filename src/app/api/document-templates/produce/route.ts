@@ -189,6 +189,7 @@ export async function POST(request: NextRequest) {
     masterContent: directMasterContent,
     confirmedAnswers: rawConfirmedAnswers,
     threadId,
+    structureEdits,
   } = await request.json() as {
     companyId: string;
     templateFolderPath: string;
@@ -200,6 +201,18 @@ export async function POST(request: NextRequest) {
     folderPath?: string;
     disabledFiles?: string[];
     threadId?: string;
+    // Pass 0 (structure-decide) で AI が出した構造変更 edit list。
+    // 各テンプレ buffer に slot 抽出前に適用する (議案削除等)。
+    structureEdits?: Array<{
+      fileName: string;
+      edits: Array<{
+        type: "replace" | "delete-paragraph" | "delete-row";
+        old?: string;
+        new?: string;
+        anchor?: string;
+        expectedMatches?: number;
+      }>;
+    }>;
   };
 
   if (!threadId) {
@@ -264,6 +277,37 @@ export async function POST(request: NextRequest) {
   const { extractMarkedFields, replaceMarkedFields, getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
   const { extractXlsxMarkedCells, replaceXlsxMarkedCellsBySlot, getXlsxMarkedTextWithSlots, expandYellowRowBlock } = await import("@/lib/xlsx-marker-parser");
 
+  // Pass 0 (structure-decide) の edit list を fileName でルックアップ可能にしておく
+  const structureEditsByFile = new Map<string, NonNullable<typeof structureEdits>[number]["edits"]>();
+  if (structureEdits) {
+    for (const s of structureEdits) {
+      if (s.fileName && Array.isArray(s.edits) && s.edits.length > 0) {
+        structureEditsByFile.set(s.fileName, s.edits);
+      }
+    }
+  }
+
+  // proofread-edits の applyProofreadEditsDocx/Xlsx を流用 (delete-paragraph 系)
+  const { applyProofreadEditsDocx, applyProofreadEditsXlsx } = await import("@/lib/proofread-edits");
+  type AnyEdit = NonNullable<typeof structureEdits>[number]["edits"][number];
+  type StrictProofreadEdit =
+    | { type: "replace"; old: string; new: string; expectedMatches?: number }
+    | { type: "delete-paragraph"; anchor: string; expectedMatches?: number }
+    | { type: "delete-row"; anchor: string; expectedMatches?: number };
+  const narrowEdits = (raw: AnyEdit[]): StrictProofreadEdit[] => {
+    const out: StrictProofreadEdit[] = [];
+    for (const e of raw) {
+      if (e.type === "replace" && typeof e.old === "string" && typeof e.new === "string") {
+        out.push({ type: "replace", old: e.old, new: e.new, expectedMatches: e.expectedMatches });
+      } else if (e.type === "delete-paragraph" && typeof e.anchor === "string") {
+        out.push({ type: "delete-paragraph", anchor: e.anchor, expectedMatches: e.expectedMatches });
+      } else if (e.type === "delete-row" && typeof e.anchor === "string") {
+        out.push({ type: "delete-row", anchor: e.anchor, expectedMatches: e.expectedMatches });
+      }
+    }
+    return out;
+  };
+
   const analyses: DocAnalysis[] = [];
 
   for (const df of docxFilesAll) {
@@ -275,6 +319,38 @@ export async function POST(request: NextRequest) {
     } catch {
       console.warn(`[produce] cannot read ${df.path}`);
       continue;
+    }
+
+    // Pass 0 で出た構造変更があれば**まず**ここで適用する。
+    // 例: 議案2 ブロックを削除 → 削除済みの buffer から slot 抽出が走るので、議案2 の
+    //     プレースホルダーは存在しない状態で AI に渡る (穴埋めの無駄も無くなる)。
+    const myEdits = structureEditsByFile.get(df.name);
+    if (myEdits && myEdits.length > 0) {
+      try {
+        const narrowed = narrowEdits(myEdits);
+        const isXlsx = ext === "xlsx" || ext === "xls" || ext === "xlsm";
+        const res = isXlsx
+          ? applyProofreadEditsXlsx(rawBuffer, narrowed)
+          : applyProofreadEditsDocx(rawBuffer, narrowed);
+        if (res.applied.length > 0) {
+          console.log(`[produce/pass0] ${df.name}: applied ${res.applied.length}/${myEdits.length} structure edits`);
+          rawBuffer = res.buffer;
+          // df.content は AI に slot リストを渡すときの参照テキストなので、
+          // 削除後の本文と整合をとるため mammoth で再抽出する (best-effort、失敗時は元のまま)
+          try {
+            const mammothMod = await import("mammoth");
+            const newText = await mammothMod.extractRawText({ buffer: rawBuffer });
+            if (newText?.value) (df as { content: string }).content = newText.value;
+          } catch { /* ignore: 元の content のままで継続 */ }
+        }
+        if (res.skipped.length > 0) {
+          for (const s of res.skipped) {
+            console.warn(`[produce/pass0] ${df.name}: edit#${s.index} skipped — ${s.reason}`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[produce/pass0] ${df.name}: apply failed`, e instanceof Error ? e.message : e);
+      }
     }
 
     if (ext === "xlsx" || ext === "xls" || ext === "xlsm") {
