@@ -774,39 +774,16 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       }
     }
 
-    // Pass 0 (方針決め): produce より前に、案件に応じた構造変更 (議案削除等) を AI に
-    // 決めてもらう。AI は declarative な edit list で出力するので、本文を AI が書き換える
-    // ことはなく、法的文言の改変リスクなし。AI は anchor + expectedMatches を宣言し、
-    // サーバーが件数検証して合えば適用、合わなければ skip。
-    let structureEdits: Array<{ fileName: string; edits: Array<{ type: string }> }> | undefined;
-    try {
-      const sRes = await fetch("/api/document-templates/structure-decide", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyId: company.id,
-          threadId: currentThread.id,
-          templateFolderPath: templatePath,
-        }),
-      });
-      if (sRes.ok) {
-        const sData = await sRes.json();
-        if (Array.isArray(sData.documents)) {
-          const meaningful = sData.documents.filter((d: { edits: unknown[] }) => Array.isArray(d.edits) && d.edits.length > 0);
-          if (meaningful.length > 0) {
-            structureEdits = meaningful;
-            console.log(`[ChatWorkflow] Pass 0 structure-decide: ${meaningful.length} files have edits`);
-          }
-        }
-      } else {
-        console.warn("[ChatWorkflow] structure-decide failed:", sRes.status);
-      }
-    } catch (e) {
-      console.warn("[ChatWorkflow] structure-decide threw:", e);
-    }
+    // Pass 0 (方針決め) は一時的に無効化中。
+    // 理由: テンプレ buffer に edit を先に適用すると、slot ID が再採番される一方で
+    //   ファイルキャッシュの labels.json は元の slot ID 順のままなので、AI に渡す
+    //   ラベル情報がズレる → 値が違うスロットに入って書類が壊れる重大バグ。
+    // TODO: Pass 0 適用後の buffer に対して labels を**インメモリで再生成**する
+    //   仕組みを入れてから再有効化する (template-labels.ts の generateXlsxLabelsForBuffer
+    //   の docx 版を追加 + produce 内で呼ぶ)。
+    const structureEdits: undefined = undefined;
 
     // 1回目: テンプレ穴埋め (placeholder substitution)。
-    // Pass 0 で出た構造変更があれば、produce 内でテンプレに先に適用してから slot 抽出。
     // 直後に verify を自動実行 → 指摘あればユーザーが「修正プラン」ボタンで proofread (2回目=校正モード) に進む。
     const produceRes = await fetch("/api/document-templates/produce", {
       method: "POST",
