@@ -322,7 +322,155 @@ export function getMarkedDocumentText(buffer: Buffer): string {
   return result;
 }
 
+/**
+ * ハイライト付きフィールドを **slot ID 単位で**置換した docx Buffer を返す。
+ *
+ * 旧 `replaceMarkedFields` は `Record<oldValue, newValue>` で受けてたため、同じ oldValue を持つ
+ * 別 slot が複数あると後勝ち上書きで衝突するバグがあった (例: 作成日_冒頭 と 作成日_末尾 が
+ * 両方 "令和８年２月１１日" のとき、片方の新値で両方とも書き換わる)。
+ *
+ * 本関数は `Map<slotId, newValue>` を受け取り、`getMarkedDocumentTextWithSlots` と**同じ走査順**で
+ * ハイライトグループを回り、slot 番号で対応付けて置換するので衝突しない。
+ *
+ * これは PR #44 で xlsx 用にやった slot-keyed 置換 (`replaceXlsxMarkedCellsBySlot`) の docx 版。
+ */
+export function replaceMarkedFieldsBySlot(
+  buffer: Buffer,
+  replacementsBySlot: Map<number, string>,
+): Buffer {
+  const zip = new PizZip(buffer);
+  let docXml = zip.file("word/document.xml")?.asText();
+  if (!docXml) return buffer;
+
+  const paragraphs = findTopLevelParagraphs(docXml);
+
+  // パラグラフごとにハイライトグループを特定し、forward 順で slot ID を振る。
+  // 後で backward に適用するために、paragraph index → [{groupOldValue, slotId, newValue}] を持つ。
+  type GroupEdit = { startIdx: number; endIdx: number; oldValue: string; slotId: number; newValue: string };
+  type PerParagraph = { groups: GroupEdit[]; parts: { type: "other" | "run"; content: string; highlighted?: boolean }[] };
+  const perParagraph: (PerParagraph | null)[] = new Array(paragraphs.length).fill(null);
+
+  const isMetadataOnly = (content: string): boolean => {
+    const stripped = content
+      .replace(/<w:bookmarkStart\b[^>]*\/>/g, "")
+      .replace(/<w:bookmarkEnd\b[^>]*\/>/g, "")
+      .replace(/<w:commentRangeStart\b[^>]*\/>/g, "")
+      .replace(/<w:commentRangeEnd\b[^>]*\/>/g, "")
+      .replace(/<w:commentReference\b[^>]*\/>/g, "")
+      .replace(/<w:proofErr\b[^>]*\/>/g, "")
+      .trim();
+    return stripped === "";
+  };
+
+  let slotId = 0;
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const p = paragraphs[pi];
+    const pXml = docXml.substring(p.start, p.end);
+
+    // パラグラフを「ラン」と「ラン以外」に分割
+    const parts: { type: "other" | "run"; content: string; highlighted?: boolean }[] = [];
+    const runRe = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
+    let rm: RegExpExecArray | null;
+    let lastEnd = 0;
+    while ((rm = runRe.exec(pXml)) !== null) {
+      if (rm.index > lastEnd) {
+        parts.push({ type: "other", content: pXml.slice(lastEnd, rm.index) });
+      }
+      const hl = hasHighlight(rm[0]);
+      parts.push({ type: "run", content: rm[0], highlighted: hl });
+      lastEnd = rm.index + rm[0].length;
+    }
+    if (lastEnd < pXml.length) {
+      parts.push({ type: "other", content: pXml.slice(lastEnd) });
+    }
+
+    // ハイライトグループを特定 (連続するハイライト run。間の空メタは飛ばす)
+    const groups: GroupEdit[] = [];
+    let i = 0;
+    while (i < parts.length) {
+      if (parts[i].type === "run" && parts[i].highlighted) {
+        const startIdx = i;
+        let text = "";
+        let lastHlIdx = i;
+        while (i < parts.length) {
+          if (parts[i].type === "run" && parts[i].highlighted) {
+            text += getRunText(parts[i].content);
+            lastHlIdx = i;
+            i++;
+          } else if (parts[i].type === "other" && isMetadataOnly(parts[i].content)) {
+            i++;
+            continue;
+          } else {
+            break;
+          }
+        }
+        // この group の slot ID は現在のカウンタ
+        const myId = slotId++;
+        const newValue = replacementsBySlot.get(myId);
+        // newValue 未指定の slot もスキップせず group としては記録 (slot ID は数えないと後の slot とズレる)
+        if (newValue !== undefined) {
+          groups.push({ startIdx, endIdx: lastHlIdx, oldValue: text, slotId: myId, newValue });
+        }
+      } else {
+        i++;
+      }
+    }
+    perParagraph[pi] = { groups, parts };
+  }
+
+  // backward に適用 (index ズレ回避)
+  for (let pi = paragraphs.length - 1; pi >= 0; pi--) {
+    const pp = perParagraph[pi];
+    if (!pp || pp.groups.length === 0) continue;
+    const p = paragraphs[pi];
+
+    // 後ろから適用
+    const partsMut = [...pp.parts];
+    for (let g = pp.groups.length - 1; g >= 0; g--) {
+      const group = pp.groups[g];
+      const escapedNew = xmlEscape(group.newValue);
+      for (let j = group.endIdx; j >= group.startIdx; j--) {
+        if (j === group.startIdx) {
+          let newRun = partsMut[j].content;
+          newRun = newRun.replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "");
+          newRun = newRun.replace(/<w:color\s+w:val="FF0000"\s*\/>/gi, "");
+          newRun = newRun.replace(
+            /<w:t\b[^>]*>[\s\S]*?<\/w:t>/g,
+            `<w:t xml:space="preserve">${escapedNew}</w:t>`,
+          );
+          partsMut[j] = { ...partsMut[j], content: newRun };
+        } else if (partsMut[j].type === "run" && partsMut[j].highlighted) {
+          partsMut.splice(j, 1);
+        }
+      }
+    }
+    const processed = partsMut.map(x => x.content).join("");
+    docXml = docXml.substring(0, p.start) + processed + docXml.substring(p.end);
+  }
+
+  // コメント要素除去 (旧 replaceMarkedFields と同じ片付け)
+  docXml = docXml
+    .replace(/<w:commentRangeStart\s+w:id="\d+"\s*\/>/g, "")
+    .replace(/<w:commentRangeEnd\s+w:id="\d+"\s*\/>/g, "")
+    .replace(/<w:r\b[^>]*>\s*<w:rPr>[\s\S]*?<\/w:rPr>\s*<w:commentReference\s+w:id="\d+"\s*\/>\s*<\/w:r>/g, "")
+    .replace(/<w:commentReference\s+w:id="\d+"\s*\/>/g, "");
+
+  zip.file("word/document.xml", docXml);
+
+  if (zip.file("word/comments.xml")) zip.remove("word/comments.xml");
+  if (zip.file("word/_rels/document.xml.rels")) {
+    const relsXml = zip.file("word/_rels/document.xml.rels")?.asText();
+    if (relsXml) {
+      const cleanedRels = relsXml.replace(/<Relationship[^>]*\bType="[^"]*comments[^"]*"[^>]*\/>/g, "");
+      zip.file("word/_rels/document.xml.rels", cleanedRels);
+    }
+  }
+
+  return zip.generate({ type: "nodebuffer" });
+}
+
 // ハイライト付きフィールドを置換して、ハイライト/コメントを除去した docx Buffer を返す
+// @deprecated 値キーだと同値スロットが衝突するため `replaceMarkedFieldsBySlot` を使うこと
 export function replaceMarkedFields(
   buffer: Buffer,
   replacements: Record<string, string>,

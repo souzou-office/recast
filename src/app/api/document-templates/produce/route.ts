@@ -274,7 +274,7 @@ export async function POST(request: NextRequest) {
   docxFilesAll.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
 
   // --- 1) 各テンプレを解析: ハイライト方式 / プレースホルダー方式 のどちらか ---
-  const { extractMarkedFields, replaceMarkedFields, getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
+  const { extractMarkedFields, replaceMarkedFieldsBySlot, getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
   const { extractXlsxMarkedCells, replaceXlsxMarkedCellsBySlot, getXlsxMarkedTextWithSlots, expandYellowRowBlock } = await import("@/lib/xlsx-marker-parser");
 
   // Pass 0 (structure-decide) の edit list を fileName でルックアップ可能にしておく
@@ -837,22 +837,23 @@ ${conditionFlagBlock}
 
         for (let ci = 0; ci < setsRaw.length; ci++) {
           const setObj = setsRaw[ci];
-          // AI応答の "要入力_N" → 元の値 → 置換マップ
-          const replacements: Record<string, string> = {};
+          // AI応答の "要入力_N" → slotId → 新値 のマップを作る (slot-keyed)。
+          // 旧 Record<oldValue, newValue> だと同値スロットが衝突するバグがあった (作成日_冒頭 と
+          // 作成日_末尾 の oldValue が同じ "令和８年２月１１日" のケース等)。
+          const docReplacementsBySlot = new Map<number, string>();
           const filledSlots: FilledSlotOut[] = [];
           for (const [k, v] of Object.entries(setObj)) {
             if (typeof v !== "string") continue;
             const idMatch = k.match(/要入力_(\d+)/);
             if (!idMatch) continue;
             const id = parseInt(idMatch[1]);
-            const origValue = a.docSlots.get(id);
-            if (!origValue) continue;
+            if (!a.docSlots.has(id)) continue;
             const fullW = toFullWidth(v);
-            replacements[origValue] = fullW;
+            docReplacementsBySlot.set(id, fullW);
           }
           // filledSlots は docSlots（slotId → 元の値）を起点に書く
-          for (const [slotId, origValue] of a.docSlots) {
-            const newValue = replacements[origValue];
+          for (const [slotId] of a.docSlots) {
+            const newValue = docReplacementsBySlot.get(slotId);
             if (newValue === undefined) continue;
             const meta = a.slotLabels.get(slotId);
             filledSlots.push({
@@ -862,7 +863,7 @@ ${conditionFlagBlock}
             });
           }
 
-          const outputBuffer = replaceMarkedFields(a.workingBuffer, replacements);
+          const outputBuffer = replaceMarkedFieldsBySlot(a.workingBuffer, docReplacementsBySlot);
           const suffix = setsRaw.length > 1 ? `_${ci + 1}` : "";
           const fileName = `${company.name}_${a.baseName}${suffix}.docx`;
           let previewHtml = "";
