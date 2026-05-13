@@ -774,9 +774,40 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       }
     }
 
+    // Pass 0 (方針決め): produce より前に、案件に応じた構造変更 (議案削除等) を AI に
+    // 決めてもらう。AI は declarative な edit list で出力するので、本文を AI が書き換える
+    // ことはなく、法的文言の改変リスクなし。AI は anchor + expectedMatches を宣言し、
+    // サーバーが件数検証して合えば適用、合わなければ skip。
+    let structureEdits: Array<{ fileName: string; edits: Array<{ type: string }> }> | undefined;
+    try {
+      const sRes = await fetch("/api/document-templates/structure-decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: currentThread.id,
+          templateFolderPath: templatePath,
+        }),
+      });
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        if (Array.isArray(sData.documents)) {
+          const meaningful = sData.documents.filter((d: { edits: unknown[] }) => Array.isArray(d.edits) && d.edits.length > 0);
+          if (meaningful.length > 0) {
+            structureEdits = meaningful;
+            console.log(`[ChatWorkflow] Pass 0 structure-decide: ${meaningful.length} files have edits`);
+          }
+        }
+      } else {
+        console.warn("[ChatWorkflow] structure-decide failed:", sRes.status);
+      }
+    } catch (e) {
+      console.warn("[ChatWorkflow] structure-decide threw:", e);
+    }
+
     // 1回目: テンプレ穴埋め (placeholder substitution)。
+    // Pass 0 で出た構造変更があれば、produce 内でテンプレに先に適用してから slot 抽出。
     // 直後に verify を自動実行 → 指摘あればユーザーが「修正プラン」ボタンで proofread (2回目=校正モード) に進む。
-    // 校正モードは AI が edit list (replace/delete-paragraph) を返し、サーバーが docx に適用する仕組み。
     const produceRes = await fetch("/api/document-templates/produce", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -788,6 +819,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         folderPath: currentThread.folderPath,
         disabledFiles: currentThread.disabledFiles,
         threadId: currentThread.id,
+        structureEdits,
       }),
     });
     const produceData = await produceRes.json();

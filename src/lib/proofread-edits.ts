@@ -17,9 +17,9 @@
 const PizZip = require("pizzip");
 
 export type ProofreadEdit =
-  | { type: "replace"; old: string; new: string }
-  | { type: "delete-paragraph"; anchor: string }
-  | { type: "delete-row"; anchor: string };
+  | { type: "replace"; old: string; new: string; expectedMatches?: number }
+  | { type: "delete-paragraph"; anchor: string; expectedMatches?: number }
+  | { type: "delete-row"; anchor: string; expectedMatches?: number };
 
 export interface EditApplyResult {
   /** 適用された edit のインデックス */
@@ -112,8 +112,33 @@ export function applyProofreadEditsDocx(buffer: Buffer, edits: ProofreadEdit[]):
     }
 
     if (edit.type === "delete-paragraph") {
-      const { anchor } = edit;
+      const { anchor, expectedMatches } = edit;
       if (!anchor) { skipped.push({ index: idx, reason: "anchor が空" }); return; }
+
+      // ⚠️ expectedMatches で件数検証: anchor が想定外の件数 hit してたら巻き込み事故防止のため skip
+      // AI が短すぎる anchor を出すと別の段落も削除されかねないので、AI に件数を宣言させて
+      // 一致しない時は誤適用扱いで処理しない (user に手動でやらせる方が安全)
+      if (typeof expectedMatches === "number") {
+        let matchCount = 0;
+        const paragraphRe = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
+        let pm: RegExpExecArray | null;
+        while ((pm = paragraphRe.exec(docXml as string)) !== null) {
+          const tTexts: string[] = [];
+          let mTxt: RegExpExecArray | null;
+          const tRe = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g;
+          while ((mTxt = tRe.exec(pm[0])) !== null) tTexts.push(decodeXml(mTxt[1]));
+          const combined = tTexts.join("");
+          if (combined.includes(anchor)) matchCount++;
+        }
+        if (matchCount !== expectedMatches) {
+          skipped.push({
+            index: idx,
+            reason: `expectedMatches=${expectedMatches} だが anchor "${anchor}" は ${matchCount} 段落 hit (件数不一致のため適用見送り)`,
+          });
+          return;
+        }
+      }
+
       const anchorEsc = xmlEscape(anchor);
       let deleted = false;
       docXml = (docXml as string).replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pXml: string) => {
