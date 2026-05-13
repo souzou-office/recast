@@ -278,6 +278,71 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 5. **dead code 整理**: FileSidebar / folders/* は未使用
 6. **ProfileTemplateModal 削除**: 「抽出項目」廃止に合わせて
 
+## 2026-05-13 セッションのまとめ（重要、次セッションの引き継ぎ事項）
+
+このセッションで PR #42〜#56 をマージした。今後 produce 周りを触るときに必ず読むこと。
+
+### 入った修正（マージ順）
+
+| PR | 概要 |
+|---|---|
+| #42 | variant 判定が「提案会社の株式会社○○」で誤発火し `_個人.docx` が消えるバグ修正。`isLegalEntityCopy` を「株主」ラベル slot だけ見るように変更 |
+| #43 | 「その他注意点」(general_note) 空白送信で毎回再質問される件。空白でも previousQA に push して `alreadyHasGeneralNote` 判定を通すように |
+| #44 | xlsx 置換を **slot-keyed 化** (`replaceXlsxMarkedCellsBySlot`) + 数式キャッシュ `<v>` 消去 + `<calcPr fullCalcOnLoad="1"/>` 強制再計算 |
+| #45 | clarify を **1 ラウンドで全質問列挙** (Plan A)。再呼び出し時は原則 `[]` を返させる |
+| #46 | テンプレラベル生成を Haiku 4.5 → **Sonnet 4.6** に切替。 PARSER_VERSION 5 で labels.json 自動再生成 |
+| #47 | Q&A をスロット一覧に **インライン併記** (✓ ユーザー確定回答)。基本情報の旧住所より Q&A の現住所を優先 |
+| #48 | (撤回) auto-feedback loop。即 #49 で置換 |
+| #49 | **校正モード (proofread)**: produce 後の verify 指摘を AI が edit list (replace/delete-paragraph) で返し、サーバーが docx/xlsx に適用 |
+| #50 | 修正対象の **選択式 UI** (チェックボックス) + 確認質問の **自動プレビュー** (source から fuzzy match) |
+| #51 | proofread 後の re-verify が「生成済み書類なし」で 400 になるバグ。state に generatedDocuments を同期 |
+| #52 | PATCH /chat-threads が `body.messages` (複数) を保存していなかったバグ修正 |
+| #53 | (撤回) **Pass 0 (方針決め)** = produce より前に「議案削除」等の構造変更を AI に decide させる |
+| #54 | PR #53 の Pass 0 を一時無効化。slot ID シフトでスロットずれ事故が出るため |
+| #55 | proofread の `replace` edit に **contextBefore / contextAfter** を追加。同じ文字列が複数箇所のとき AI が文脈で区別できる |
+| #56 | **docx 置換を slot-keyed 化** (`replaceMarkedFieldsBySlot`)。PR #44 で xlsx に入れたのと同等の修正。値衝突バグ消滅 |
+
+### 今のアーキテクチャ (重要)
+
+```
+execute (案件整理) → clarify (確認質問・1 ラウンド網羅) → produce (穴埋め) → verify (突合せ) → [指摘あり] → proofread (edit list で校正)
+```
+
+- **Pass 0 (方針決め)** は無効化中 (PR #54)。コード自体は `/api/document-templates/structure-decide/route.ts` に残っている。再有効化するには labels.json をインメモリ再生成する仕組みが必要 (slot ID シフト問題)
+- **xlsx 置換**: slot-keyed (PR #44)。`replaceXlsxMarkedCellsBySlot`
+- **docx 置換**: slot-keyed (PR #56)。`replaceMarkedFieldsBySlot`。旧 `replaceMarkedFields` は @deprecated
+- **labels.json**: Sonnet 4.6 生成、PARSER_VERSION 5
+- **校正モード**: PR #49 + #55。`/api/document-templates/proofread/route.ts`、edit list (replace/delete-paragraph/delete-row) を AI が返し、`src/lib/proofread-edits.ts` がサーバー側で適用。expectedMatches で件数検証、contextBefore/After で文脈絞り込み
+
+### 議論したが実装しなかった「全部リファクタ」(次セッションへ)
+
+ユーザーから本質的な指摘:
+
+> プレースホルダー = ここ以外いじってほしくないのマーク。AI が内容を文脈で理解して埋める。
+> 防御策は verify で。slot 番号は要らない。
+
+つまり以下の redesign が望まれているが、規模が大きく今セッションでは届かなかった:
+
+1. **AI プロンプトから slot 番号を廃止**。AI には marked text (★...★) と organize/Q&A を見せて、edit list (find/replace + 文脈) で返してもらう
+2. **labels.json の役割縮小**。AI への hint としては残してもいいが、slot ID マッピングからは外す
+3. **placeholder-docx / placeholder-xlsx の同様の刷新**
+
+ただし PR #44/#56 で **slot-keyed 置換**は入れたので、衝突バグは構造的に発生しなくなった。 「番号がズレる」ケースは Pass 0 を有効化したときだけ起きる (今は無効)。
+
+### 次のセッションでやること候補
+
+優先度高 (ユーザー要望):
+- AI プロンプトの edit-list 化 (上記 redesign)
+- Pass 0 を安全に復活させる (labels インメモリ再生成つき)
+
+優先度中:
+- placeholder-docx / placeholder-xlsx も slot-keyed 化 (今は value-keyed のままで潜在的衝突あり)
+- proofread route の prompt 改善 (件数検証強化、anchor 不一致時の自動リトライ)
+
+優先度低:
+- generateDocxLabelsForBuffer 追加 (xlsx 版はあるが docx 版がない)
+- 行拡張周りのリファクタ
+
 ## 設計判断の変更履歴
 
 - **ファイルアクセス**: Google Drive API → **Local-First**（ローカルfs直接読み取り）
@@ -324,4 +389,4 @@ npm run dev    # http://localhost:3000
 
 ## 現在のブランチ
 
-- `main` — 最新（PR #13〜#18 マージ済み）
+- `main` — 最新（PR #13〜#56 マージ済み、最新 commit 5d35891 fix: docx 置換を slot-keyed に切替）
