@@ -17,7 +17,17 @@
 const PizZip = require("pizzip");
 
 export type ProofreadEdit =
-  | { type: "replace"; old: string; new: string; expectedMatches?: number }
+  | {
+      type: "replace";
+      old: string;
+      new: string;
+      expectedMatches?: number;
+      // context: 同じ old が複数箇所に出る場合に、その出現の前後の文字列で絞り込むためのヒント。
+      // AI が「『令和８年２月１１日』 (取締役決定書 直後)」のような形で指定する。
+      // 与えられた場合、サーバーは contextBefore→old→contextAfter のパターンを優先的に探す。
+      contextBefore?: string;
+      contextAfter?: string;
+    }
   | { type: "delete-paragraph"; anchor: string; expectedMatches?: number }
   | { type: "delete-row"; anchor: string; expectedMatches?: number };
 
@@ -61,41 +71,52 @@ export function applyProofreadEditsDocx(buffer: Buffer, edits: ProofreadEdit[]):
 
   edits.forEach((edit, idx) => {
     if (edit.type === "replace") {
-      const { old, new: newVal } = edit;
+      const { old, new: newVal, contextBefore, contextAfter } = edit;
       if (!old) { skipped.push({ index: idx, reason: "old が空" }); return; }
       const oldEsc = xmlEscape(old);
       const newEsc = xmlEscape(newVal);
       let changed = false;
       const before = docXml as string;
+      // 文脈ヒント付き = 同じ文字列が複数箇所に出るときの絞り込み。
+      // 段落の結合テキストに contextBefore + old + contextAfter が含まれる段落だけを対象にする。
+      // (両方未指定なら従来の全体置換)
+      const hasContext = !!(contextBefore || contextAfter);
 
-      // ① 単一 <w:t> 内に old がそのまま入ってる単純ケース
-      docXml = (docXml as string).replace(
-        /<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/g,
-        (whole: string, attrs: string, inner: string) => {
-          if (!inner.includes(oldEsc)) return whole;
-          changed = true;
-          const safeAttrs = /\bxml:space=/.test(attrs) ? attrs : ` xml:space="preserve"${attrs}`;
-          return `<w:t${safeAttrs}>${inner.split(oldEsc).join(newEsc)}</w:t>`;
-        }
-      );
+      // ① 単一 <w:t> 内に old がそのまま入ってる単純ケース (文脈チェックなし)
+      // 文脈ヒントが付いてる場合はこの ① をスキップして ② の段落単位で処理する
+      if (!hasContext) {
+        docXml = (docXml as string).replace(
+          /<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/g,
+          (whole: string, attrs: string, inner: string) => {
+            if (!inner.includes(oldEsc)) return whole;
+            changed = true;
+            const safeAttrs = /\bxml:space=/.test(attrs) ? attrs : ` xml:space="preserve"${attrs}`;
+            return `<w:t${safeAttrs}>${inner.split(oldEsc).join(newEsc)}</w:t>`;
+          }
+        );
+      }
 
-      // ② 段落をまたいだ run 分断対応: 段落単位でテキスト結合 → ヒットしたら最初の <w:t> に統合
+      // ② 段落単位でテキスト結合 → 文脈条件をチェックして置換
       if (!changed) {
         docXml = (docXml as string).replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pXml: string) => {
           const tTexts: string[] = [];
           let mTxt: RegExpExecArray | null;
           const tRe = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g;
-          while ((mTxt = tRe.exec(pXml)) !== null) tTexts.push(mTxt[1]);
+          while ((mTxt = tRe.exec(pXml)) !== null) tTexts.push(decodeXml(mTxt[1]));
           const combined = tTexts.join("");
-          if (!combined.includes(oldEsc)) return pXml;
-          const replaced = combined.split(oldEsc).join(newEsc);
+          if (!combined.includes(old)) return pXml;
+          // 文脈チェック: contextBefore があれば段落結合テキスト内に存在すること、
+          // contextAfter も同様。両方マッチした段落だけを対象に。
+          if (contextBefore && !combined.includes(contextBefore)) return pXml;
+          if (contextAfter && !combined.includes(contextAfter)) return pXml;
+          const replaced = combined.split(old).join(newVal);
           let first = true;
           changed = true;
           return pXml.replace(/<w:t\b([^>]*)>[\s\S]*?<\/w:t>/g, (_m: string, attrs: string) => {
             if (first) {
               first = false;
               const safeAttrs = /\bxml:space=/.test(attrs) ? attrs : ` xml:space="preserve"${attrs}`;
-              return `<w:t${safeAttrs}>${replaced}</w:t>`;
+              return `<w:t${safeAttrs}>${xmlEscape(replaced)}</w:t>`;
             }
             return `<w:t${attrs}></w:t>`;
           });
