@@ -14,6 +14,12 @@ interface ViewerFile {
 interface Props {
   company: Company | null;
   onUpdate: () => void;
+  /**
+   * 共通フォルダのファイルに変更があり、基本情報が古い可能性がある状態。
+   * page.tsx が GET /api/workspace/profile の鮮度チェック結果を渡す。
+   * バナーで「ファイルが変更されています。基本情報を更新しますか？」を出す。
+   */
+  isStale?: boolean;
 }
 
 interface ProfileSection {
@@ -181,13 +187,16 @@ function renderValue(value: string) {
   return <span>{value}</span>;
 }
 
-export default function CompanyProfile({ company, onUpdate }: Props) {
-  const [generating, setGenerating] = useState(false);
+export default function CompanyProfile({ company, onUpdate, isStale = false }: Props) {
+  // 生成は ProfileSourceModal 経由でだけ走るので、ここで直接 fetch することは無くなった。
+  // (旧 generateProfile は削除済み。「生成」ボタン押下 → モーダル → 選択 → モーダル内で生成 → onGenerated)
   const [viewerFile, setViewerFile] = useState<ViewerFile | null>(null);
   const [showJson, setShowJson] = useState(false);
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
-  const [showSourceModal, setShowSourceModal] = useState(false);
+  // 「生成」ボタン押下時のモーダル ("generate") と「参照ファイル」ボタン押下時のモーダル ("settings") を
+  // 同じ ProfileSourceModal で扱うため、開く度にモードを切り替える。
+  const [sourceModalMode, setSourceModalMode] = useState<"settings" | "generate" | null>(null);
   const [availableSources, setAvailableSources] = useState<{ path: string; name: string; folder: string }[]>([]);
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
 
@@ -237,23 +246,9 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
 
   const commonSubs = company.subfolders.filter(s => s.role === "common");
 
-  const generateProfile = async () => {
-    setGenerating(true);
-    try {
-      const res = await fetch("/api/workspace/profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id }),
-      });
-      if (res.ok) {
-        onUpdate();
-      } else {
-        const err = await res.json();
-        alert(err.error || "生成に失敗しました");
-      }
-    } catch { /* ignore */ }
-    finally { setGenerating(false); }
-  };
+  // (旧 generateProfile はモーダル経由フローに変更したため削除済み。
+  //  「生成」ボタン → setSourceModalMode("generate") → ProfileSourceModal 内で生成 → onGenerated。
+  //  生成の都度ファイル選択を確認させる UX (勝手に走らない)。)
 
   const profile = company.profile;
   const sections = profile?.summary ? parseProfile(profile.summary) : [];
@@ -279,7 +274,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setShowSourceModal(true)}
+                onClick={() => setSourceModalMode("settings")}
                 className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
               >
                 参照ファイル
@@ -303,16 +298,33 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                 </button>
               )}
               <button
-                onClick={generateProfile}
-                disabled={generating || commonSubs.length === 0}
+                onClick={() => setSourceModalMode("generate")}
+                disabled={commonSubs.length === 0}
                 className="shrink-0 rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
                            hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
-                {generating ? "生成中..." : profile ? "再生成" : "基本情報を生成"}
+                {profile ? "再生成" : "基本情報を生成"}
               </button>
             </div>
           </div>
         </div>
+
+        {/* 鮮度バナー: 共通フォルダのファイルに変更があったが基本情報がまだ古い状態 */}
+        {isStale && profile && (
+          <div className="mb-6 rounded-2xl border border-[var(--color-warn-border,#e3b341)] bg-[var(--color-warn-bg,#fff8e1)] px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm text-[var(--color-warn-fg,#7a5d00)]">
+              <Icon name="AlertTriangle" size={16} />
+              <span>共通フォルダのファイルが更新されています。基本情報を再生成すると最新の内容を反映できます。</span>
+            </div>
+            <button
+              onClick={() => setSourceModalMode("generate")}
+              disabled={commonSubs.length === 0}
+              className="shrink-0 rounded-lg bg-[var(--color-fg)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
+            >
+              再生成する
+            </button>
+          </div>
+        )}
 
         {profile && showJson && profile.structured ? (
           <div className="space-y-4">
@@ -469,7 +481,15 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
         <div className="h-full">
           {profileContent}
         </div>
-        {showSourceModal && company && <ProfileSourceModal company={company} onClose={() => setShowSourceModal(false)} onSaved={onUpdate} />}
+        {sourceModalMode && company && (
+          <ProfileSourceModal
+            company={company}
+            mode={sourceModalMode}
+            onClose={() => setSourceModalMode(null)}
+            onSaved={onUpdate}
+            onGenerated={onUpdate}
+          />
+        )}
       </>
     );
   }
