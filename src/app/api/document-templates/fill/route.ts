@@ -241,6 +241,17 @@ ${templateBlock}
   const finalMessages = appendAssistantTurn(messagesWithUserTurn, aiResponseText, "fill");
   await saveAiMessages(company.id, threadId, finalMessages);
 
+  // 🔍 DEBUG: AI 応答とサーバー側の期待値を突き合わせるためのログ
+  console.log("[fill/debug] === markers per template (サーバーが期待する find 文字列) ===");
+  for (const ctx of ctxs) {
+    const markers = Array.from(ctx.normalized.markerToSlots.keys());
+    console.log(`[fill/debug] ${ctx.fileName} (${markers.length} markers):`);
+    for (const m of markers) console.log(`[fill/debug]   ${JSON.stringify(m)}`);
+  }
+  console.log("[fill/debug] === AI raw response (先頭 3000 文字) ===");
+  console.log(aiResponseText.substring(0, 3000));
+  console.log("[fill/debug] === END ===");
+
   // edit list パース
   const editsByFile = parseEditsResponse(aiResponseText);
 
