@@ -326,9 +326,10 @@ export interface CaseAiMessage {
   role: "user" | "assistant";
   content: string | CaseAiContentBlock[];
   // どのステップが書き込んだか
-  // "structure" = Pass 0 (方針決め: 議案削除など構造変更を AI が edit list で出力)
-  // clarify と produce の間に挟まる
-  stage?: "organize" | "clarify" | "structure" | "produce" | "verify";
+  // 新パイプライン:
+  //   organize (案件整理) → clarify (要確認) → fill (入力: 旧 structure-decide+produce 統合) → check (旧 verify+proofread 統合)
+  // 旧 stage 名 (structure / produce / verify) も**互換のため受理する** (既存スレッドの読み込みのため)
+  stage?: "organize" | "clarify" | "fill" | "check" | "structure" | "produce" | "verify";
 }
 
 // 右パネル
