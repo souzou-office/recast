@@ -78,10 +78,13 @@ function applyEditsDocx(
   const applied: number[] = [];
   const skipped: { index: number; reason: string }[] = [];
 
-  // 順番: delete → insert → replace の順で適用。
-  //   delete: 不要範囲を先に消す
-  //   insert: 残った既存ユニットを複製
-  //   replace: 各 marker に値を流し込む
+  // 🔴 順番: replace → insert → delete (この順序が重要)
+  //   旧: delete を先にやると docXml が変わって、replace 時に walker を再実行すると
+  //       slotId が振り直されて template-normalize の markerToSlots と不一致になる
+  //       → AI が出した「★同意書の日付★」が、全く別の slot 位置に書き込まれる事故
+  //   新: replace を先に元 docXml の slot 位置で適用 (slotId が変わる前なので一致保証)
+  //        → その後 delete で範囲削除 (slotId 不要、テキスト検索のみ)
+  //        → insert は段落複製 (これも slotId 不要)
   const deleteEdits: { idx: number; edit: Extract<Edit, { op: "delete" }> }[] = [];
   const insertEdits: { idx: number; edit: Extract<Edit, { op: "insert" }> }[] = [];
   const replaceEdits: { idx: number; edit: Extract<Edit, { op: "replace" }> }[] = [];
@@ -94,31 +97,16 @@ function applyEditsDocx(
   // walker は AlternateContent 除去版の docXml を返す。これを基準に編集する。
   let docXml = walkDocxSlots(docXmlRaw).docXml;
 
-  // ----- delete -----
-  for (const { idx, edit } of deleteEdits) {
-    const res = deleteParagraphRangeDocx(docXml, edit.anchor, edit.endAnchor);
-    if (res.ok) { docXml = res.xml; applied.push(idx); }
-    else skipped.push({ index: idx, reason: res.reason });
-  }
-
-  // ----- insert -----
-  for (const { idx, edit } of insertEdits) {
-    const res = insertParagraphRangeDocx(docXml, edit);
-    if (res.ok) { docXml = res.xml; applied.push(idx); }
-    else skipped.push({ index: idx, reason: res.reason });
-  }
-
-  // ----- replace -----
-  // 各 marker (★…★) を normalize の markerToSlots で物理 slot に解決して、
-  // applyHighlightReplacementsDocx に「slotId → 値」のマップを渡す。
+  // ----- replace (最初) -----
+  // 各 marker (★…★) を normalize の markerToSlots で物理 slot に解決。
+  // この時点では delete も insert も適用されていないので、元 docXml の slotId のまま。
   const highlightReplacements = new Map<number, string>();
   const placeholderReplacements: { placeholder: string; value: string; openClose: [string, string] }[] = [];
-  const literalReplacements: { find: string; replaceWith: string }[] = [];
 
   for (const { idx, edit } of replaceEdits) {
     const refs = normalized.markerToSlots.get(edit.find);
     if (!refs || refs.length === 0) {
-      skipped.push({ index: idx, reason: `find "${edit.find}" がテンプレ本文の ★…★ に存在せず (削除済み or 文字列不一致)` });
+      skipped.push({ index: idx, reason: `find "${edit.find}" がテンプレ本文の ★…★ に存在せず (文字列不一致)` });
       continue;
     }
     let any = false;
@@ -135,21 +123,14 @@ function applyEditsDocx(
     else skipped.push({ index: idx, reason: `find "${edit.find}" は xlsx 用 ref のみで docx で適用先なし` });
   }
 
-  // insert で増えた複製ブロック内の ★…★ もリテラル text 置換
-  for (const { edit } of insertEdits) {
-    for (const r of edit.replaces || []) {
-      literalReplacements.push({ find: r.find, replaceWith: r.replaceWith });
-    }
-  }
-
-  // placeholder は単純な text 置換 (XML 内の【foo】等を全部)
+  // placeholder の text 置換
   for (const r of placeholderReplacements) {
     const [open, close] = r.openClose;
     const target = `${open}${r.placeholder}${close}`;
     docXml = docXml.split(target).join(xmlEscape(r.value));
   }
 
-  // highlight slot: walker で物理位置を正確に取得して書き換え
+  // highlight slot は walker と一致した slotId で書き換え
   if (highlightReplacements.size > 0) {
     docXml = applyHighlightReplacementsDocx(docXml, highlightReplacements);
   }
@@ -159,9 +140,30 @@ function applyEditsDocx(
   // 安全網 2: 残ったプレースホルダーを空文字化
   docXml = clearUnreplacedPlaceholders(docXml);
 
-  // insert の literal 置換 (★ラベル★ の文字列を直接 split で text 置換)
-  for (const r of literalReplacements) {
-    docXml = docXml.split(xmlEscape(r.find)).join(xmlEscape(r.replaceWith));
+  // ----- insert (replace の後、delete の前) -----
+  // 複製ブロック内の ★…★ は既に値で埋まっているので、複製先で別の値にしたい時は
+  // edit.replaces を使う (find/replaceWith で text 置換)。
+  for (const { idx, edit } of insertEdits) {
+    const res = insertParagraphRangeDocx(docXml, edit);
+    if (res.ok) {
+      docXml = res.xml;
+      // 複製した範囲だけ literal 置換 (全体に走らせると元範囲も巻き込むので慎重に)
+      // 簡略実装: docXml 全体で split-join (元範囲は既に値が入ってるので無害)
+      for (const r of edit.replaces || []) {
+        docXml = docXml.split(xmlEscape(r.find)).join(xmlEscape(r.replaceWith));
+      }
+      applied.push(idx);
+    } else {
+      skipped.push({ index: idx, reason: res.reason });
+    }
+  }
+
+  // ----- delete (最後) -----
+  // 段落範囲削除は slotId 非依存 (テキスト検索のみ) なので最後でよい。
+  for (const { idx, edit } of deleteEdits) {
+    const res = deleteParagraphRangeDocx(docXml, edit.anchor, edit.endAnchor);
+    if (res.ok) { docXml = res.xml; applied.push(idx); }
+    else skipped.push({ index: idx, reason: res.reason });
   }
 
   // 仕上げ: 残ったハイライト属性 / コメント関連を除去
