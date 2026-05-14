@@ -109,11 +109,9 @@ export async function normalizeDocxTemplate(
   buffer: Buffer,
   templatePath?: string,
 ): Promise<NormalizedTemplate> {
-  const zip = new PizZip(buffer);
-  let docXml = zip.file("word/document.xml")?.asText();
-  if (!docXml) return { markedText: "", markerToSlots: new Map() };
-  // <mc:AlternateContent> 内の偽 <w:p> は除去 (docx-marker-parser と同じ前処理)
-  docXml = docXml.replace(/<mc:AlternateContent\b[\s\S]*?<\/mc:AlternateContent>/g, "");
+  const { walkDocxSlots } = await import("./docx-slot-walker");
+  const walk = walkDocxSlots(buffer);
+  if (walk.paragraphs.length === 0) return { markedText: "", markerToSlots: new Map() };
 
   // labels.json (テンプレ別キャッシュ) を取得
   let labelByCacheId: Map<number, string> | null = null;
@@ -131,45 +129,48 @@ export async function normalizeDocxTemplate(
 
   const markerToSlots = new Map<string, SlotRef[]>();
   const pushSlot = (label: string, ref: SlotRef) => {
-    // marker は ★ラベル★ そのもの。AI が find に書く文字列とそのまま一致させる
     const marker = `★${label}★`;
     const list = markerToSlots.get(marker) || [];
     list.push(ref);
     markerToSlots.set(marker, list);
   };
 
-  // 段落ごとの ★ラベル★ 化 (docx-marker-parser の getMarkedDocumentTextWithSlots と同じ走査順)
+  // walker が振った slotId をそのまま使う。edit-engine も同じ walker を使うので一致が保証される。
+  const slotIdToLabel = new Map<number, string>();
+  for (const slot of walk.slots) {
+    const label = pickLabelForHighlightSlot(slot.slotId, slot.originalValue, labelByCacheId);
+    slotIdToLabel.set(slot.slotId, label);
+    pushSlot(label, { kind: "docx-highlight", slotId: slot.slotId, originalValue: slot.originalValue });
+  }
+
+  // 各段落の表示テキストを構築 (ハイライト run 群を ★ラベル★ に置換)
   const lines: string[] = [];
-  let slotId = 0;
-  const pRe = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
-  let pm: RegExpExecArray | null;
-  while ((pm = pRe.exec(docXml as string)) !== null) {
-    const pXml = pm[0];
-    // テキストボックス内は別段落として扱うので除去
-    const inner = pXml.replace(/<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g, "");
-    const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
-    let rm: RegExpExecArray | null;
+  for (const para of walk.paragraphs) {
     let lineText = "";
-    let currentGroupText = "";
-    const flushGroup = () => {
-      if (!currentGroupText) return;
-      const label = pickLabelForHighlightSlot(slotId, currentGroupText, labelByCacheId);
-      pushSlot(label, { kind: "docx-highlight", slotId, originalValue: currentGroupText });
-      lineText += `★${label}★`;
-      slotId++;
-      currentGroupText = "";
-    };
-    while ((rm = runRe.exec(inner)) !== null) {
-      const text = getRunText(rm[0]);
-      if (!text) continue;
-      if (hasHighlight(rm[0])) {
-        currentGroupText += text;
+    let i = 0;
+    while (i < para.parts.length) {
+      const p = para.parts[i];
+      if (p.type === "run" && p.highlighted) {
+        // 連続ハイライト run 群 = 1 slot。walker と同じ判定。
+        // 該当 slot を探して ★ラベル★ を出力
+        const matchingSlot = walk.slots.find(
+          s => s.paragraphIdx === walk.paragraphs.indexOf(para) && s.groupStartIdx === i
+        );
+        if (matchingSlot) {
+          const label = slotIdToLabel.get(matchingSlot.slotId);
+          if (label) lineText += `★${label}★`;
+          i = matchingSlot.groupEndIdx + 1;
+        } else {
+          // 想定外、念のためスキップ
+          i++;
+        }
+      } else if (p.type === "run") {
+        lineText += p.text;
+        i++;
       } else {
-        flushGroup();
-        lineText += text;
+        i++;
       }
     }
-    flushGroup();
     if (lineText.trim()) lines.push(lineText);
   }
 
@@ -180,7 +181,6 @@ export async function normalizeDocxTemplate(
     markedText = markedText.replace(p.re, (_, name: string) => {
       const label = name.trim();
       if (label.startsWith("#") || label.startsWith("/")) {
-        // 条件分岐 {{#flag}}...{{/flag}} の制御マーカーは ★化しない (delete edit で対応)
         return `${p.open}${name}${p.close}`;
       }
       pushSlot(label, { kind: "docx-placeholder", placeholder: name, openClose: [p.open, p.close] });
