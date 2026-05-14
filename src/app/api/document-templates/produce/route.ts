@@ -206,10 +206,11 @@ export async function POST(request: NextRequest) {
     structureEdits?: Array<{
       fileName: string;
       edits: Array<{
-        type: "replace" | "delete-paragraph" | "delete-row";
+        type: "replace" | "delete-paragraph" | "delete-section" | "delete-row";
         old?: string;
         new?: string;
         anchor?: string;
+        endAnchor?: string;
         expectedMatches?: number;
       }>;
     }>;
@@ -287,12 +288,13 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // proofread-edits の applyProofreadEditsDocx/Xlsx を流用 (delete-paragraph 系)
+  // proofread-edits の applyProofreadEditsDocx/Xlsx を流用 (delete-paragraph / delete-section 系)
   const { applyProofreadEditsDocx, applyProofreadEditsXlsx } = await import("@/lib/proofread-edits");
   type AnyEdit = NonNullable<typeof structureEdits>[number]["edits"][number];
   type StrictProofreadEdit =
     | { type: "replace"; old: string; new: string; expectedMatches?: number }
     | { type: "delete-paragraph"; anchor: string; expectedMatches?: number }
+    | { type: "delete-section"; anchor: string; endAnchor?: string; expectedMatches?: number }
     | { type: "delete-row"; anchor: string; expectedMatches?: number };
   const narrowEdits = (raw: AnyEdit[]): StrictProofreadEdit[] => {
     const out: StrictProofreadEdit[] = [];
@@ -301,6 +303,8 @@ export async function POST(request: NextRequest) {
         out.push({ type: "replace", old: e.old, new: e.new, expectedMatches: e.expectedMatches });
       } else if (e.type === "delete-paragraph" && typeof e.anchor === "string") {
         out.push({ type: "delete-paragraph", anchor: e.anchor, expectedMatches: e.expectedMatches });
+      } else if (e.type === "delete-section" && typeof e.anchor === "string") {
+        out.push({ type: "delete-section", anchor: e.anchor, endAnchor: e.endAnchor, expectedMatches: e.expectedMatches });
       } else if (e.type === "delete-row" && typeof e.anchor === "string") {
         out.push({ type: "delete-row", anchor: e.anchor, expectedMatches: e.expectedMatches });
       }
@@ -663,6 +667,14 @@ ${conditionFlagBlock}
   - 例: 基本情報の住所 = 旧住所、ユーザーが clarify で「現住所は ○○」と確定 → **必ず現住所を使う**
 - 出典候補が他の場所を指していても**それは無視**し、✓ の値をそのまま slot に入れる。
 - 解釈や言い換えはせず、回答の文字列をそのまま使う（書式変換だけは下記ルールに従う）。
+
+### 🚫 「削除」「不要」「なし」系の Q&A はスロット値として埋め込んではいけない
+- ユーザーの確定回答が「議案2 自体を削除」「報酬なし」「項目自体を削除」「該当なし」のような
+  **値ではなく構造変更を要求している内容**の場合、その slot には**空文字 \`""\` を返すこと**。
+- ❌ slot 値に「【議案2 削除】」「議案2 削除」「削除」「不要」のような**指示語をそのまま埋める**のは禁止。
+  書類本文に「【議案2 削除】」みたいな文字列が出てしまい、書類として成立しなくなる。
+- 構造変更 (議案ブロック自体の削除) は Pass 0 (structure-decide) または校正パス (proofread) が
+  別途処理するので、produce は**値だけ返す責任に専念**する。値が無い項目は空文字でよい。
 
 ### 値の型と形式
 - **人名**: ターン1の整理内容・基本情報の役員/株主から正しい氏名を採用

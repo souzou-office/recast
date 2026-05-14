@@ -29,6 +29,16 @@ export type ProofreadEdit =
       contextAfter?: string;
     }
   | { type: "delete-paragraph"; anchor: string; expectedMatches?: number }
+  // delete-section: anchor を含む段落から、endAnchor を含む段落の**直前まで**を一括削除する。
+  // 議案ブロック (見出し + 条文 + ア/イ/ウ + 「記」) のように複数段落で 1 つの意味単位になっている
+  // 場合に使う。delete-paragraph は 1 段落しか消せないので、議案ブロック全消しは表現できない。
+  // endAnchor が省略された場合は文書末尾までを削除対象にする。
+  | {
+      type: "delete-section";
+      anchor: string;
+      endAnchor?: string;
+      expectedMatches?: number;
+    }
   | { type: "delete-row"; anchor: string; expectedMatches?: number };
 
 export interface EditApplyResult {
@@ -177,6 +187,61 @@ export function applyProofreadEditsDocx(buffer: Buffer, edits: ProofreadEdit[]):
       });
       if (deleted) applied.push(idx);
       else skipped.push({ index: idx, reason: `anchor "${anchor}" を含む段落が見つからず` });
+      return;
+    }
+
+    if (edit.type === "delete-section") {
+      const { anchor, endAnchor } = edit;
+      if (!anchor) { skipped.push({ index: idx, reason: "anchor が空" }); return; }
+
+      // 全段落を線形に走査し、anchor を含む段落〜endAnchor を含む段落の**直前**までを一括削除する。
+      // endAnchor 未指定なら文書末尾まで。anchor 自身の段落も削除対象に含める。
+      const paragraphRe = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
+      const paragraphs: { xml: string; text: string; start: number; end: number }[] = [];
+      let pm: RegExpExecArray | null;
+      while ((pm = paragraphRe.exec(docXml as string)) !== null) {
+        const pXml = pm[0];
+        const tTexts: string[] = [];
+        let mTxt: RegExpExecArray | null;
+        const tRe = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g;
+        while ((mTxt = tRe.exec(pXml)) !== null) tTexts.push(decodeXml(mTxt[1]));
+        paragraphs.push({
+          xml: pXml,
+          text: tTexts.join(""),
+          start: pm.index,
+          end: pm.index + pXml.length,
+        });
+      }
+
+      const anchorIdx = paragraphs.findIndex(p => p.text.includes(anchor));
+      if (anchorIdx < 0) {
+        skipped.push({ index: idx, reason: `anchor "${anchor}" を含む段落が見つからず` });
+        return;
+      }
+      let endIdx = paragraphs.length; // exclusive: ここの直前までを削除対象に
+      if (endAnchor) {
+        // anchor より後ろにある endAnchor を探す (=削除範囲を確定する)
+        for (let i = anchorIdx + 1; i < paragraphs.length; i++) {
+          if (paragraphs[i].text.includes(endAnchor)) {
+            endIdx = i;
+            break;
+          }
+        }
+        if (endIdx === paragraphs.length) {
+          skipped.push({
+            index: idx,
+            reason: `endAnchor "${endAnchor}" が anchor "${anchor}" 以降に見つからず (文書末尾まで削除を回避)`,
+          });
+          return;
+        }
+      }
+
+      const deleteFrom = paragraphs[anchorIdx].start;
+      const deleteTo = endIdx === paragraphs.length
+        ? paragraphs[paragraphs.length - 1].end
+        : paragraphs[endIdx].start;
+      docXml = (docXml as string).slice(0, deleteFrom) + (docXml as string).slice(deleteTo);
+      applied.push(idx);
       return;
     }
 

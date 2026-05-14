@@ -785,10 +785,11 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     type StructureEditList = Array<{
       fileName: string;
       edits: Array<{
-        type: "replace" | "delete-paragraph" | "delete-row";
+        type: "replace" | "delete-paragraph" | "delete-section" | "delete-row";
         old?: string;
         new?: string;
         anchor?: string;
+        endAnchor?: string;
         expectedMatches?: number;
       }>;
     }>;
