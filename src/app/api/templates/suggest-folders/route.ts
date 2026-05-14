@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { logTokenUsage } from "@/lib/token-logger";
+import { textFromContent } from "@/lib/anthropic-response";
 
 const client = new Anthropic();
 
@@ -40,7 +41,7 @@ ${folderList}
     });
     logTokenUsage("/api/templates/suggest-folders", "claude-haiku-4-5-20251001", response.usage);
 
-    const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
+    const text = textFromContent(response.content).trim();
     if (text === "なし") {
       return NextResponse.json({ suggested: [] });
     }

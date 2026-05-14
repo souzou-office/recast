@@ -27,6 +27,7 @@ import {
 } from "@/lib/case-conversation";
 import { normalizeTemplate, type NormalizedTemplate } from "@/lib/template-normalize";
 import { applyEdits, type Edit } from "@/lib/edit-engine";
+import { textFromContent } from "@/lib/anthropic-response";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const mammoth = require("mammoth");
@@ -230,13 +231,7 @@ ${templateBlock}
       messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
     });
     logTokenUsage("/api/document-templates/fill", MODEL, response.usage);
-    // 旧実装は `response.content[0].type === "text"` だけ見ていたが、Claude API は
-    // thinking block / 複数 text block を返すことがあり、最初の block が text でないと
-    // 全テキストを取りこぼす致命的バグがあった。全 text block を結合する。
-    aiResponseText = response.content
-      .filter(b => b.type === "text")
-      .map(b => b.type === "text" ? b.text : "")
-      .join("");
+    aiResponseText = textFromContent(response.content);
     // 🔍 DEBUG: 応答の各 block の type を確認 (空応答デバッグ用)
     console.log("[fill/debug] response.content block types:", response.content.map(b => b.type).join(", "));
     console.log("[fill/debug] response stop_reason:", response.stop_reason);
