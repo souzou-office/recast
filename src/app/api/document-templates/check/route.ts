@@ -182,7 +182,13 @@ JSON のみ返答。
       messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
     });
     logTokenUsage("/api/document-templates/check", MODEL, response.usage);
-    aiResponseText = response.content[0].type === "text" ? response.content[0].text : "";
+    // 旧実装は `response.content[0]` だけ見ていて取りこぼしバグがあった (fill route と同じ)
+    aiResponseText = response.content
+      .filter(b => b.type === "text")
+      .map(b => b.type === "text" ? b.text : "")
+      .join("");
+    console.log("[check/debug] response.content block types:", response.content.map(b => b.type).join(", "));
+    console.log("[check/debug] response stop_reason:", response.stop_reason);
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "AI 呼び出しに失敗" }), {
       status: 500, headers: { "Content-Type": "application/json" },
