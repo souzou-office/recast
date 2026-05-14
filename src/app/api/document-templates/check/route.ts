@@ -118,9 +118,14 @@ export async function POST(request: NextRequest) {
   }
   aiMessages = truncateBeforeStage(aiMessages, "check");
 
-  const docBlock = docCtxs.map(d =>
-    `### ${d.fileName}\n\`\`\`\n${d.text || "(本文抽出失敗)"}\n\`\`\`\n`
-  ).join("\n");
+  // 生成書類本文 + 残っている ★ラベル★ 一覧 (modify の slotKey 候補)
+  const docBlock = docCtxs.map(d => {
+    const labels = d.normalized ? Array.from(d.normalized.labelToSlots.keys()) : [];
+    const labelsBlock = labels.length > 0
+      ? `\n**まだテンプレに残っている ★ラベル★ (modify の slotKey はここから選ぶ)**\n${labels.map(l => `- \`${l}\``).join("\n")}`
+      : "\n(★ラベル★ は全て埋まっている、modify では値の書き換え不可)";
+    return `### ${d.fileName}\n\`\`\`\n${d.text || "(本文抽出失敗)"}\n\`\`\`${labelsBlock}\n`;
+  }).join("\n");
 
   const userTurnText = `## あなたが今やること (ターン: チェック)
 
