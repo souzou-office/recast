@@ -172,6 +172,52 @@ export async function ensureDocxLabels(templatePath: string): Promise<TemplateLa
   }
 }
 
+// 任意の docx Buffer に対してラベルを生成する（キャッシュなし、Pass 0 で議案削除等の構造変更を
+// 適用した後の buffer に使う）。
+// templatePath が無いケース（メモリ上で edit 適用した buffer）でも動くように、
+// AI 1 回呼び出しで完結させる。生成結果は呼び出し側で必要に応じて使用。
+//
+// なぜ必要か:
+//   Pass 0 (structure-decide) でテンプレ buffer に edit を適用すると slot ID が再採番される
+//   一方、ファイル隣の .labels.json は元の slot ID 順のままなので、AI に渡すラベル情報がズレる。
+//   ズレたまま produce が走ると「議案3 の slot に議案4 のラベル」みたいな状態になり、値が
+//   違うスロットに入って書類が壊れる重大バグになる。Pass 0 適用後の buffer に対して
+//   on-the-fly でラベルを再生成することでこの問題を回避する。
+export async function generateDocxLabelsForBuffer(buf: Buffer): Promise<TemplateLabels | null> {
+  try {
+    const { extractMarkedFields, getMarkedDocumentText } = await import("./docx-marker-parser");
+    const fields = extractMarkedFields(buf);
+    if (fields.length === 0) return null;
+    const markedText = getMarkedDocumentText(buf);
+    const oldValues = fields.map(f => ({ slotId: f.id, value: f.originalValue }));
+    const aiLabels = await askAiForLabels(markedText, oldValues);
+    const bySlot = new Map<number, TemplateSlotLabel>();
+    for (const l of aiLabels) bySlot.set(l.slotId, l);
+    const slots: TemplateSlotLabel[] = fields.map(f => {
+      const existing = bySlot.get(f.id);
+      return existing ?? {
+        slotId: f.id,
+        oldValue: f.originalValue,
+        label: f.comment || "不明",
+        format: "",
+        sourceHint: "",
+      };
+    });
+    for (const s of slots) {
+      const f = fields.find(x => x.id === s.slotId);
+      if (f) s.oldValue = f.originalValue;
+    }
+    return {
+      templateHash: sha256(buf),
+      parserVersion: PARSER_VERSION,
+      generatedAt: new Date().toISOString(),
+      slots,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // 任意の xlsx Buffer に対してラベルを生成する（キャッシュなし、produce での行拡張後等で使う）。
 // templatePath が無いケース（メモリ上で行拡張した buffer）でも動くように、
 // Haiku 1 回呼び出しで完結させる。生成結果は呼び出し側で必要に応じて使用。

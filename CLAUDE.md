@@ -96,7 +96,7 @@ data/
 ### API構成
 | パス | 用途 |
 |------|------|
-| `/api/workspace` | ワークスペース設定CRUD（selectCompany, selectSingleJob, toggleFile, selectSingleFolder, setSubfolderRole, setTemplateBasePath, setDefaultCommonPatterns, applyDefaultCommon, rescanCompany, removeCompany, deleteMasterSheet, saveGeneratedDocument, deleteGeneratedDocument） |
+| `/api/workspace` | ワークスペース設定CRUD（selectCompany, selectSingleJob, toggleFile, selectSingleFolder, setSubfolderRole, setTemplateBasePath, setDefaultCommonPatterns, applyDefaultCommon, rescanCompany, removeCompany, deleteMasterSheet, saveGeneratedDocument, deleteGeneratedDocument, setProfileSources） |
 | `/api/workspace/list-files` | ローカルフォルダのライブファイル一覧（POST） |
 | `/api/workspace/read-file` | ローカルファイル読み取り（テキスト抽出 or HTML変換） |
 | `/api/workspace/raw-file` | ローカルファイルの生データ返却 |
@@ -115,8 +115,8 @@ data/
 | `/api/templates/generate` | AIでテンプレート項目を自動生成 |
 | `/api/templates/save-master` | マスターシートJSON保存 |
 | `/api/templates/link-sources` | Haikuで各セクションと根拠ファイルを紐付け |
-| `/api/document-templates/produce` | Wordテンプレート【プレースホルダー】置換→docx生成 or AI全文生成 |
-| `/api/verify` | 突合せ（原本 vs 生成済み書類の相違チェック、表形式レポート） |
+| `/api/document-templates/fill` | **新パイプライン入力**: ★ラベル★ 正規化されたテンプレに delete/modify/insert を適用してdocx/xlsx 生成 |
+| `/api/document-templates/check` | **新パイプラインチェック**: 生成書類を AI が読み直して追加 edit を返す (3 ラウンドループ駆動) |
 
 ## 実装済み機能
 
@@ -278,6 +278,207 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 5. **dead code 整理**: FileSidebar / folders/* は未使用
 6. **ProfileTemplateModal 削除**: 「抽出項目」廃止に合わせて
 
+## 2026-05-14 セッション (後半) — 書類生成パイプラインを全面リライト
+
+ユーザーから「いまの内容じゃあどうせ全然だめなんだから、全部捨てて作り直していい」「フォールバック
+やルールベースの考え方を一度捨てて」と指示があり、書類生成パイプラインを**根本から再設計**した。
+
+### 新パイプライン (4 ステージ)
+
+```
+基本情報 → 案件整理 → 入力 (fill) → チェック (check, 最大 3 ラウンドのループ)
+            ↓
+         clarify (要確認、必要なら入力前に挟む)
+```
+
+| ステージ | route | 役割 | AI 呼び出し |
+|---------|-------|------|------------|
+| 基本情報 | `/api/workspace/profile` | 会社の静的事実 | 1 回 (既存流用) |
+| 案件整理 | `/api/templates/execute` | 案件の事実関係を表に整理 | 1 回 (既存流用) |
+| clarify | `/api/document-templates/clarify` | 不足項目の確認質問 (1 ラウンド網羅) | 1 回 |
+| **入力 (fill)** | `/api/document-templates/fill` | テンプレに対する編集 (delete/modify/insert の 3 op) | 1 回 |
+| **チェック (check)** | `/api/document-templates/check` | 生成書類を読み直して追加編集 | 最大 3 ラウンド |
+
+### 編集オペレーションは 3 種類だけ
+
+AI が出すのは以下の 3 つの edit プリミティブのみ。サーバーは忠実に適用するだけのインタプリタ。
+件数検証 (expectedMatches)・文脈ヒント (contextBefore/After)・「削除と書かれた答えは埋めるな」等の
+**フォールバック保険は一切持たない**。失敗したら skipped を返すだけで、後段の check が読み直して
+追加 edit を出す前提。
+
+- **delete**: テンプレ範囲を削除。`anchor` 段落から `endAnchor` 段落の**直前**まで一括削除
+  - 議案ブロックも 1 edit で消える (旧 `delete-paragraph` の単段落 only 制約から脱却)
+- **modify**: テンプレ内 ★ラベル★ を値で埋める。`slotKey` は ★…★ の中身
+  - 同じラベルが複数 slot に出ていれば**全部同じ値**で埋まる (書類間の不一致が構造的に発生しない)
+- **insert**: テンプレ内の既存パターンを複製。`copyFromAnchor`〜`copyFromEndAnchor` を 1 ユニットと
+  して `insertAfterAnchor` の直後に貼る。複製ごとの値は `fills` で指定
+  - AI が新規に作文することは禁止。テンプレに既に存在するパターンの複製のみ
+
+### マークの正規化 (★ラベル★ 1 種に統一)
+
+テンプレに混在する 5 系統のマーク (黄色塗り / 赤フォント / `【…】` / `{{…}}` / `★…★`) を、AI に
+渡す前に `src/lib/template-normalize.ts` が `★ラベル★` の 1 種に正規化する。AI 視野からは
+**slot 番号 (要入力_N) が完全に排除**された。
+
+ラベル文字列の決定方針:
+- `【foo】` / `{{foo}}` 系 → そのまま `foo` をラベルに
+- 黄色塗り / 赤フォント → `template-labels.ts` の Sonnet 4.6 生成ラベルを使用
+
+サーバー内部の `labelToSlots: Map<string, SlotRef[]>` で物理 slot 群を管理。AI には絶対に見せない。
+
+### 新規ファイル
+
+- `src/lib/template-normalize.ts`: ★ 正規化 + labelToSlots 構築
+- `src/lib/edit-engine.ts`: 3 op (delete/modify/insert) を docx/xlsx に適用するインタプリタ
+- `src/app/api/document-templates/fill/route.ts`: 入力ステージ
+- `src/app/api/document-templates/check/route.ts`: チェックステージ (ループ駆動はクライアント)
+
+### 削除されたファイル (全部捨てた)
+
+- `src/app/api/document-templates/produce/route.ts` (旧 1198 行) → fill に統合
+- `src/app/api/document-templates/structure-decide/route.ts` (Pass 0) → fill に統合
+- `src/app/api/document-templates/proofread/route.ts` → check に統合
+- `src/app/api/verify/route.ts` → check に統合
+- `src/lib/proofread-edits.ts` → edit-engine.ts に統合 (delete-section, delete-paragraph 等)
+- `src/components/VerificationView.tsx` → dead code (チャットフローに統合済みだった)
+
+### 流用したもの (改修なし or 軽改修)
+
+- `src/lib/docx-marker-parser.ts`: ハイライト検出 + replaceMarkedFieldsBySlot (★ 抽出の元実装)
+- `src/lib/xlsx-marker-parser.ts`: 黄色セル/赤フォントセル検出 + replaceXlsxMarkedCellsBySlot
+- `src/lib/template-labels.ts`: Sonnet 4.6 によるラベル生成 (★ラベル★ の元データ)
+- `src/lib/case-conversation.ts`: 1 案件 1 会話の履歴管理。stage 名に "fill" "check" を追加
+- 案件整理 (`/api/templates/execute`)、clarify (`/api/document-templates/clarify`)、regenerate
+- 各種ユーティリティ (全角/半角変換、Excel 数値型変換等) は edit-engine の内部で必要に応じて使用
+
+### ChatWorkflow.tsx の変更
+
+- 旧 `generateDocuments` の structure-decide + produce 呼び出しを **`/api/document-templates/fill`
+  1 本に**統合
+- 旧 `runCheck` の `/api/verify` 呼び出しを **`/api/document-templates/check`** に変更
+- check 完了時 `converged: true/false` を見て、**最大 3 ラウンドのループ**を回す
+- 旧 `handleProofread` を「再 check 呼び出し」に置換 (ユーザーが手動で再ラウンドしたいとき)
+
+### 残るリスク・未実装
+
+- **insert の入れ子**: 株主リスト中の小項目は今回扱わない (1 ユニット = 1 段落塊 or 1 行)
+- **議案番号の繰り上げ**: 議案2 削除 → 議案3 を議案2 に書き換えるのは AI が check ステージで
+  気付いて modify or replace edit を出す前提。気付かないケースが出るかは要観察
+- **xlsx の delete / insert**: 現状 modify のみサポート。xlsx で議案削除等のニーズが出たら拡張
+- **加筆 (insert) の仕様**: fills が `{slotKey, value}[]` の単一フォーマットなので、1 ユニット内に
+  複数 slot がある場合は AI が複数 insert を発行する想定。実運用で詰める
+
+### 次セッションでやること候補
+
+- 実案件で fill / check ループの挙動を観察、議案削除が実際に消えるか確認
+- insert の入れ子サポートが必要そうなら型と適用ロジックを拡張
+- xlsx の delete / insert 実装
+- check の最大ラウンド数 (現状 3) の妥当性
+- AI プロンプトの調整 (3 op の使い分けが AI に伝わっていない箇所があれば)
+
+---
+
+## 2026-05-14 セッション (前半) — Pass 0 (方針決め) 復活 → 後半で全面リライトに置換
+
+PR #54 で一時無効化されていた Pass 0 (structure-decide → 議案削除等の構造変更を produce 前に適用) を
+安全に復活させた。停止していた根因 = labels.json の slot ID ズレ を労力少なく解消するため、
+xlsx 版に倣って **docx 版のラベル on-the-fly 再生成** を追加した。
+
+### 入った修正
+
+- **`generateDocxLabelsForBuffer(buf)`** を `src/lib/template-labels.ts` に追加。
+  xlsx 版 (`generateXlsxLabelsForBuffer`) と同形で、`extractMarkedFields` + `getMarkedDocumentText`
+  を使って AI 1 呼び出しでラベル集を再生成。Pass 0 で edit を適用した buffer に対して使う。
+- **produce/route.ts** で Pass 0 適用に `didPass0Apply` フラグを導入:
+  - xlsx 系: `didExpand || didPass0Apply` の OR で `generateXlsxLabelsForBuffer` を呼ぶように
+  - docx 系 (highlight): 新たに `generateDocxLabelsForBuffer` を `didPass0Apply` のときに呼ぶ
+  - これで Pass 0 後の slot ID 再採番にラベルが追随する (PR #54 の元凶を根治)
+- **`ChatWorkflow.tsx:776-`** で `const structureEdits: undefined = undefined;` を撤去し、
+  `/api/document-templates/structure-decide` の fetch を復活。失敗しても produce はそのまま走らせる
+  (構造変更なしで穴埋めするだけ)。
+
+### 期待される効果
+
+- 「議案 2 自体を削除」と clarify で確定された場合、produce 前に Pass 0 が議案 2 ブロックを
+  delete-paragraph で消す → 「支給開始時期：より」のような空欄残骸が出なくなる
+- proofread の出番 (= 議案削除を後追いで edit 化する) が無くなり、複数段落の議案ブロック削除を
+  delete-paragraph 1 段落 only ガードで救えない構造的限界も回避される
+
+### 注意点・既知の制約
+
+- doc/docm 形式のテンプレでは Pass 0 適用後 rawBuffer が下流の workingBuffer (別 .docx ファイル)
+  に反映されない (produce/route.ts:443-452 の既存仕様)。実用上は .docx テンプレが主なので
+  顕在化しにくいが、doc/docm テンプレで Pass 0 を使うケースが出てきたら見直す
+- structure-decide が AI 呼び出し 1 回ぶん遅くなる (~数秒) が、案件あたり 1 度なのでコスト無視可
+- Pass 0 が誤って必要なブロックを消すリスクは残るが、`expectedMatches` で件数検証して
+  不一致なら適用見送り (proofread-edits.ts)
+
+### 次のセッション残タスク
+
+- **AI プロンプトの edit-list 化 / slot 番号廃止** (CLAUDE.md 末尾のユーザー本質指摘) — 最終形
+- **proofread の delete-paragraph を expectedMatches 連動の複数削除に拡張**、または
+  `delete-section` (anchor + endAnchor / blockCount) を追加 — Pass 0 が動かないケースの保険
+- **placeholder-docx / placeholder-xlsx の slot-keyed 化** (個人/法人テンプレで slot 12 同意日が
+  片側に出ない問題の根治)
+- **clarify Q&A を verify / proofread にも明示注入** (現状は会話履歴経由の暗黙参照のみ)
+
+### 追加: execute プロンプトに同義語マッピングを追加 (同日 2026-05-14)
+
+- 症状: 基本情報に商号/本店所在地が入っているのに、clarify が「【会社名】を教えてください」
+  「【会社の本店所在地】を教えてください」と聞いてくる
+- 原因: execute プロンプトには profile.structured を生 JSON で渡すだけで、テンプレ側ラベル
+  (「会社名」「会社の本店所在地」) と基本情報キー (「商号」「本店所在地」) の同義語マッピングを
+  明示していなかった。AI が同義語推論を誤ると `*要確認*` に倒し、clarify に持ち越される
+- 修正: `src/app/api/templates/execute/route.ts` の「## 必要な項目」近辺に
+  「当事者・登記事項ラベルの解釈ガイド」を追加。会社名/会社商号/発行会社 ≈ 商号、
+  会社の本店所在地/本店所在地/会社住所 ≈ 本店所在地、等のマッピングを明示
+
+### 追加: `delete-section` edit を追加 (議案ブロック等の複数段落を一括削除) (同日 2026-05-14)
+
+- 症状: Pass 0 復活後も、議案2 ブロック全体は消えず、ヘッダーだけ削れて条文・ア/イ/ウ が残る。
+  さらに produce が「議案2 自体を削除」という Q&A を slot 値として誤解釈し、テンプレに
+  「【議案２削除】」というプレースホルダ文字列が埋め込まれていた
+- 原因:
+  - `delete-paragraph` は anchor を含む段落 1 つしか消さない実装。議案ブロックは複数段落で
+    構成されているため、複数段落単位の削除を表現する手段が無かった
+  - produce プロンプトに「削除指示の Q&A は slot 値として埋めるな」というルールが無く、AI が
+    Q&A の答えを slot に流し込んだ結果「【議案２削除】」が書類本文に出ていた
+- 修正:
+  - `src/lib/proofread-edits.ts`: `delete-section` 型を追加。anchor 段落から endAnchor 段落の
+    **直前まで**を一括削除する。endAnchor 未指定なら anchor 以降文書末尾まで (危険なので AI prompt
+    では極力指定するよう促す)
+  - `src/app/api/document-templates/structure-decide/route.ts`: prompt に delete-section の
+    使い方を追加。「議案ブロックなど複数段落の意味単位を消すときはこれを使う」と明示
+  - `src/app/api/document-templates/proofread/route.ts`: 同様に delete-section を例示
+  - `src/app/api/document-templates/produce/route.ts`:
+    - `narrowEdits` / structureEdits 型を delete-section 対応
+    - プロンプトに「『削除』『不要』『なし』系の Q&A は slot 値として埋め込んではいけない、
+      該当 slot は空文字を返せ」を追加 (保険)
+  - `src/components/ChatWorkflow.tsx`: structureEdits 型を delete-section 対応
+- 結果:
+  - Pass 0 で議案2 ブロック全体が消える (delete-section 1 件で実現)
+  - 万一 Pass 0 が漏らしても produce が「【議案2 削除】」を slot に埋め込まない
+  - proofread にも delete-section を渡しているので、最終手段としてここでも救える
+
+### 追加: 基本情報の自動生成を廃止、毎回ファイル選択モーダル経由に (同日 2026-05-14)
+
+- 症状: ユーザーが「生成」ボタンを押していないのに、いつの間にか基本情報が生成されていた
+- 原因: `src/app/page.tsx` に `autoRefreshProfile` がいて、会社選択時に共通フォルダの
+  鮮度チェック (GET /api/workspace/profile) → `isStale` ならバックグラウンドで
+  POST /api/workspace/profile を勝手に呼んでいた。AI 課金もユーザー知らない間に走っていた
+- 修正:
+  - `src/app/page.tsx`: autoRefreshProfile の POST 部分を撤去。鮮度チェックだけ残し、
+    `profileStale` state を CompanyProfile に渡す
+  - `src/components/CompanyProfile.tsx`: 旧 `generateProfile` を削除し、「再生成/基本情報を生成」
+    ボタン押下時は `ProfileSourceModal` を `mode="generate"` で開くだけにした。
+    isStale バナーで「共通フォルダのファイルが更新されています」と表示
+  - `src/components/ProfileSourceModal.tsx`: `mode` プロップを追加 (`"settings"` | `"generate"`)。
+    `"generate"` のときは「保存」ボタンを「この内容で基本情報を生成」に置き換え、
+    保存 + POST /api/workspace/profile を順次呼んでから閉じる
+- 結果: 生成は必ずユーザーが「生成」ボタン → モーダルで参照ファイル確認 → 「この内容で生成」を
+  踏まないと走らない。AI コストも明示的なクリックでのみ発生する。同時にユーザーは生成のたびに
+  「どのファイルを使うか」を確認できる
+
 ## 2026-05-13 セッションのまとめ（重要、次セッションの引き継ぎ事項）
 
 このセッションで PR #42〜#56 をマージした。今後 produce 周りを触るときに必ず読むこと。
@@ -308,7 +509,7 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 execute (案件整理) → clarify (確認質問・1 ラウンド網羅) → produce (穴埋め) → verify (突合せ) → [指摘あり] → proofread (edit list で校正)
 ```
 
-- **Pass 0 (方針決め)** は無効化中 (PR #54)。コード自体は `/api/document-templates/structure-decide/route.ts` に残っている。再有効化するには labels.json をインメモリ再生成する仕組みが必要 (slot ID シフト問題)
+- **Pass 0 (方針決め)** は 2026-05-14 セッションで復活済み。`generateDocxLabelsForBuffer` + xlsx 版を使った on-the-fly ラベル再生成で slot ID シフト問題を解消した。詳細は本ファイル先頭の 2026-05-14 セッションのまとめを参照
 - **xlsx 置換**: slot-keyed (PR #44)。`replaceXlsxMarkedCellsBySlot`
 - **docx 置換**: slot-keyed (PR #56)。`replaceMarkedFieldsBySlot`。旧 `replaceMarkedFields` は @deprecated
 - **labels.json**: Sonnet 4.6 生成、PARSER_VERSION 5

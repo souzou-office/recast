@@ -96,27 +96,29 @@ export default function Home() {
 
   const selectedCompany = config?.companies.find(c => c.id === config.selectedCompanyId);
 
-  // 共通フォルダ変更検知 → 基本情報を自動再生成（バックグラウンド）
-  const autoRefreshProfile = useCallback(async (companyId: string) => {
+  // 共通フォルダの変更検知。旧設計では isStale なら裏で AI 生成を即座に走らせていたが、
+  // ユーザーから「ボタンを押していないのに勝手に生成される」「参照ファイルが自動で選ばれている」
+  // との不満があったため、自動生成は廃止。鮮度チェックだけ残し、isStale なら CompanyProfile 側で
+  // バナー表示する。ユーザーが明示的に「再生成」ボタンを押した場合のみ、ProfileSourceModal を
+  // 経由して都度ファイル選択 → 生成する流れに変更した。
+  const [profileStale, setProfileStale] = useState(false);
+  const checkProfileStale = useCallback(async (companyId: string) => {
     try {
       const check = await fetch(`/api/workspace/profile?companyId=${encodeURIComponent(companyId)}`);
-      if (!check.ok) return;
+      if (!check.ok) { setProfileStale(false); return; }
       const { isStale } = await check.json();
-      if (!isStale) return;
-      const gen = await fetch("/api/workspace/profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId }),
-      });
-      if (gen.ok) fetchConfig();
-    } catch { /* ignore */ }
-  }, [fetchConfig]);
+      setProfileStale(!!isStale);
+    } catch {
+      setProfileStale(false);
+    }
+  }, []);
 
-  // 初期ロード後、選択中の会社について鮮度チェック
+  // 初期ロード後、選択中の会社について鮮度チェック (生成は走らせない)
   useEffect(() => {
     const id = config?.selectedCompanyId;
-    if (id) autoRefreshProfile(id);
-  }, [config?.selectedCompanyId, autoRefreshProfile]);
+    if (id) checkProfileStale(id);
+    else setProfileStale(false);
+  }, [config?.selectedCompanyId, checkProfileStale]);
 
   const handleSelectCompany = async (companyId: string) => {
     await fetch("/api/workspace", {
@@ -246,7 +248,11 @@ export default function Home() {
             <CompanyProfile
               key={config?.selectedCompanyId || "none"}
               company={selectedCompany || null}
-              onUpdate={fetchConfig}
+              onUpdate={() => {
+                fetchConfig();
+                if (config?.selectedCompanyId) checkProfileStale(config.selectedCompanyId);
+              }}
+              isStale={profileStale}
             />
           )}
           {view === "search" && (

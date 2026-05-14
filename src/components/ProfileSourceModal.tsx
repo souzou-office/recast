@@ -7,6 +7,15 @@ interface Props {
   company: Company;
   onClose: () => void;
   onSaved?: () => void;
+  /**
+   * "settings": 「保存」ボタンだけ表示。`setProfileSources` で永続化のみ。
+   * "generate": 「この内容で基本情報を生成」ボタンを表示。保存後に POST /api/workspace/profile も呼ぶ。
+   *
+   * デフォルトは "settings" (既存挙動)。
+   */
+  mode?: "settings" | "generate";
+  /** mode === "generate" のとき、AI 生成完了後に呼ばれる */
+  onGenerated?: () => void;
 }
 
 interface FileRow {
@@ -15,11 +24,12 @@ interface FileRow {
   folder: string; // サブフォルダ名（表示用）
 }
 
-export default function ProfileSourceModal({ company, onClose, onSaved }: Props) {
+export default function ProfileSourceModal({ company, onClose, onSaved, mode = "settings", onGenerated }: Props) {
   const [files, setFiles] = useState<FileRow[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -63,6 +73,43 @@ export default function ProfileSourceModal({ company, onClose, onSaved }: Props)
     });
     setSaving(false);
     onSaved?.();
+    onClose();
+  };
+
+  // 「保存して生成」モード: 選択を永続化した後、AI で基本情報を生成する
+  const saveAndGenerate = async () => {
+    setSaving(true);
+    const paths = selected.size === files.length ? [] : Array.from(selected);
+    await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "setProfileSources", companyId: company.id, paths }),
+    });
+    setSaving(false);
+    setGenerating(true);
+    try {
+      const res = await fetch("/api/workspace/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id }),
+      });
+      if (!res.ok) {
+        try {
+          const err = await res.json();
+          alert(err.error || "生成に失敗しました");
+        } catch {
+          alert("生成に失敗しました");
+        }
+        setGenerating(false);
+        return;
+      }
+    } catch {
+      alert("生成に失敗しました");
+      setGenerating(false);
+      return;
+    }
+    setGenerating(false);
+    onGenerated?.();
     onClose();
   };
 
@@ -147,13 +194,23 @@ export default function ProfileSourceModal({ company, onClose, onSaved }: Props)
           <button onClick={onClose} className="rounded-lg border border-[var(--color-border)] px-4 py-1.5 text-xs text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]">
             キャンセル
           </button>
-          <button
-            onClick={save}
-            disabled={saving || loading}
-            className="rounded-lg bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
-          >
-            {saving ? "保存中..." : "保存"}
-          </button>
+          {mode === "generate" ? (
+            <button
+              onClick={saveAndGenerate}
+              disabled={saving || generating || loading || selected.size === 0}
+              className="rounded-lg bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
+            >
+              {generating ? "生成中..." : saving ? "保存中..." : "この内容で基本情報を生成"}
+            </button>
+          ) : (
+            <button
+              onClick={save}
+              disabled={saving || loading}
+              className="rounded-lg bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:bg-gray-300"
+            >
+              {saving ? "保存中..." : "保存"}
+            </button>
+          )}
         </div>
       </div>
     </div>
