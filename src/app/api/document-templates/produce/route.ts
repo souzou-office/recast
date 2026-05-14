@@ -324,6 +324,13 @@ export async function POST(request: NextRequest) {
     // Pass 0 で出た構造変更があれば**まず**ここで適用する。
     // 例: 議案2 ブロックを削除 → 削除済みの buffer から slot 抽出が走るので、議案2 の
     //     プレースホルダーは存在しない状態で AI に渡る (穴埋めの無駄も無くなる)。
+    //
+    // ⚠️ Pass 0 で buffer に edit が適用されると、slot ID は再採番される。一方で
+    // ファイル隣の .labels.json は元の slot ID 順のままなので、そのまま使うと AI に
+    // 渡るラベルが完全にズレる (旧 PR #54 で Pass 0 を殺した直接の原因)。
+    // この `didPass0Apply` フラグを下流の slotLabels 構築で見て、true ならば
+    // on-the-fly でラベルを再生成する (generateDocxLabelsForBuffer / generateXlsxLabelsForBuffer)。
+    let didPass0Apply = false;
     const myEdits = structureEditsByFile.get(df.name);
     if (myEdits && myEdits.length > 0) {
       try {
@@ -335,6 +342,7 @@ export async function POST(request: NextRequest) {
         if (res.applied.length > 0) {
           console.log(`[produce/pass0] ${df.name}: applied ${res.applied.length}/${myEdits.length} structure edits`);
           rawBuffer = res.buffer;
+          didPass0Apply = true;
           // df.content は AI に slot リストを渡すときの参照テキストなので、
           // 削除後の本文と整合をとるため mammoth で再抽出する (best-effort、失敗時は元のまま)
           try {
@@ -404,11 +412,14 @@ export async function POST(request: NextRequest) {
         if (cells.length === 0) continue; // 何も無ければスキップ
 
         const { text: xlMarkedText, slots: xlSlots } = getXlsxMarkedTextWithSlots(workingBuffer);
-        // 拡張した場合は labels.json (拡張前のテンプレ基準) と slot ID がズレるので、
-        // 拡張後のバッファに対して on-the-fly でラベルを再生成する。
-        // キャッシュには書かない（拡張は案件ごとに件数が変わるため）。
+        // labels.json は「元のテンプレファイル」基準の slot ID 順なので、以下のいずれかが
+        // 起きた buffer ではラベルが完全にズレる:
+        //   ① 行ブロック拡張 (didExpand): 株主リストの行が増えてマーカー数が変動
+        //   ② Pass 0 適用 (didPass0Apply): 議案削除等で slot ID が再採番
+        // どちらかに該当する場合は workingBuffer に対して on-the-fly でラベルを再生成する。
+        // キャッシュには書かない（案件ごとに条件が違うため）。
         let slotLabels = await loadSlotLabelsFor(df.path);
-        if (didExpand) {
+        if (didExpand || didPass0Apply) {
           try {
             const { generateXlsxLabelsForBuffer } = await import("@/lib/template-labels");
             const fresh = await generateXlsxLabelsForBuffer(workingBuffer);
@@ -416,7 +427,8 @@ export async function POST(request: NextRequest) {
               const m = new Map<number, { label: string; format: string; sourceHint?: string }>();
               for (const s of fresh.slots) m.set(s.slotId, { label: s.label, format: s.format, sourceHint: s.sourceHint });
               slotLabels = m;
-              console.log(`[produce/xlsx] regenerated ${fresh.slots.length} labels for expanded ${df.name}`);
+              const reason = didExpand && didPass0Apply ? "expanded+pass0" : didExpand ? "expanded" : "pass0";
+              console.log(`[produce/xlsx] regenerated ${fresh.slots.length} labels for ${reason} ${df.name}`);
             }
           } catch (e) {
             console.warn(`[produce/xlsx] label regen failed for ${df.name}:`, e instanceof Error ? e.message : e);
@@ -469,7 +481,24 @@ export async function POST(request: NextRequest) {
       const markedFields = extractMarkedFields(workingBuffer);
       if (markedFields.length === 0) continue;
       const { text: markedDocText, slots: docSlots } = getMarkedDocumentTextWithSlots(workingBuffer);
-      const slotLabels = await loadSlotLabelsFor(df.path);
+      // labels.json は「元のテンプレファイル」基準なので、Pass 0 で議案削除等を適用した
+      // buffer に対してはラベルが完全にズレる。didPass0Apply の場合は on-the-fly で再生成。
+      // (xlsx 側と同等の対応。これが無いと PR #54 で Pass 0 を殺した重大バグが再発する)
+      let slotLabels = await loadSlotLabelsFor(df.path);
+      if (didPass0Apply) {
+        try {
+          const { generateDocxLabelsForBuffer } = await import("@/lib/template-labels");
+          const fresh = await generateDocxLabelsForBuffer(workingBuffer);
+          if (fresh) {
+            const m = new Map<number, { label: string; format: string; sourceHint?: string }>();
+            for (const s of fresh.slots) m.set(s.slotId, { label: s.label, format: s.format, sourceHint: s.sourceHint });
+            slotLabels = m;
+            console.log(`[produce/docx] regenerated ${fresh.slots.length} labels for pass0 ${df.name}`);
+          }
+        } catch (e) {
+          console.warn(`[produce/docx] label regen failed for ${df.name}:`, e instanceof Error ? e.message : e);
+        }
+      }
       analyses.push({
         kind: "highlight-docx",
         file: { name: df.name, path: df.path, content: df.content },

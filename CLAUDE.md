@@ -278,6 +278,50 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 5. **dead code 整理**: FileSidebar / folders/* は未使用
 6. **ProfileTemplateModal 削除**: 「抽出項目」廃止に合わせて
 
+## 2026-05-14 セッションのまとめ — Pass 0 (方針決め) 復活
+
+PR #54 で一時無効化されていた Pass 0 (structure-decide → 議案削除等の構造変更を produce 前に適用) を
+安全に復活させた。停止していた根因 = labels.json の slot ID ズレ を労力少なく解消するため、
+xlsx 版に倣って **docx 版のラベル on-the-fly 再生成** を追加した。
+
+### 入った修正
+
+- **`generateDocxLabelsForBuffer(buf)`** を `src/lib/template-labels.ts` に追加。
+  xlsx 版 (`generateXlsxLabelsForBuffer`) と同形で、`extractMarkedFields` + `getMarkedDocumentText`
+  を使って AI 1 呼び出しでラベル集を再生成。Pass 0 で edit を適用した buffer に対して使う。
+- **produce/route.ts** で Pass 0 適用に `didPass0Apply` フラグを導入:
+  - xlsx 系: `didExpand || didPass0Apply` の OR で `generateXlsxLabelsForBuffer` を呼ぶように
+  - docx 系 (highlight): 新たに `generateDocxLabelsForBuffer` を `didPass0Apply` のときに呼ぶ
+  - これで Pass 0 後の slot ID 再採番にラベルが追随する (PR #54 の元凶を根治)
+- **`ChatWorkflow.tsx:776-`** で `const structureEdits: undefined = undefined;` を撤去し、
+  `/api/document-templates/structure-decide` の fetch を復活。失敗しても produce はそのまま走らせる
+  (構造変更なしで穴埋めするだけ)。
+
+### 期待される効果
+
+- 「議案 2 自体を削除」と clarify で確定された場合、produce 前に Pass 0 が議案 2 ブロックを
+  delete-paragraph で消す → 「支給開始時期：より」のような空欄残骸が出なくなる
+- proofread の出番 (= 議案削除を後追いで edit 化する) が無くなり、複数段落の議案ブロック削除を
+  delete-paragraph 1 段落 only ガードで救えない構造的限界も回避される
+
+### 注意点・既知の制約
+
+- doc/docm 形式のテンプレでは Pass 0 適用後 rawBuffer が下流の workingBuffer (別 .docx ファイル)
+  に反映されない (produce/route.ts:443-452 の既存仕様)。実用上は .docx テンプレが主なので
+  顕在化しにくいが、doc/docm テンプレで Pass 0 を使うケースが出てきたら見直す
+- structure-decide が AI 呼び出し 1 回ぶん遅くなる (~数秒) が、案件あたり 1 度なのでコスト無視可
+- Pass 0 が誤って必要なブロックを消すリスクは残るが、`expectedMatches` で件数検証して
+  不一致なら適用見送り (proofread-edits.ts)
+
+### 次のセッション残タスク
+
+- **AI プロンプトの edit-list 化 / slot 番号廃止** (CLAUDE.md 末尾のユーザー本質指摘) — 最終形
+- **proofread の delete-paragraph を expectedMatches 連動の複数削除に拡張**、または
+  `delete-section` (anchor + endAnchor / blockCount) を追加 — Pass 0 が動かないケースの保険
+- **placeholder-docx / placeholder-xlsx の slot-keyed 化** (個人/法人テンプレで slot 12 同意日が
+  片側に出ない問題の根治)
+- **clarify Q&A を verify / proofread にも明示注入** (現状は会話履歴経由の暗黙参照のみ)
+
 ## 2026-05-13 セッションのまとめ（重要、次セッションの引き継ぎ事項）
 
 このセッションで PR #42〜#56 をマージした。今後 produce 周りを触るときに必ず読むこと。
@@ -308,7 +352,7 @@ recastは「事実→型に流し込む」まで責任を持ち、**文章の審
 execute (案件整理) → clarify (確認質問・1 ラウンド網羅) → produce (穴埋め) → verify (突合せ) → [指摘あり] → proofread (edit list で校正)
 ```
 
-- **Pass 0 (方針決め)** は無効化中 (PR #54)。コード自体は `/api/document-templates/structure-decide/route.ts` に残っている。再有効化するには labels.json をインメモリ再生成する仕組みが必要 (slot ID シフト問題)
+- **Pass 0 (方針決め)** は 2026-05-14 セッションで復活済み。`generateDocxLabelsForBuffer` + xlsx 版を使った on-the-fly ラベル再生成で slot ID シフト問題を解消した。詳細は本ファイル先頭の 2026-05-14 セッションのまとめを参照
 - **xlsx 置換**: slot-keyed (PR #44)。`replaceXlsxMarkedCellsBySlot`
 - **docx 置換**: slot-keyed (PR #56)。`replaceMarkedFieldsBySlot`。旧 `replaceMarkedFields` は @deprecated
 - **labels.json**: Sonnet 4.6 生成、PARSER_VERSION 5

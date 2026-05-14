@@ -774,14 +774,49 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       }
     }
 
-    // Pass 0 (方針決め) は一時的に無効化中。
-    // 理由: テンプレ buffer に edit を先に適用すると、slot ID が再採番される一方で
-    //   ファイルキャッシュの labels.json は元の slot ID 順のままなので、AI に渡す
-    //   ラベル情報がズレる → 値が違うスロットに入って書類が壊れる重大バグ。
-    // TODO: Pass 0 適用後の buffer に対して labels を**インメモリで再生成**する
-    //   仕組みを入れてから再有効化する (template-labels.ts の generateXlsxLabelsForBuffer
-    //   の docx 版を追加 + produce 内で呼ぶ)。
-    const structureEdits: undefined = undefined;
+    // Pass 0 (方針決め): produce より前に「議案2 を削除」等の構造変更を AI に declarative に
+    // 決めさせるターン。clarify の確定回答とテンプレ本文を見て、削除すべきブロックを edit list で返す。
+    //
+    // 旧 PR #54 で一度無効化された (テンプレ buffer に edit 適用後 slot ID が再採番されるが、
+    // ファイル隣の labels.json は元の slot 順のままで AI 視野がズレる重大バグ)。
+    // 復活にあたって produce 側で `generateDocxLabelsForBuffer` / `generateXlsxLabelsForBuffer`
+    // を呼び on-the-fly でラベルを再生成する仕組みを入れた (template-labels.ts)。
+    // structure-decide が失敗しても produce はそのまま走らせる (構造変更なしで穴埋めするだけ)。
+    type StructureEditList = Array<{
+      fileName: string;
+      edits: Array<{
+        type: "replace" | "delete-paragraph" | "delete-row";
+        old?: string;
+        new?: string;
+        anchor?: string;
+        expectedMatches?: number;
+      }>;
+    }>;
+    let structureEdits: StructureEditList | undefined = undefined;
+    try {
+      const sdRes = await fetch("/api/document-templates/structure-decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: currentThread.id,
+          templateFolderPath: templatePath,
+        }),
+      });
+      if (sdRes.ok) {
+        const sdData = await sdRes.json() as { documents?: StructureEditList };
+        const docs = sdData.documents || [];
+        const withEdits = docs.filter(d => Array.isArray(d.edits) && d.edits.length > 0);
+        if (withEdits.length > 0) {
+          structureEdits = withEdits;
+          console.log(`[ChatWorkflow] Pass 0 returned ${withEdits.length} doc(s) with structure edits`);
+        }
+      } else {
+        console.warn(`[ChatWorkflow] structure-decide failed: ${sdRes.status}`);
+      }
+    } catch (e) {
+      console.warn("[ChatWorkflow] structure-decide error:", e);
+    }
 
     // 1回目: テンプレ穴埋め (placeholder substitution)。
     // 直後に verify を自動実行 → 指摘あればユーザーが「修正プラン」ボタンで proofread (2回目=校正モード) に進む。
