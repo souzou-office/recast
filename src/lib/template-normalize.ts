@@ -39,14 +39,19 @@ export type SlotRef =
 export interface NormalizedTemplate {
   /**
    * AI に見せるテキスト。マーク部は全て `★ラベル★` に置換済み。
-   * 同じ意味の slot は同じ ★ラベル★ で表記され、modify はラベル単位で全 slot に適用される。
+   * AI は本文中の `★ラベル★` をそのままコピーして edit の `find` 欄に入れる前提。
    */
   markedText: string;
   /**
-   * ラベル文字列 → 物理 slot 参照リスト。同じラベルが複数 slot に対応する場合あり。
-   * サーバーが edit-engine で値を流し込むためのインデックス。
+   * **★ を含む完全な文字列** (例: `★同意書の日付★`) → 物理 slot 参照リスト。
+   * 同じ marker が複数箇所に出ていれば全 ref に同じ値を流し込む。
+   *
+   * 設計判断: 旧 `labelToSlots` (key = "同意書の日付") では AI が意味を優先して
+   * "株主の同意日" のような別名に言い換えてしまい、key 一致しなくなる事故が頻発した。
+   * key を ★ 込みの完全文字列にすると、AI は本文中の文字列を**リテラル引用**するだけで済む
+   * (言い換えると一致しない → 自然にコピペが促される) ので、言い換え問題が構造的に消える。
    */
-  labelToSlots: Map<string, SlotRef[]>;
+  markerToSlots: Map<string, SlotRef[]>;
 }
 
 // --- docx 用 ---
@@ -106,7 +111,7 @@ export async function normalizeDocxTemplate(
 ): Promise<NormalizedTemplate> {
   const zip = new PizZip(buffer);
   let docXml = zip.file("word/document.xml")?.asText();
-  if (!docXml) return { markedText: "", labelToSlots: new Map() };
+  if (!docXml) return { markedText: "", markerToSlots: new Map() };
   // <mc:AlternateContent> 内の偽 <w:p> は除去 (docx-marker-parser と同じ前処理)
   docXml = docXml.replace(/<mc:AlternateContent\b[\s\S]*?<\/mc:AlternateContent>/g, "");
 
@@ -124,11 +129,13 @@ export async function normalizeDocxTemplate(
     } catch { /* ignore: ラベル無しでも動かす */ }
   }
 
-  const labelToSlots = new Map<string, SlotRef[]>();
+  const markerToSlots = new Map<string, SlotRef[]>();
   const pushSlot = (label: string, ref: SlotRef) => {
-    const list = labelToSlots.get(label) || [];
+    // marker は ★ラベル★ そのもの。AI が find に書く文字列とそのまま一致させる
+    const marker = `★${label}★`;
+    const list = markerToSlots.get(marker) || [];
     list.push(ref);
-    labelToSlots.set(label, list);
+    markerToSlots.set(marker, list);
   };
 
   // 段落ごとの ★ラベル★ 化 (docx-marker-parser の getMarkedDocumentTextWithSlots と同じ走査順)
@@ -181,7 +188,7 @@ export async function normalizeDocxTemplate(
     });
   }
 
-  return { markedText, labelToSlots };
+  return { markedText, markerToSlots };
 }
 
 // --- xlsx 用 ---
@@ -214,11 +221,13 @@ export async function normalizeXlsxTemplate(
     } catch { /* ignore */ }
   }
 
-  const labelToSlots = new Map<string, SlotRef[]>();
+  const markerToSlots = new Map<string, SlotRef[]>();
   const pushSlot = (label: string, ref: SlotRef) => {
-    const list = labelToSlots.get(label) || [];
+    // marker は ★ラベル★ そのもの。AI が find に書く文字列とそのまま一致させる
+    const marker = `★${label}★`;
+    const list = markerToSlots.get(marker) || [];
     list.push(ref);
-    labelToSlots.set(label, list);
+    markerToSlots.set(marker, list);
   };
 
   const { text, slots } = getXlsxMarkedTextWithSlots(buffer);
@@ -244,7 +253,7 @@ export async function normalizeXlsxTemplate(
     });
   }
 
-  return { markedText, labelToSlots };
+  return { markedText, markerToSlots };
 }
 
 // --- ファイル種別ディスパッチ ---

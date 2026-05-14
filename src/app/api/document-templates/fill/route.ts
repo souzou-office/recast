@@ -134,15 +134,15 @@ export async function POST(request: NextRequest) {
     ? `\n## 案件整理 (最新)\n${masterContent}\n`
     : "";
 
-  // 各テンプレ本文 + そのテンプレで使える ★ラベル★ 一覧
-  // AI が ★ラベル★ を勝手に言い換えるのを防ぐため、ラベル候補を明示的に列挙する。
-  // 同じテンプレ内に同名ラベルが複数あっても重複は排除して 1 件として提示。
+  // 各テンプレ本文 + そのテンプレに含まれる ★…★ 文字列の完全一覧
+  // AI は「テンプレ本文の ★…★ をリテラルでコピペして find に書く」前提。
+  // 一覧を補助として提示するが、本文中の ★…★ をそのまま使うのが基本。
   const templateBlock = ctxs.map(c => {
-    const labelList = Array.from(c.normalized.labelToSlots.keys());
-    const labelsBlock = labelList.length > 0
-      ? `\n**このテンプレで使える ★ラベル★ (modify の slotKey は必ずここから選ぶこと、言い換え禁止)**\n${labelList.map(l => `- \`${l}\``).join("\n")}`
+    const markers = Array.from(c.normalized.markerToSlots.keys());
+    const markersBlock = markers.length > 0
+      ? `\n**このテンプレに含まれる ★…★ 文字列 (replace の find は必ずこの中の文字列をそのままコピペ)**\n${markers.map(m => `- \`${m}\``).join("\n")}`
       : "";
-    return `### ${c.fileName}\n\`\`\`\n${c.normalized.markedText}\n\`\`\`\n${labelsBlock}\n`;
+    return `### ${c.fileName}\n\`\`\`\n${c.normalized.markedText}\n\`\`\`\n${markersBlock}\n`;
   }).join("\n");
 
   const userTurnText = `## あなたが今やること (ターン: 入力)
@@ -153,45 +153,44 @@ export async function POST(request: NextRequest) {
 
 出力は \`{ "documents": [{ "fileName": ..., "edits": [...] }] }\` の形式。各 edit は次のどれか:
 
-### modify (★ラベル★ を値で埋める)
-- \`{ "op": "modify", "slotKey": "代表取締役の氏名", "value": "三上春香", "reason"?: "..." }\`
-- \`slotKey\` は **★ラベル★ の中身のみ (★は付けない)** 。複数箇所で同じラベルが使われていれば、全箇所が同じ値で埋まる。
-- 「同じ意味なら同じラベル → 同じ値」が原則。冒頭日付と末尾日付など意味が違うものはテンプレ側で別ラベルになっているはず。
-- 値が**不明 / 案件に該当なし** の slot は **空文字 \`""\`** で返してよい。
+### replace (テンプレ本文の ★…★ を値で置換)
+- \`{ "op": "replace", "find": "★同意書の日付★", "replaceWith": "令和８年５月２８日", "reason"?: "..." }\`
+- \`find\` は **テンプレ本文に書かれている ★…★ の文字列をそのままリテラルでコピペ** (★ も含めて完全一致)
+- 同じ ★…★ が複数箇所に出ていれば、サーバーが**全箇所**を同じ値で置換する
+- 値が**不明 / 案件に該当なし** の slot は **空文字 \`""\`** で返してよい
 
 ### delete (テンプレ範囲を削除)
 - \`{ "op": "delete", "anchor": "議案２（取締役の報酬に関する件）", "endAnchor": "議案３", "reason": "今回は無報酬のため議案2 ブロックごと削除" }\`
-- \`anchor\` を含む段落から、\`endAnchor\` を含む段落の**直前**までを丸ごと削除する。
-- 議案ブロック / 該当なしのセクション / 不要な但し書きをまとめて消すのに使う。
-- \`endAnchor\` は省略可だが、省略すると anchor 以降文書末尾まで消えるので**極力指定**すること。
+- \`anchor\` を含む段落から、\`endAnchor\` を含む段落の**直前**までを丸ごと削除する
+- 議案ブロック / 該当なしのセクション / 不要な但し書きをまとめて消すのに使う
+- \`endAnchor\` は省略可だが、省略すると anchor 以降文書末尾まで消えるので**極力指定**すること
 
 ### insert (既存パターンを複製して追加)
-- \`{ "op": "insert", "copyFromAnchor": "代表取締役 ★代表取締役の氏名★", "copyFromEndAnchor": "代表取締役 ★代表取締役の氏名★", "insertAfterAnchor": "代表取締役 ★代表取締役の氏名★", "fills": [{ "slotKey": "代表取締役の氏名", "value": "山田太郎" }], "reason": "代表取締役が 2 名" }\`
-- テンプレ内の既存パターン段落 (anchor〜endAnchor) を 1 ユニットとして複製し、\`insertAfterAnchor\` の段落の直後に貼る。
-- \`fills\` は複製ユニット内の ★ラベル★ を埋めるための値リスト。1 ユニットに含まれる複数 slot を一度に埋めるには **複数 insert を発行** する想定でよい (1 insert = 1 ユニット追加)。
-- **AI が自由に作文することは禁止**。複製元はテンプレに既に存在する段落だけ。
+- \`{ "op": "insert", "copyFromAnchor": "代表取締役 ★代表取締役の氏名★", "copyFromEndAnchor": "代表取締役 ★代表取締役の氏名★", "insertAfterAnchor": "代表取締役 ★代表取締役の氏名★", "replaces": [{ "find": "★代表取締役の氏名★", "replaceWith": "山田太郎" }], "reason": "代表取締役が 2 名" }\`
+- テンプレ内の既存パターン段落 (anchor〜endAnchor) を 1 ユニットとして複製し、\`insertAfterAnchor\` の段落の直後に貼る
+- \`replaces\` は複製ユニット内の ★…★ を埋めるための find/replaceWith リスト
+- **AI が自由に作文することは禁止**。複製元はテンプレに既に存在する段落だけ
 
-## 🔴 絶対に守るべきルール (違反すると edit が全て無効化される)
+## 🔴 絶対に守るべきルール (違反すると edit がスキップされる)
 
-1. **★ラベル★ で表記された箇所以外は触らない**。法的文言を勝手に整えるのは禁止。
+1. **★…★ で表記された箇所以外は触らない**。法的文言を勝手に整えるのは禁止。
 
-2. **slotKey は「このテンプレで使える ★ラベル★」リストから**選んでください。**言い換え・短縮・要約は禁止**。
-   - ❌ テンプレが \`★同意書の日付★\` なのに \`"slotKey": "株主の同意日"\` と書く → ラベル不一致でスキップ
-   - ✅ テンプレが \`★同意書の日付★\` → \`"slotKey": "同意書の日付"\` (★は付けない、中身そのまま)
-   - リストに該当するラベルが無い slot は modify で表現できない (テンプレに ★ が無い箇所)
+2. **\`find\` は「このテンプレに含まれる ★…★ 文字列」リストから**完全一致でコピペ。**言い換え・短縮・要約は禁止**。
+   - ❌ テンプレが \`★同意書の日付★\` なのに \`"find": "★株主の同意日★"\` と書く → 一致せずスキップ
+   - ❌ テンプレが \`★同意書の日付★\` なのに \`"find": "同意書の日付"\` (★抜き) と書く → 一致せずスキップ
+   - ✅ \`"find": "★同意書の日付★"\` (★含めてリテラル一致)
 
-3. **insert の \`copyFromAnchor\` / \`copyFromEndAnchor\` / \`insertAfterAnchor\` は、テンプレ本文 (★ラベル★ 入り) に書かれた文字列そのまま** を使うこと。
+3. **insert の \`copyFromAnchor\` / \`copyFromEndAnchor\` / \`insertAfterAnchor\` は、テンプレ本文 (★…★ 入り) に書かれた文字列そのまま** を使うこと
    - ❌ 「イ．支給開始時期：支給なしより」(値が埋まった後の想像) → テンプレに無いので skip
    - ✅ 「イ．支給開始時期：★支給開始時期★」(テンプレ原文のまま) → ヒットする
-   - **★ラベル★ を含む段落の一部を anchor に使う**のが基本。
 
-4. **削除指示の回答 (例: 「議案2 自体を削除」「報酬なし」) は delete op で表現**。modify の value に「【議案2 削除】」のような指示語を流し込むな。
+4. **削除指示の回答 (例: 「議案2 自体を削除」「報酬なし」) は delete op で表現**。replace の replaceWith に「【議案2 削除】」のような指示語を流し込むな。
 
-5. **不明な値は空文字 modify** で返す (\`value: ""\`)。チェック段階で AI が読み直して埋めるか、ユーザー手動修正に倒す。
+5. **不明な値は空文字 replace** で返す (\`replaceWith: ""\`)。チェック段階で AI が読み直して埋めるか、ユーザー手動修正に倒す。
 
-6. **複数書類間で同じ意味の値は揃える** (★ラベル★ が同じならサーバーが同じ値を入れるので、書類間の不一致は構造的に発生しないはず)。
+6. **複数書類間で同じ意味の値は揃える** (同じ ★…★ がサーバー側で同じ値で置換されるので、書類間の不一致は構造的に発生しないはず)。
 
-7. **議案番号の繰り上げ**: 議案2 を delete したら、議案3 のラベルを議案2 に変える必要があるなら **modify or delete + insert で表現** すること。サーバーは自動で繰り上げない。
+7. **議案番号の繰り上げ**: 議案2 を delete したら、議案3 のラベルを議案2 に変える必要があるなら **replace か delete + insert で表現** すること。サーバーは自動で繰り上げない。
 
 ${profileBlock}${masterBlock}${qaBlock}
 
@@ -207,8 +206,8 @@ ${templateBlock}
     {
       "fileName": "1.取締役決定書.docx",
       "edits": [
-        { "op": "modify", "slotKey": "作成日", "value": "令和８年５月２１日" },
-        { "op": "modify", "slotKey": "代表取締役の氏名", "value": "三上春香" },
+        { "op": "replace", "find": "★作成日★", "replaceWith": "令和８年５月２１日" },
+        { "op": "replace", "find": "★代表取締役の氏名★", "replaceWith": "三上春香" },
         { "op": "delete", "anchor": "議案２（取締役の報酬に関する件）", "endAnchor": "議案３", "reason": "今回は無報酬" }
       ]
     }
@@ -289,20 +288,20 @@ function parseEditsResponse(text: string): Map<string, Edit[]> {
       for (const e of d.edits) {
         if (!e || typeof e !== "object") continue;
         const obj = e as Record<string, unknown>;
-        if (obj.op === "modify" && typeof obj.slotKey === "string" && typeof obj.value === "string") {
-          valid.push({ op: "modify", slotKey: obj.slotKey, value: obj.value, reason: typeof obj.reason === "string" ? obj.reason : undefined });
+        if (obj.op === "replace" && typeof obj.find === "string" && typeof obj.replaceWith === "string") {
+          valid.push({ op: "replace", find: obj.find, replaceWith: obj.replaceWith, reason: typeof obj.reason === "string" ? obj.reason : undefined });
         } else if (obj.op === "delete" && typeof obj.anchor === "string") {
           valid.push({ op: "delete", anchor: obj.anchor, endAnchor: typeof obj.endAnchor === "string" ? obj.endAnchor : undefined, reason: typeof obj.reason === "string" ? obj.reason : undefined });
-        } else if (obj.op === "insert" && typeof obj.copyFromAnchor === "string" && typeof obj.copyFromEndAnchor === "string" && typeof obj.insertAfterAnchor === "string" && Array.isArray(obj.fills)) {
-          const fills = (obj.fills as unknown[]).filter((f): f is { slotKey: string; value: string } =>
-            !!f && typeof f === "object" && typeof (f as Record<string, unknown>).slotKey === "string" && typeof (f as Record<string, unknown>).value === "string"
+        } else if (obj.op === "insert" && typeof obj.copyFromAnchor === "string" && typeof obj.copyFromEndAnchor === "string" && typeof obj.insertAfterAnchor === "string" && Array.isArray(obj.replaces)) {
+          const replaces = (obj.replaces as unknown[]).filter((f): f is { find: string; replaceWith: string } =>
+            !!f && typeof f === "object" && typeof (f as Record<string, unknown>).find === "string" && typeof (f as Record<string, unknown>).replaceWith === "string"
           );
           valid.push({
             op: "insert",
             copyFromAnchor: obj.copyFromAnchor,
             copyFromEndAnchor: obj.copyFromEndAnchor,
             insertAfterAnchor: obj.insertAfterAnchor,
-            fills,
+            replaces,
             reason: typeof obj.reason === "string" ? obj.reason : undefined,
           });
         }
