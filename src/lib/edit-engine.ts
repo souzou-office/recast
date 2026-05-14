@@ -194,7 +194,14 @@ function applyEditsDocx(
     docXml = (docXml as string).split(xmlEscape(r.find)).join(xmlEscape(r.replaceWith));
   }
 
-  // 仕上げ: 残ったハイライト・赤フォント・コメント関連を除去
+  // 🔴 安全網: AI が replace し損ねたハイライト run / placeholder が残っていると、
+  // **前案件の値が新書類に紛れ込む** ことになる (= 法務書類で致命的)。
+  // ここで「残ったハイライト run の中身」と「残った 【…】/{{…}} 等 placeholder」を強制的に
+  // 空文字化する。値がない方がマシ (ユーザーが空欄に気付いて手入力する方が安全)。
+  docXml = clearUnreplacedHighlightRuns(docXml);
+  docXml = clearUnreplacedPlaceholders(docXml);
+
+  // 仕上げ: 残ったハイライト・赤フォント属性・コメント関連を除去
   docXml = (docXml as string)
     .replace(/<w:highlight\s+w:val="[^"]*"\s*\/>/g, "")
     .replace(/<w:color\s+w:val="FF0000"\s*\/>/gi, "")
@@ -350,6 +357,38 @@ function applyHighlightReplacementsDocx(docXml: string, replacements: Map<number
     lastEnd = pm.index + pm[0].length;
   }
   out += docXml.slice(lastEnd);
+  return out;
+}
+
+/**
+ * 安全網 1: 残ったハイライト run (= AI が replace し損ねた slot) の <w:t> 内テキストを空にする。
+ * 前案件の値が出力 docx に紛れ込むのを防ぐ。ハイライト属性自体は呼び出し元で別途除去される。
+ */
+function clearUnreplacedHighlightRuns(docXml: string): string {
+  return docXml.replace(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g, (runXml: string) => {
+    const hasHl = /<w:highlight\s+w:val="[^"]*"\s*\/>/.test(runXml) ||
+                  /<w:color\s+w:val="FF0000"\s*\/>/i.test(runXml);
+    if (!hasHl) return runXml;
+    return runXml.replace(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g, '<w:t xml:space="preserve"></w:t>');
+  });
+}
+
+/**
+ * 安全網 2: 残った 【foo】 / {{foo}} / ｛｛foo｝｝ / ＜foo＞ / ［foo］ プレースホルダーを空文字化。
+ * 条件分岐タグ ({{#flag}} 等) はそのまま残す (構造制御なので)。
+ */
+function clearUnreplacedPlaceholders(docXml: string): string {
+  let out = docXml;
+  const patterns: RegExp[] = [
+    /【([^】#/][^】]*)】/g,
+    /\{\{([^}#/][^}]*)\}\}/g,
+    /｛｛([^｝#/][^｝]*)｝｝/g,
+    /＜([^＞#/][^＞]*)＞/g,
+    /［([^\］#/][^\］]*)］/g,
+  ];
+  for (const re of patterns) {
+    out = out.replace(re, "");
+  }
   return out;
 }
 
