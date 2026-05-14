@@ -118,13 +118,13 @@ export async function POST(request: NextRequest) {
   }
   aiMessages = truncateBeforeStage(aiMessages, "check");
 
-  // 生成書類本文 + 残っている ★ラベル★ 一覧 (modify の slotKey 候補)
+  // 生成書類本文 + 残っている ★…★ 文字列一覧 (replace の find 候補)
   const docBlock = docCtxs.map(d => {
-    const labels = d.normalized ? Array.from(d.normalized.labelToSlots.keys()) : [];
-    const labelsBlock = labels.length > 0
-      ? `\n**まだテンプレに残っている ★ラベル★ (modify の slotKey はここから選ぶ)**\n${labels.map(l => `- \`${l}\``).join("\n")}`
-      : "\n(★ラベル★ は全て埋まっている、modify では値の書き換え不可)";
-    return `### ${d.fileName}\n\`\`\`\n${d.text || "(本文抽出失敗)"}\n\`\`\`${labelsBlock}\n`;
+    const markers = d.normalized ? Array.from(d.normalized.markerToSlots.keys()) : [];
+    const markersBlock = markers.length > 0
+      ? `\n**まだ残っている ★…★ 文字列 (replace の find はここからリテラルコピペ)**\n${markers.map(m => `- \`${m}\``).join("\n")}`
+      : "\n(★…★ は全て埋まっている)";
+    return `### ${d.fileName}\n\`\`\`\n${d.text || "(本文抽出失敗)"}\n\`\`\`${markersBlock}\n`;
   }).join("\n");
 
   const userTurnText = `## あなたが今やること (ターン: チェック)
@@ -141,12 +141,11 @@ export async function POST(request: NextRequest) {
 
 ## 返す edit は入力ステージと**同じ 3 op**
 
-- \`modify\`: \`{ "op": "modify", "slotKey": "...", "value": "..." }\`
-  - **slotKey は ★ラベル★ の中身**だが、check 段階では ★ラベル★ が既に値に置換済みのことが多い。
-    その場合は **modify ではなく replace 用途で使えない**ので、**delete + insert で表現するか、新規 modify で原文ラベルを指定**する。
-  - 「同じ意味の値が書類間で不一致」を直したいなら、両方の書類で modify を出す。
+- \`replace\`: \`{ "op": "replace", "find": "★ラベル★", "replaceWith": "..." }\`
+  - **find はまだ残っている ★…★ 文字列の中からリテラルコピペ**。
+  - check 段階では ★…★ が既に値に置換済みのことが多い → その場合は replace で書き換え不可。delete で行/段落を消して、insert で正しい行を入れ直す等で対応。
 - \`delete\`: \`{ "op": "delete", "anchor": "...", "endAnchor": "..." }\`
-- \`insert\`: 既存パターン複製。fills で値を埋めて挿入。
+- \`insert\`: 既存パターン複製。replaces で ★…★ を埋めて挿入。
 
 ## 守るべきルール
 
@@ -255,20 +254,20 @@ function parseCheckResponse(text: string): Map<string, Edit[]> {
       for (const e of d.edits) {
         if (!e || typeof e !== "object") continue;
         const obj = e as Record<string, unknown>;
-        if (obj.op === "modify" && typeof obj.slotKey === "string" && typeof obj.value === "string") {
-          valid.push({ op: "modify", slotKey: obj.slotKey, value: obj.value, reason: typeof obj.reason === "string" ? obj.reason : undefined });
+        if (obj.op === "replace" && typeof obj.find === "string" && typeof obj.replaceWith === "string") {
+          valid.push({ op: "replace", find: obj.find, replaceWith: obj.replaceWith, reason: typeof obj.reason === "string" ? obj.reason : undefined });
         } else if (obj.op === "delete" && typeof obj.anchor === "string") {
           valid.push({ op: "delete", anchor: obj.anchor, endAnchor: typeof obj.endAnchor === "string" ? obj.endAnchor : undefined, reason: typeof obj.reason === "string" ? obj.reason : undefined });
-        } else if (obj.op === "insert" && typeof obj.copyFromAnchor === "string" && typeof obj.copyFromEndAnchor === "string" && typeof obj.insertAfterAnchor === "string" && Array.isArray(obj.fills)) {
-          const fills = (obj.fills as unknown[]).filter((f): f is { slotKey: string; value: string } =>
-            !!f && typeof f === "object" && typeof (f as Record<string, unknown>).slotKey === "string" && typeof (f as Record<string, unknown>).value === "string"
+        } else if (obj.op === "insert" && typeof obj.copyFromAnchor === "string" && typeof obj.copyFromEndAnchor === "string" && typeof obj.insertAfterAnchor === "string" && Array.isArray(obj.replaces)) {
+          const replaces = (obj.replaces as unknown[]).filter((f): f is { find: string; replaceWith: string } =>
+            !!f && typeof f === "object" && typeof (f as Record<string, unknown>).find === "string" && typeof (f as Record<string, unknown>).replaceWith === "string"
           );
           valid.push({
             op: "insert",
             copyFromAnchor: obj.copyFromAnchor,
             copyFromEndAnchor: obj.copyFromEndAnchor,
             insertAfterAnchor: obj.insertAfterAnchor,
-            fills,
+            replaces,
             reason: typeof obj.reason === "string" ? obj.reason : undefined,
           });
         }

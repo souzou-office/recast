@@ -1,25 +1,21 @@
 // edit-engine.ts
 //
-// AI が出した 3 種類の edit (delete / modify / insert) を docx/xlsx Buffer に適用する
+// AI が出した 3 種類の edit (delete / replace / insert) を docx/xlsx Buffer に適用する
 // インタプリタ。
 //
-// AI 視野には ★ラベル★ しか出さない。slot 番号、件数検証 (expectedMatches)、
-// 文脈ヒント (contextBefore/After)、フォールバック保険等は持たない。失敗したら
-// `skipped[]` に理由を入れて返すだけ。再試行は check ステージで AI に追加 edit を
-// 出してもらう。
+// 設計判断:
+//   AI 視野には「★ラベル★ という識別子」を見せず、「テンプレ本文中の★…★文字列をリテラル
+//   引用してもらう」設計に変更 (旧 `modify` を `replace` に置換)。
+//   AI は本文を見て ★…★ をコピペするだけなので、意味的な言い換えが構造的に発生しない。
 //
 // 入力:
 //   - buffer: テンプレ docx/xlsx の元バイト列
-//   - normalized: template-normalize.ts が生成した SlotIndex (★ラベル → 物理位置群)
+//   - normalized: template-normalize.ts が生成した markerToSlots (★…★文字列 → 物理位置群)
 //   - edits: AI が返した編集オペレーション配列
 // 出力:
 //   - buffer: 編集適用後の docx/xlsx
 //   - applied: 適用できた edit のインデックス
 //   - skipped: 適用できなかった edit と理由
-//
-// 既存の proofread-edits.ts (delete-section), docx-marker-parser.ts (replaceMarkedFieldsBySlot),
-// xlsx-marker-parser.ts (replaceXlsxMarkedCellsBySlot, expandYellowRowBlock) のロジックは
-// 部分的に内部で流用するが、新規実装側で完結する。
 
 import type { NormalizedTemplate, SlotRef } from "./template-normalize";
 
@@ -42,20 +38,22 @@ export type Edit =
       reason?: string;
     }
   | {
-      op: "modify";
-      slotKey: string;       // ★ラベル★ の中身 (★は付けない)
-      value: string;
+      op: "replace";
+      // テンプレ本文中の★…★文字列を**そのままリテラル**で指定。
+      // 例: find: "★同意書の日付★", replaceWith: "令和８年５月２８日"
+      find: string;
+      replaceWith: string;
       reason?: string;
     }
   | {
       op: "insert";
-      // 複製元: anchor 段落から endAnchor 段落 (両端含む) までを 1 ユニットとして扱う
+      // 複製元: anchor 段落から endAnchor 段落 (両端含む) までを 1 ユニット
       copyFromAnchor: string;
       copyFromEndAnchor: string;
       // 挿入先: insertAfterAnchor を含む段落の直後に複製を貼る
       insertAfterAnchor: string;
-      // 各複製の中の ★ラベル★ を埋める値リスト。fills の要素数だけユニットが複製される
-      fills: { slotKey: string; value: string }[];
+      // 各複製ユニットの中の★…★を find/replaceWith で埋める
+      replaces: { find: string; replaceWith: string }[];
       reason?: string;
     };
 
@@ -104,21 +102,17 @@ function applyEditsDocx(
   const applied: number[] = [];
   const skipped: { index: number; reason: string }[] = [];
 
-  // 順番: delete → insert → modify の順で適用すると安全。
+  // 順番: delete → insert → replace の順で適用。
   //   delete: 不要範囲を先に消す
-  //   insert: 残った既存ユニットを複製
-  //   modify: 各 slot に値を流し込む (このときに insert で増えた slot も埋める)
-  // ただし insert で増えた slot の SlotRef は modify 適用までに更新する必要がある。
-  // 単純化のため insert 時に「fills を直接埋めた段落 XML」を生成して挿入することにし、
-  // SlotRef の追加更新は不要にする。
-
+  //   insert: 残った既存ユニットを複製 (複製内の★は同じ replace 処理で後で埋まる)
+  //   replace: 各 marker に値を流し込む
   const deleteEdits: { idx: number; edit: Extract<Edit, { op: "delete" }> }[] = [];
   const insertEdits: { idx: number; edit: Extract<Edit, { op: "insert" }> }[] = [];
-  const modifyEdits: { idx: number; edit: Extract<Edit, { op: "modify" }> }[] = [];
+  const replaceEdits: { idx: number; edit: Extract<Edit, { op: "replace" }> }[] = [];
   edits.forEach((edit, idx) => {
     if (edit.op === "delete") deleteEdits.push({ idx, edit });
     else if (edit.op === "insert") insertEdits.push({ idx, edit });
-    else if (edit.op === "modify") modifyEdits.push({ idx, edit });
+    else if (edit.op === "replace") replaceEdits.push({ idx, edit });
   });
 
   // ----- delete: 段落範囲の削除 -----
@@ -134,7 +128,7 @@ function applyEditsDocx(
 
   // ----- insert: 既存パターン段落の複製 -----
   for (const { idx, edit } of insertEdits) {
-    const res = insertParagraphRangeDocx(docXml, edit, normalized);
+    const res = insertParagraphRangeDocx(docXml, edit);
     if (res.ok) {
       docXml = res.xml;
       applied.push(idx);
@@ -143,45 +137,61 @@ function applyEditsDocx(
     }
   }
 
-  // ----- modify: 各 slot に値を流し込む -----
-  // 同じ slotKey に対して複数 SlotRef があれば、全 ref に同じ値を書き込む。
-  // docx-highlight: slot 番号で一括置換 (replaceMarkedFieldsBySlot 相当を内蔵)
-  // docx-placeholder: テキスト直接置換
+  // ----- replace: marker (★ラベル★) を値で流し込む -----
+  // 同じ marker に対応する SlotRef が複数 ref あれば全 ref に同じ値を書き込む。
+  // - docx-highlight ref: slotId 単位でハイライト run 群を書き換え
+  // - docx-placeholder ref: テキスト直接置換
   const highlightReplacements = new Map<number, string>();
   const placeholderReplacements: { placeholder: string; value: string; openClose: [string, string] }[] = [];
+  // insert で増えた複製ブロックに対する replace は markerToSlots に載っていない (元テンプレベース)。
+  // そのため insert 内の replaces は **複製ブロック内のテキスト置換** として個別に処理する。
+  // ここで生成する「最終 docXml に対する追加テキスト置換」を集める。
+  const literalReplacements: { find: string; replaceWith: string }[] = [];
 
-  for (const { idx, edit } of modifyEdits) {
-    const refs = normalized.labelToSlots.get(edit.slotKey);
+  for (const { idx, edit } of replaceEdits) {
+    const refs = normalized.markerToSlots.get(edit.find);
     if (!refs || refs.length === 0) {
-      // 削除済みブロック内の slot を埋めようとした等の理由でラベルが消えていることもある (= 想定通り)
-      skipped.push({ index: idx, reason: `slotKey "${edit.slotKey}" がテンプレに存在せず (削除済み等)` });
+      // marker がテンプレに見当たらない (例: 削除済みブロック内の slot)。
+      // また、AI が ★ なしの裸文字列を出した場合もここに来る (これはエラー扱い、skip)。
+      skipped.push({ index: idx, reason: `find "${edit.find}" がテンプレ本文の ★…★ に存在せず (削除済み or 文字列不一致)` });
       continue;
     }
-    let anyMatch = false;
+    let any = false;
     for (const ref of refs) {
       if (ref.kind === "docx-highlight") {
-        highlightReplacements.set(ref.slotId, edit.value);
-        anyMatch = true;
+        highlightReplacements.set(ref.slotId, edit.replaceWith);
+        any = true;
       } else if (ref.kind === "docx-placeholder") {
-        placeholderReplacements.push({ placeholder: ref.placeholder, value: edit.value, openClose: ref.openClose });
-        anyMatch = true;
+        placeholderReplacements.push({ placeholder: ref.placeholder, value: edit.replaceWith, openClose: ref.openClose });
+        any = true;
       }
     }
-    if (anyMatch) applied.push(idx);
-    else skipped.push({ index: idx, reason: `slotKey "${edit.slotKey}" は xlsx 用 ref のみで docx で適用先なし` });
+    if (any) applied.push(idx);
+    else skipped.push({ index: idx, reason: `find "${edit.find}" は xlsx 用 ref のみで docx で適用先なし` });
   }
 
-  // placeholder は単純な text 置換 (XML 内の【foo】等を全部) を先に
+  // insert で挿入された複製ブロックの中の ★…★ も「リテラル置換」として後段で処理する
+  for (const { edit } of insertEdits) {
+    for (const r of edit.replaces || []) {
+      literalReplacements.push({ find: r.find, replaceWith: r.replaceWith });
+    }
+  }
+
+  // placeholder は単純な text 置換 (XML 内の【foo】等を全部)
   for (const r of placeholderReplacements) {
     const [open, close] = r.openClose;
     const target = `${open}${r.placeholder}${close}`;
-    // XML 中に直接書かれてる前提で、xmlEscape された value を流し込む
     docXml = (docXml as string).split(target).join(xmlEscape(r.value));
   }
 
-  // highlight slot は replaceMarkedFieldsBySlot 相当の処理
+  // highlight slot は replaceMarkedFieldsBySlot 相当
   if (highlightReplacements.size > 0) {
     docXml = applyHighlightReplacementsDocx(docXml, highlightReplacements);
+  }
+
+  // insert で増えた複製ブロックの★…★を埋める (XML 上の <w:t> 内テキストで find → replaceWith)
+  for (const r of literalReplacements) {
+    docXml = (docXml as string).split(xmlEscape(r.find)).join(xmlEscape(r.replaceWith));
   }
 
   // 仕上げ: 残ったハイライト・赤フォント・コメント関連を除去
@@ -235,11 +245,10 @@ function deleteParagraphRangeDocx(
   return { ok: true, xml: docXml.slice(0, from) + docXml.slice(to) };
 }
 
-// 既存パターン段落範囲を複製して挿入
+// 既存パターン段落範囲を複製して挿入。複製ブロック内の★を埋めるのは後段の literalReplacements で。
 function insertParagraphRangeDocx(
   docXml: string,
   edit: Extract<Edit, { op: "insert" }>,
-  normalized: NormalizedTemplate,
 ): { ok: true; xml: string } | { ok: false; reason: string } {
   const paragraphs = enumerateTopLevelParagraphs(docXml);
   const copyFromIdx = paragraphs.findIndex(p => p.text.includes(edit.copyFromAnchor));
@@ -264,66 +273,15 @@ function insertParagraphRangeDocx(
   }
   const insertPos = paragraphs[insertAfterIdx].end;
 
-  // fills 各エントリごとに blockXml を 1 度ずつ複製し、その中の★ラベルを fills の値で
-  // 個別に置換する。fills が空なら何もしない。
-  // 各複製ブロックでは、複製テンプレ内のハイライト run の <w:t> 内のテキストを直接書き換える。
-  // SlotRef は元テンプレ基準なので使えない。代わりに「ハイライト run の表示テキスト
-  // = labels.json のラベル相当」と仮定して text 単純置換する。
-  // ただし fills の slotKey は ★ラベル★ の中身。複製ブロックには ★ がそのまま入っているわけではないので、
-  // 元テンプレの SlotRef で参照されている「同じ段落範囲内の slot」のラベルから originalValue を求める。
-
-  // 段落範囲内の slot を集める (順序保存)
-  const refsInBlock: { ref: SlotRef; label: string }[] = [];
-  for (const [label, refs] of normalized.labelToSlots) {
-    for (const ref of refs) {
-      if (ref.kind !== "docx-highlight") continue;
-      // この slot が段落範囲に含まれるかどうかは、走査順 (slotId 昇順) と
-      // 段落の slotId 範囲を別途求めるのが筋。簡易には originalValue が blockXml に出現するか判定。
-      if (blockXml.includes(xmlEscape(ref.originalValue)) || blockXml.includes(ref.originalValue)) {
-        refsInBlock.push({ ref, label });
-      }
-    }
-  }
-
-  const dupBlocks: string[] = [];
-  for (const fillSet of edit.fills) {
-    let dup = blockXml;
-    // 一度の複製で fillSet.slotKey 1 件分しか埋まらないので、fills 全部を 1 つの fillSet オブジェクトに集約する
-    // ……というのは insert の仕様にバグがある。型を変えるべき。
-    // 簡易対応: fillSet が「slotKey → value 単発」ではなく、複数 slot の値を持つオブジェクトを想定して
-    // 実は { slotKey, value }[] でなく { [slotKey]: value } で来るのが正しい。
-    // 今は単発エントリだけ対応 (1 fill = 1 slot 埋め)。複数 slot のユニットは insert を複数回呼んで対応。
-    const target = `★${fillSet.slotKey}★`;
-    // blockXml には ★ラベル★ ではなく原 XML が入っているので、SlotRef の originalValue を探して置換
-    // 残念ながら ★ 表現の検索置換はできない。fillSet の slotKey から refsInBlock を引いて、originalValue で置換する。
-    const ref = refsInBlock.find(r => r.label === fillSet.slotKey);
-    if (ref) {
-      const original = ref.ref.kind === "docx-highlight" ? ref.ref.originalValue : "";
-      if (original) {
-        const escOld = xmlEscape(original);
-        const escNew = xmlEscape(fillSet.value);
-        // ハイライト run の <w:t> 内に original があるはずなので XML レベルで置換
-        dup = dup.split(escOld).join(escNew);
-      }
-    } else {
-      // ラベルが見つからなくても XML の ★target★ パターン (placeholder 系) を試行
-      dup = dup.split(target).join(xmlEscape(fillSet.value));
-    }
-    dupBlocks.push(dup);
-  }
-  if (dupBlocks.length === 0) {
-    return { ok: false, reason: "fills が空のため複製対象なし" };
-  }
-
-  const insertContent = dupBlocks.join("");
-  return { ok: true, xml: docXml.slice(0, insertPos) + insertContent + docXml.slice(insertPos) };
+  // 複製ブロックをそのまま挿入。中の★を埋めるのは後段の literalReplacements で処理。
+  // ただし「同じ insert を 2 回」(取締役 2 名分など) のケースは、replaces で個別の find/replaceWith を
+  // 与えれば 1 回の insert で良い (find は ★ラベル★ なので、複製後の同じラベルにも当たる)。
+  // 複数ユニット追加したい場合は複数の insert を発行してもらう想定。
+  return { ok: true, xml: docXml.slice(0, insertPos) + blockXml + docXml.slice(insertPos) };
 }
 
 // docx のハイライト run 群を slotId 単位で値で書き換える
-// (docx-marker-parser.ts の replaceMarkedFieldsBySlot の挙動をここに集約)
 function applyHighlightReplacementsDocx(docXml: string, replacements: Map<number, string>): string {
-  // <mc:AlternateContent> 内の偽 <w:p> は無視する必要があるが、簡略のため stripAlternateContent
-  // 風に除去せず正規表現で全段落を走査する。実テンプレで問題が出たら強化する。
   const paragraphRe = /<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
   let slotId = 0;
   let out = "";
@@ -346,7 +304,6 @@ function applyHighlightReplacementsDocx(docXml: string, replacements: Map<number
     }
     if (plast < pXml.length) parts.push({ type: "other", content: pXml.slice(plast) });
 
-    // ハイライトグループを連続走査
     type Group = { startIdx: number; endIdx: number; slotId: number };
     const groups: Group[] = [];
     const isMetaOnly = (s: string) =>
@@ -371,7 +328,6 @@ function applyHighlightReplacementsDocx(docXml: string, replacements: Map<number
       }
     }
 
-    // 後ろから適用
     for (let g = groups.length - 1; g >= 0; g--) {
       const group = groups[g];
       const newVal = replacements.get(group.slotId);
@@ -397,15 +353,12 @@ function applyHighlightReplacementsDocx(docXml: string, replacements: Map<number
   return out;
 }
 
-// トップレベルの <w:p> を列挙 (テキストボックス内 <w:p> は親段落の一部として扱う)
+// トップレベルの <w:p> を列挙
 function enumerateTopLevelParagraphs(docXml: string): { start: number; end: number; text: string }[] {
-  // 簡易版: <w:p> ... </w:p> をフラットに enumerate。テキストボックス内の <w:p> は親に含まれるが、
-  // 検索目的なら問題ない (大抵 anchor は親段落のテキストに存在する)。
   const result: { start: number; end: number; text: string }[] = [];
   const pRe = /<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g;
   let m: RegExpExecArray | null;
   while ((m = pRe.exec(docXml)) !== null) {
-    // テキスト抽出 (子の <w:t> を集める)
     const inner = m[0].replace(/<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g, "");
     const texts: string[] = [];
     const tRe = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g;
@@ -430,56 +383,52 @@ function applyEditsXlsx(
   const applied: number[] = [];
   const skipped: { index: number; reason: string }[] = [];
 
-  // xlsx は処理が重いので、modify (主要操作) だけ確実に。delete/insert は将来拡張。
-  // modify を集約してから replaceXlsxMarkedCellsBySlot 相当を流用する。
+  // xlsx は replace のみ (delete/insert は将来拡張)
   const highlightReplacements = new Map<number, string>();
   const placeholderReplacements: { placeholder: string; value: string }[] = [];
 
   for (let idx = 0; idx < edits.length; idx++) {
     const edit = edits[idx];
-    if (edit.op !== "modify") {
+    if (edit.op !== "replace") {
       if (edit.op === "delete") {
-        skipped.push({ index: idx, reason: "xlsx の delete はまだ未実装 (delete-row 拡張で対応予定)" });
+        skipped.push({ index: idx, reason: "xlsx の delete は未実装" });
       } else if (edit.op === "insert") {
         skipped.push({ index: idx, reason: "xlsx の insert は expandYellowRowBlock で別途対応 (現状未実装)" });
       }
       continue;
     }
-    const refs = normalized.labelToSlots.get(edit.slotKey);
+    const refs = normalized.markerToSlots.get(edit.find);
     if (!refs || refs.length === 0) {
-      skipped.push({ index: idx, reason: `slotKey "${edit.slotKey}" がテンプレに存在せず` });
+      skipped.push({ index: idx, reason: `find "${edit.find}" がテンプレ本文の ★…★ に存在せず` });
       continue;
     }
     let any = false;
     for (const ref of refs) {
       if (ref.kind === "xlsx-highlight") {
-        highlightReplacements.set(ref.slotId, edit.value);
+        highlightReplacements.set(ref.slotId, edit.replaceWith);
         any = true;
       } else if (ref.kind === "xlsx-placeholder") {
-        placeholderReplacements.push({ placeholder: ref.placeholder, value: edit.value });
+        placeholderReplacements.push({ placeholder: ref.placeholder, value: edit.replaceWith });
         any = true;
       }
     }
     if (any) applied.push(idx);
-    else skipped.push({ index: idx, reason: `slotKey "${edit.slotKey}" は docx 用 ref のみで xlsx で適用先なし` });
+    else skipped.push({ index: idx, reason: `find "${edit.find}" は docx 用 ref のみで xlsx で適用先なし` });
   }
 
   let currentBuffer = buffer;
   if (highlightReplacements.size > 0) {
-    // 既存の replaceXlsxMarkedCellsBySlot を流用
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { replaceXlsxMarkedCellsBySlot } = require("./xlsx-marker-parser");
     currentBuffer = replaceXlsxMarkedCellsBySlot(currentBuffer, highlightReplacements);
   }
 
-  // sharedStrings.xml 内の単純 placeholder 置換 (Excel)
   if (placeholderReplacements.length > 0) {
     const zip = new PizZip(currentBuffer);
     const ss = zip.file("xl/sharedStrings.xml")?.asText();
     if (ss) {
       let newSs = ss;
       for (const r of placeholderReplacements) {
-        // 5 種類のオープン/クローズで試行
         const candidates = [
           `【${r.placeholder}】`, `{{${r.placeholder}}}`,
           `｛｛${r.placeholder}｝｝`, `＜${r.placeholder}＞`, `［${r.placeholder}］`,
