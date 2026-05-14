@@ -230,7 +230,16 @@ ${templateBlock}
       messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
     });
     logTokenUsage("/api/document-templates/fill", MODEL, response.usage);
-    aiResponseText = response.content[0].type === "text" ? response.content[0].text : "";
+    // 旧実装は `response.content[0].type === "text"` だけ見ていたが、Claude API は
+    // thinking block / 複数 text block を返すことがあり、最初の block が text でないと
+    // 全テキストを取りこぼす致命的バグがあった。全 text block を結合する。
+    aiResponseText = response.content
+      .filter(b => b.type === "text")
+      .map(b => b.type === "text" ? b.text : "")
+      .join("");
+    // 🔍 DEBUG: 応答の各 block の type を確認 (空応答デバッグ用)
+    console.log("[fill/debug] response.content block types:", response.content.map(b => b.type).join(", "));
+    console.log("[fill/debug] response stop_reason:", response.stop_reason);
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "AI 呼び出しに失敗" }), {
       status: 500, headers: { "Content-Type": "application/json" },
