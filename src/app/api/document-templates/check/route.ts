@@ -27,6 +27,7 @@ import {
 } from "@/lib/case-conversation";
 import { normalizeTemplate, type NormalizedTemplate } from "@/lib/template-normalize";
 import { applyEdits, type Edit } from "@/lib/edit-engine";
+import { textFromContent } from "@/lib/anthropic-response";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const mammoth = require("mammoth");
@@ -182,11 +183,7 @@ JSON のみ返答。
       messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
     });
     logTokenUsage("/api/document-templates/check", MODEL, response.usage);
-    // 旧実装は `response.content[0]` だけ見ていて取りこぼしバグがあった (fill route と同じ)
-    aiResponseText = response.content
-      .filter(b => b.type === "text")
-      .map(b => b.type === "text" ? b.text : "")
-      .join("");
+    aiResponseText = textFromContent(response.content);
     console.log("[check/debug] response.content block types:", response.content.map(b => b.type).join(", "));
     console.log("[check/debug] response stop_reason:", response.stop_reason);
   } catch (e) {

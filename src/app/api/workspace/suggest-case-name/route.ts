@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { logTokenUsage } from "@/lib/token-logger";
+import { textFromContent } from "@/lib/anthropic-response";
 
 const client = new Anthropic();
 
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
     });
     logTokenUsage("/api/workspace/suggest-case-name", "claude-haiku-4-5-20251001", response.usage);
 
-    const name = response.content[0].type === "text" ? response.content[0].text.trim() : "新規案件";
+    const name = textFromContent(response.content).trim() || "新規案件";
     return NextResponse.json({ name });
   } catch {
     return NextResponse.json({ name: folderName || "新規案件" });

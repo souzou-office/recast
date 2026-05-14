@@ -6,6 +6,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { textFromContent } from "./anthropic-response";
 
 const client = new Anthropic();
 
@@ -112,7 +113,7 @@ ${valueList}
     messages: [{ role: "user", content: prompt }],
   });
 
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
+  const text = textFromContent(response.content);
   const match = text.match(/```json\s*([\s\S]*?)```/) || text.match(/(\[[\s\S]*\])/);
   if (!match) return [];
   try {

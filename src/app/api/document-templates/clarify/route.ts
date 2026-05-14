@@ -12,6 +12,7 @@ import {
   hasStage,
 } from "@/lib/case-conversation";
 import type { ClarificationQuestion } from "@/types";
+import { textFromContent } from "@/lib/anthropic-response";
 
 const client = new Anthropic();
 const MODEL = "claude-sonnet-4-6";
@@ -144,7 +145,7 @@ JSON配列のみ返してください。説明文・前置き不要。`;
     });
     logTokenUsage("/api/document-templates/clarify", MODEL, response.usage);
 
-    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    const text = textFromContent(response.content);
 
     // assistant ターンを保存（produce/verify が読む）
     const finalMessages = appendAssistantTurn(messagesWithUserTurn, text, "clarify");

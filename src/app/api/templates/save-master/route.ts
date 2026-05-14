@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 import { logTokenUsage } from "@/lib/token-logger";
+import { textFromContent } from "@/lib/anthropic-response";
 
 const client = new Anthropic();
 
@@ -37,7 +38,7 @@ ${content}`
     });
     logTokenUsage("/api/templates/save-master", "claude-haiku-4-5-20251001", response.usage);
 
-    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    const text = textFromContent(response.content);
     const match = text.match(/\{[\s\S]*\}/);
     if (match) {
       structured = JSON.parse(match[0]);
