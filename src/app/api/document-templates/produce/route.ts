@@ -511,6 +511,32 @@ export async function POST(request: NextRequest) {
     docPromptLines.push("");
   }
 
+  // 各 highlight-docx について、構造化された位置順アンカー列を AI に渡す。
+  // Claude for Word 検証で「テンプレを構造で見せると判断精度が上がる」ことが確認できたため。
+  // 既存のスロット一覧（要入力_N）はそのまま、補助情報として位置順×議案セクション付きで併記する。
+  const docStructureLines: string[] = [];
+  for (const a of analyses) {
+    if (a.kind !== "highlight-docx") continue;
+    try {
+      const { parseDocxStructure, formatStructureForAI } = await import("@/lib/docx-structure-parser");
+      const structure = parseDocxStructure(a.workingBuffer);
+      if (structure.anchors.length === 0) continue;
+      docStructureLines.push(`### ${a.file.name}`);
+      if (structure.sections.length > 0) {
+        docStructureLines.push(`検出された議案セクション: ${structure.sections.join(" / ")}`);
+      }
+      docStructureLines.push("```");
+      docStructureLines.push(formatStructureForAI(structure));
+      docStructureLines.push("```");
+      docStructureLines.push("");
+    } catch (e) {
+      console.warn(`[produce] structure parse failed ${a.file.name}:`, e instanceof Error ? e.message : e);
+    }
+  }
+  const docStructureBlock = docStructureLines.length > 0
+    ? `\n## 各書類の構造（位置順・議案ブロック検出付き）\n\nこのブロックは要入力_N の **意味判断補助** です。\n- 各行先頭の \`[anchorId]\` は位置参照ID（例: p3, t1-r2-c1）\n- 「セクション:」は議案・条文ブロックの境界\n- 「ハイライト: 「...」」は要入力_N スロットの位置と元値\n- 位置順なので「上から固有名詞が必要な順」を判断する材料にしてください\n\n${docStructureLines.join("\n")}`
+    : "";
+
   // 条件分岐フラグ（{{#flag}}...{{/flag}}）の収集
   const allConditionFlags = new Set<string>();
   for (const a of analyses) {
@@ -531,6 +557,7 @@ ${renderQABlock()}${masterUpdateBlock}
 ## 各書類のスロット一覧（このキー名で返答すること）
 
 ${docPromptLines.join("\n")}
+${docStructureBlock}
 ${conditionFlagBlock}
 ## 出力形式（JSON のみ。説明文・前置き不要）
 
