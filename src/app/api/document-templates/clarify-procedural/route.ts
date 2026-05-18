@@ -17,10 +17,10 @@ import type { ChatThread, ClarificationQuestion } from "@/types";
  * 機械的に変換する。
  */
 export async function POST(request: NextRequest) {
-  const { companyId, threadId } = (await request.json()) as {
+  const { companyId, threadId, previousQA } = (await request.json()) as {
     companyId: string;
     threadId?: string;
-    previousQA?: { question: string; answer: string }[]; // 後方互換のため受け取るが未使用
+    previousQA?: { question: string; answer: string }[];
   };
 
   if (!threadId) {
@@ -47,16 +47,23 @@ export async function POST(request: NextRequest) {
 
   const decisions = thread.phase2Decisions;
   if (!decisions || !Array.isArray(decisions.documents)) {
-    // analyze がまだ JSON 決定を出してない (古いスレッド / パース失敗) → 質問なしで進める
     return NextResponse.json({ questions: [] });
   }
 
-  // unconfirmed 群を ClarificationQuestion[] に変換
+  // previousQA で既に回答済みの placeholder を集める。
+  // previousQA[].question は `【${placeholder}】${question}` 形式 (ChatWorkflow が組み立てている)。
+  const answeredPlaceholders = new Set<string>();
+  for (const qa of previousQA || []) {
+    const m = qa.question.match(/^【([^】]+)】/);
+    if (m) answeredPlaceholders.add(m[1].trim());
+  }
+
+  // unconfirmed 群を ClarificationQuestion[] に変換 (回答済みは除外)
   const questions: ClarificationQuestion[] = [];
   for (const doc of decisions.documents) {
-    for (let i = 0; i < doc.unconfirmed.length; i++) {
-      const u = doc.unconfirmed[i];
+    for (const u of doc.unconfirmed) {
       const placeholder = `${doc.templateFile}:${u.slot}`;
+      if (answeredPlaceholders.has(placeholder)) continue;
       const options = (u.candidates || []).map((c, j) => ({
         id: `c${j + 1}`,
         label: c.value,
