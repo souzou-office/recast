@@ -221,35 +221,8 @@ export async function POST(request: NextRequest) {
         }))
       : [];
 
-  // Phase 2 (analyze) が決定した「テンプレに入れる値・削除する議案」を読む。
-  // Phase 3 (このルート) は Phase 2 の決定を最優先で適用する設計。
-  // Phase 2 が決めた slot 値は confirmedQA と同じ扱いで slot 一覧にインライン表示する。
-  // Phase 2 が決めた deletes は AI にプロンプト経由で渡し、removeBlocks に必ず含めさせる。
+  // Phase 2 (analyze) の決定は company 確定後に読み込む (下記参照)
   let phase2Decisions: Phase2Decisions | undefined;
-  try {
-    const hash = crypto.createHash("md5").update(company.id).digest("hex");
-    const tpath = path.join(process.cwd(), "data", "chat-threads", hash, `${threadId}.json`);
-    const raw = await fs.readFile(tpath, "utf-8");
-    const thr = JSON.parse(raw) as ChatThread;
-    phase2Decisions = thr.phase2Decisions;
-  } catch { /* ignore */ }
-
-  // Phase 2 が決めた slot 値を confirmedQA に追加（ユーザー回答と同じ仕組みで slot 一覧にインライン表示される）
-  if (phase2Decisions) {
-    const existing = new Set(confirmedQA.map((q) => q.placeholder));
-    for (const doc of phase2Decisions.documents) {
-      for (const s of doc.slots) {
-        if (!s.slot || !s.value) continue;
-        if (existing.has(s.slot)) continue; // ユーザー確定回答が既にあるならそちらを優先
-        confirmedQA.push({
-          placeholder: s.slot,
-          question: `Phase 2 決定 (${doc.templateFile})`,
-          answer: s.value,
-        });
-        existing.add(s.slot);
-      }
-    }
-  }
 
   const renderQABlock = (): string => {
     if (confirmedQA.length === 0) return "";
@@ -267,6 +240,32 @@ export async function POST(request: NextRequest) {
     return new Response(JSON.stringify({ error: "会社が見つかりません" }), {
       status: 404, headers: { "Content-Type": "application/json" },
     });
+  }
+
+  // Phase 2 の決定を読み、Phase 2 で確定した slot 値を confirmedQA に取り込む。
+  // Phase 2 が決めた slot 値は confirmedQA と同じ仕組みで slot 一覧にインライン表示される。
+  // Phase 2 が決めた deletes は phase2DeletesBlock で AI にプロンプト経由で渡す。
+  try {
+    const hash = crypto.createHash("md5").update(company.id).digest("hex");
+    const tpath = path.join(process.cwd(), "data", "chat-threads", hash, `${threadId}.json`);
+    const raw = await fs.readFile(tpath, "utf-8");
+    const thr = JSON.parse(raw) as ChatThread;
+    phase2Decisions = thr.phase2Decisions;
+  } catch { /* ignore */ }
+  if (phase2Decisions) {
+    const existing = new Set(confirmedQA.map((q) => q.placeholder));
+    for (const doc of phase2Decisions.documents) {
+      for (const s of doc.slots) {
+        if (!s.slot || !s.value) continue;
+        if (existing.has(s.slot)) continue;
+        confirmedQA.push({
+          placeholder: s.slot,
+          question: `Phase 2 決定 (${doc.templateFile})`,
+          answer: s.value,
+        });
+        existing.add(s.slot);
+      }
+    }
   }
 
   const templateFiles = await readAllFilesInFolder(templateFolderPath);
@@ -594,113 +593,56 @@ export async function POST(request: NextRequest) {
       }\n`
     : "";
 
-  const userTurnText = `## あなたが今やること（ターン3: 各書類のスロットに何を入れるかを決める）
+  const userTurnText = `## あなたが今やること
 
-ターン1で整理した **実体判断** とターン2で確認した質問の回答を前提に、
-案件ファイル（このスレッドの最初のターンで添付したもの）を **改めて参照しながら**、
-**全ての書類の全てのスロット**に入れる値と、削除する議案ブロック (removeBlocks) を JSON で返してください。
-
-**重要**: ターン1の案件整理は「実体判断（議案構成・整合性チェック等）」が中心で、
-払込金額・氏名スペル・住所等の **値の精密抽出は意図的にやっていません**。
-このターンで案件ファイルを直接参照して値を取得してください。
-
-ターン1の「議題構成の判断」で **今回該当なし** とした議案がある書類については、
-**removeBlocks にその議案見出しを必ず列挙**してください（議案削除）。
+Phase 2 で確定したスロット値を、各書類の要入力_N キーに当てはめて JSON で返す。
+全ての書類・全てのスロットを必ず含めること。
 
 ${renderQABlock()}${masterUpdateBlock}${phase2DeletesBlock}
-## 各書類のスロット一覧（このキー名で返答すること）
+## 各書類のスロット一覧（このキー名で返答する）
 
 ${docPromptLines.join("\n")}
 ${docStructureBlock}
 ${conditionFlagBlock}
-## 出力形式（JSON のみ。説明文・前置き不要）
+## 出力形式 (JSON のみ、説明文なし)
 
 \`\`\`json
 {
   "documents": [
     {
-      "fileName": "書類のファイル名（上で指定したものと完全一致）",
-      "values": {
-        "要入力_0": "三上春香",
-        "要入力_3": "令和８年１月１５日"
-      },
+      "fileName": "書類のファイル名 (上で指定したものと完全一致)",
+      "values": { "要入力_0": "三上春香", "要入力_3": "令和８年１月１５日" },
       "conditionFlags": { "出資者は法人": false, "出資者は個人": true },
-      "removeBlocks": [
-        "第3号議案 役員報酬の決定の件"
-      ]
+      "removeBlocks": ["第3号議案 役員報酬の決定の件"]
     }
   ]
 }
 \`\`\`
 
-### removeBlocks について（重要）
-- ターン1（案件整理）の「議題構成の判断」で **今回該当なし** とした議案ブロックを **必ず removeBlocks に列挙**
-- アンカー文字列は **議案見出しそのもの**を指定（例: \`第3号議案 役員報酬の決定の件\`、\`議案2: 取締役の報酬に関する件\`）
-- システムはこのアンカーを含む段落を docx から丸ごと削除する
-- アンカーが他の段落にも含まれる短すぎる文字列は避ける（誤削除防止）
-- 該当ブロックがその書類に含まれていない場合は記載不要（書類別に判断）
-- 議案削除が今回不要なら \`removeBlocks\` は空配列か省略
+## 値のルール
 
+- 「✓ ユーザー確定回答」または「Phase 2 決定」が付いた slot は、その値を **そのまま使う** (再解釈しない)
+- 日付は「令和○年○月○日」形式 (全角は不要、サーバーで変換)
+- スロット分割 (住所が2枠等): 先頭に全体を入れ、後続は空文字 ""
+- データに無い値は \`"（要確認）"\` を返す
+- removeBlocks: Phase 2 で削除決定済みのブロック (上のリスト) は必ず含める
 
-## 重要ルール
+## 株主毎の繰り返し (copies)
 
-### ✓ ユーザー確定回答が付いている slot は、その値を例外なく使うこと（最優先）
-- 上のスロット一覧で「✓ ユーザー確定回答（最優先...）」が併記されている slot は、
-  **ユーザーが clarify で確定済みの最新の値**です。
-- この値は **基本情報・登記簿・案件整理時点の値より絶対に優先**。
-  - 例: 基本情報の住所 = 旧住所、ユーザーが clarify で「現住所は ○○」と確定 → **必ず現住所を使う**
-- 出典候補が他の場所を指していても**それは無視**し、✓ の値をそのまま slot に入れる。
-- 解釈や言い換えはせず、回答の文字列をそのまま使う（書式変換だけは下記ルールに従う）。
+共通ルールに「株主毎に1枚」等の指示がある書類だけ \`values\` の代わりに \`copies\` を使う:
+\`\`\`
+copies: [
+  { "instanceLabel": "山田太郎(個人)", "要入力_0": "山田太郎", "要入力_1": "..." },
+  { "instanceLabel": "株式会社Deep30(法人)", "要入力_0": "株式会社Deep30", "要入力_1": "..." }
+]
+\`\`\`
 
-### 値の型と形式
-- **人名**: ターン1の整理内容・基本情報の役員/株主から正しい氏名を採用
-- **会社名**: 基本情報の商号
-- **日付**: 「令和○年○月○日」形式の和暦全角数字（例: 令和７年１月２１日）
-- **金額・株数**: テンプレ前後に「円」「株」等の単位がある場合、値には単位を含めない（テンプレ側に既に書かれているため）
-- **割合**: 5% は「5.00%」のようなパーセント文字列
+テンプレ名に \`_個人\`/\`_法人\` が付いた variant にも全株主分を返す。サーバーが instanceLabel の
+\`(個人)\`/\`(法人)\` タグで該当 copy だけ残す。
 
-### スロットの中身は空欄
-- \`要入力_N\` は **空のスロット** です。前案件の値は隠してあるので AI には見えません
-- 各スロットが何を表すかは「ラベル」「形式」「出典候補」と前後の文脈から判断してください
+## Excel 複数行セル
 
-### スロット分割（住所・氏名等が複数スロットに分かれている場合）
-- 住所が「東京都渋谷区...」「クレール西原102」のように2スロット → 先頭=全体, 後続=空文字 ""
-- 氏名が「福田」「峻介」のように2スロット → 先頭=全体, 後続=空文字 ""
-
-### 株主毎の繰り返し
-- 共通ルールに「株主毎に1枚」等の指示があれば、その書類だけ \`values\` の代わりに \`copies\` を使う
-- \`copies\` は要入力_N をキーとするオブジェクトの配列。\`values\` フィールドのネストは禁止
-  - 正: copies: [ { "要入力_0": "山田" }, { "要入力_0": "鈴木" } ]
-  - 誤: copies: [ { values: { "要入力_0": "山田" } } ]
-- \`instanceLabel\` は要入力_N と同じ階層に並べて OK（個人/法人テンプレの振り分けで使う）
-  - 例: copies: [ { "instanceLabel": "山田太郎(個人)", "要入力_0": "山田太郎" } ]
-
-### 個人/法人テンプレの variant 振り分け
-- テンプレ名末尾に \`_個人\` または \`_法人\` が付いていれば、その株主タイプ専用テンプレ。
-  例:「2-1.提案書兼同意書_個人.docx」「2-1.提案書兼同意書_法人.docx」
-- **両テンプレとも、copies には必ず全株主分を返すこと。** テンプレ別に該当株主だけ返す最適化はしない（取りこぼし防止）。
-- 各 copy には **\`instanceLabel\`** を必ず設定し、末尾に \`(個人)\` または \`(法人)\` を含めること。
-  これがサーバーがテンプレ振り分けに使う最重要シグナル。
-  例:
-    copies: [
-      { "instanceLabel": "山田太郎(個人)", "要入力_0": "山田太郎", "要入力_1": "..." },
-      { "instanceLabel": "株式会社Deep30(法人)", "要入力_0": "株式会社Deep30", "要入力_1": "..." }
-    ]
-- サーバー側で instanceLabel の \`(個人)/(法人)\` タグを見て、テンプレに合う copy だけ自動で残す。
-
-### 全角/半角
-- AI 側では考えず、上記の生の値を返す（半角→全角変換はサーバー側で実施）
-
-### 複数行を含むスロット（Excel の alt+Enter セル）
-- 元のスロットが複数行（\\n を含む）なら、新しい値も**同じ構造の改行で返す**
-- 例: 元「日付\\n\\n会社名\\n代表取締役名」→ 新「新日付\\n\\n新会社名\\n新代表取締役名」
-- 行頭の全角空白（インデント）も維持する
-- 1 行に潰さない
-
-### データに無い値
-- ターン1の整理・ユーザー確定回答・基本情報のいずれにも無い値は \`"（要確認）"\` を返す
-
-**全ての書類・全てのスロットを必ず含めて返答すること。**`;
+元スロットが \\n を含むなら、新値も同じ \\n 構造で返す (1行に潰さない、行頭全角空白も維持)。`;
 
   const messagesWithUserTurn = appendUserTurn(aiMessages, userTurnText, "produce");
 
