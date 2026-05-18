@@ -397,8 +397,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       return;
     }
     else if (card?.type === "clarification") {
-      // 確認質問に回答 → 回答を反映してもう一度 clarify を呼ぶ
-      // 新たな確認事項があれば次のカードを出す、無ければ書類生成に進む
+      // 確認質問に回答 → 回答を反映。
+      // - kind="procedural" (Phase 2 = analyze 後) → clarify-procedural を再呼び出し
+      // - 省略 or "substantive" (Phase 1) → clarify を再呼び出し → 終わったら analyze + procedural へ
+      const isProcedural = card.kind === "procedural";
       const updatedCard = { ...card, ...cardData, answered: true } as ClarificationCard;
       // スレッド状態を明示的に組み立てる（setStateコールバックに依存しない）
       const updatedMessages = thread.messages.map(m => {
@@ -454,19 +456,26 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
       }
 
-      // もう一度 clarify を呼ぶ。会話履歴から AI が自分で「⚠ 要確認」項目を覚えているので
-      // knownMissing の安全網は不要。
-      const clarifyRes = await fetch("/api/document-templates/clarify", {
+      // 呼び出すルート: procedural なら clarify-procedural、それ以外は通常 clarify
+      const clarifyRoute = isProcedural
+        ? "/api/document-templates/clarify-procedural"
+        : "/api/document-templates/clarify";
+
+      const clarifyBody = isProcedural
+        ? { companyId: company.id, threadId: thread.id, previousQA }
+        : {
+            companyId: company.id,
+            threadId: thread.id,
+            templateFolderPath: templatePath,
+            previousQA,
+            folderPath: updatedThread.folderPath,
+            disabledFiles: updatedThread.disabledFiles,
+          };
+
+      const clarifyRes = await fetch(clarifyRoute, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyId: company.id,
-          threadId: thread.id,
-          templateFolderPath: templatePath,
-          previousQA,
-          folderPath: updatedThread.folderPath,
-          disabledFiles: updatedThread.disabledFiles,
-        }),
+        body: JSON.stringify(clarifyBody),
       });
       const clarifyData = await clarifyRes.json();
 
@@ -475,8 +484,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         const nextMsg: ThreadMessage = {
           id: `msg_${Date.now()}`,
           role: "assistant",
-          content: `さらに${clarifyData.questions.length}点確認があります`,
-          cards: [{ type: "clarification", questions: clarifyData.questions }],
+          content: isProcedural
+            ? `書面ルール上の確認がさらに${clarifyData.questions.length}点あります`
+            : `さらに${clarifyData.questions.length}点確認があります`,
+          cards: [{
+            type: "clarification",
+            questions: clarifyData.questions,
+            ...(isProcedural ? { kind: "procedural" as const } : {}),
+          }],
           timestamp: new Date().toISOString(),
         };
         setThread(prev => prev ? { ...prev, messages: [...prev.messages, nextMsg] } : prev);
@@ -490,9 +505,23 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 確認事項なし → Phase 2 (テンプレ突き合わせ分析) → 書類生成
+      // 確認事項なし
+      if (isProcedural) {
+        // Phase 2 clarify が完了 → そのまま書類生成へ (analyze は既に終わっている)
+        await generateDocuments(updatedThread, templatePath, cardData as Partial<ActionCard>);
+        pendingTemplatePath.current = null;
+        return;
+      }
+
+      // Phase 1 clarify が完了 → Phase 2 (analyze) → Phase 2 clarify (procedural) → 書類生成
       const afterAnalyze = await runAnalyze(updatedThread, templatePath);
-      await generateDocuments(afterAnalyze, templatePath, cardData as Partial<ActionCard>);
+      const proceduralResult = await runClarifyProcedural(afterAnalyze, templatePath);
+      if (proceduralResult.hasQuestions) {
+        // procedural の質問カードを出したので一旦停止 (回答後の continueWorkflow でここに戻ってくる)
+        setLoading(false);
+        return;
+      }
+      await generateDocuments(proceduralResult.thread, templatePath, cardData as Partial<ActionCard>);
       pendingTemplatePath.current = null;
       return;
     }
@@ -734,9 +763,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 3. 質問なし → Phase 2 (テンプレ突き合わせ分析) → 書類生成
+      // 3. 質問なし → Phase 2 (テンプレ突き合わせ分析) → Phase 2 clarify → 書類生成
       const afterAnalyze = await runAnalyze(freshThread, templatePath);
-      await generateDocuments(afterAnalyze, templatePath);
+      const proceduralResult = await runClarifyProcedural(afterAnalyze, templatePath);
+      if (proceduralResult.hasQuestions) {
+        setLoading(false);
+        return;
+      }
+      await generateDocuments(proceduralResult.thread, templatePath);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
   };
@@ -807,6 +841,83 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     });
 
     return { ...currentThread, messages: [...currentThread.messages, savedMsg] };
+  };
+
+  // Phase 2 clarify (書面ルール上の確認質問)
+  // runAnalyze の直後に呼ぶ。analyze の末尾「## ⚠ Phase 2 要確認事項」を質問カードに変換。
+  //
+  // 戻り値:
+  //   - { thread: 更新済みスレッド, hasQuestions: true } → 質問カードを出して停止。
+  //     カード回答後の continueWorkflow で procedural 分岐に入る
+  //   - { thread, hasQuestions: false } → 質問なし。呼び出し側がそのまま produce に進む
+  const runClarifyProcedural = async (
+    currentThread: ChatThread,
+    templatePath: string
+  ): Promise<{ thread: ChatThread; hasQuestions: boolean }> => {
+    if (!company) return { thread: currentThread, hasQuestions: false };
+
+    // 既存の clarification カードから previousQA を集める (Phase 1 + 過去の Phase 2 両方)
+    const previousQA: { question: string; answer: string }[] = [];
+    for (const m of currentThread.messages) {
+      for (const c of m.cards || []) {
+        if (c.type !== "clarification") continue;
+        for (const q of c.questions) {
+          let ans = "";
+          if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+          else if (q.selectedOptionId) {
+            const opt = q.options.find(o => o.id === q.selectedOptionId);
+            ans = opt?.label || "";
+          }
+          const isGeneralNote = q.id === "general_note" || q.placeholder === "案件全体の注意点";
+          if (ans) {
+            previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+          } else if (isGeneralNote && c.answered) {
+            previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: "（特になし）" });
+          }
+        }
+      }
+    }
+
+    try {
+      const res = await fetch("/api/document-templates/clarify-procedural", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: currentThread.id,
+          previousQA,
+        }),
+      });
+      const data = await res.json();
+      if (data.questions && data.questions.length > 0) {
+        const proceduralMsg: ThreadMessage = {
+          id: `msg_${Date.now()}_clarify_proc`,
+          role: "assistant",
+          content: `書面ルール上の確認が${data.questions.length}点あります`,
+          cards: [{
+            type: "clarification",
+            questions: data.questions,
+            kind: "procedural",
+          }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, proceduralMsg] } : prev);
+        await fetch(`/api/chat-threads/${currentThread.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id, message: proceduralMsg }),
+        });
+        pendingTemplatePath.current = templatePath;
+        return {
+          thread: { ...currentThread, messages: [...currentThread.messages, proceduralMsg] },
+          hasQuestions: true,
+        };
+      }
+    } catch (e) {
+      console.warn("[ChatWorkflow] clarify-procedural failed:", e instanceof Error ? e.message : e);
+    }
+
+    return { thread: currentThread, hasQuestions: false };
   };
 
   // 書類生成

@@ -222,6 +222,9 @@ export interface ClarificationCard {
   type: "clarification";
   questions: ClarificationQuestion[];
   answered?: boolean;
+  // 実体確認 (Phase 1 clarify) か 書面ルール確認 (Phase 2 = analyze 後の clarify-procedural) か。
+  // 省略時は substantive 扱い（既存スレッドとの互換のため）。
+  kind?: "substantive" | "procedural";
 }
 
 export interface CheckIssue {
@@ -326,7 +329,7 @@ export interface CaseAiMessage {
   role: "user" | "assistant";
   content: string | CaseAiContentBlock[];
   // どのステップが書き込んだか
-  stage?: "organize" | "clarify" | "analyze" | "produce" | "verify";
+  stage?: "organize" | "clarify" | "analyze" | "clarify-procedural" | "produce" | "verify";
 }
 
 // 右パネル
