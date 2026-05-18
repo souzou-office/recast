@@ -2,10 +2,10 @@
 
 ## 0. 概要
 
-recast の書類生成フローを「**実体判断 / 手続き整理 / 実生成**」の3フェーズに分離する設計と実装の途中状態。Phase 1, 2 はある程度実装済み、Phase 2 clarify が未実装。
+recast の書類生成フローを「**実体判断 / 手続き整理 / 実生成**」の3フェーズに分離する設計と実装の途中状態。Phase 1, 2, **Phase 2 clarify まで実装済み**。
 
 - **ブランチ**: `claude/review-workflow-BV1UD`
-- **最新コミット**: `d0e2f14`
+- **最新コミット**: `5a4d3d1` (feat: Phase 2 clarify を実装)
 - **作業中のローカル**: `K:\recast` (Windows PowerShell)
 - **作業フロー**: 私 (sandbox) → push → GitHub → ユーザー pull の片方向
 
@@ -114,32 +114,26 @@ cef49ae feat: 案件整理を Phase 1 (実体判断) 中心に書き換え
 
 ## 3. 未実装（次のセッションでやる）
 
-### 最優先: Phase 2 clarify
+### ~~最優先: Phase 2 clarify~~ ✅ 実装済 (commit 5a4d3d1)
 
-`/api/document-templates/clarify-procedural`（または既存 clarify を改修）を作って、analyze の `## ⚠ Phase 2 要確認事項` リストを UI 質問に変換する step を挟む。
+`/api/document-templates/clarify-procedural` を新規追加し、analyze の `## ⚠ Phase 2 要確認事項` リストを UI 質問に変換するステップを挟むようにした。
 
-**現状の流れ**:
-```
-... → analyze → produce
-       ↑ ここで止まらず即生成、Phase 2 要確認事項が消化されない
-```
+**実装内容**:
+- 新ルート `src/app/api/document-templates/clarify-procedural/route.ts`
+  - 既存 clarify route とほぼ同じ作り。会話履歴から analyze ターンを読む
+  - previousQA で Phase 1 / 過去 Phase 2 の回答済みは除外
+- 型追加
+  - `CaseAiMessage.stage` に `"clarify-procedural"`
+  - `ClarificationCard.kind?: "substantive" | "procedural"`
+- `ChatWorkflow.tsx`
+  - `runClarifyProcedural` ヘルパー追加
+  - 両 generateDocuments 呼び出し箇所 (runWorkflow / clarification handler) に挟む
+  - clarification カードのクリック時、`card.kind === "procedural"` なら clarify-procedural を再呼び出し、終わったら直接 produce
 
-**目指す流れ**:
+**今の流れ**:
 ```
-... → analyze → clarify-procedural ← NEW → produce
-                  ↑ 質問カード出して停止
+organize → clarify (Phase 1) → analyze → clarify-procedural (Phase 2) → produce
 ```
-
-**実装方針**:
-1. 新ルート `/api/document-templates/clarify-procedural` 作成
-   - 既存 `/api/document-templates/clarify` とほぼ同じ作り
-   - 会話履歴から analyze ターン (`stage: "analyze"`) を読む
-   - その `## ⚠ Phase 2 要確認事項` リストを基に質問 JSON を生成
-   - 既に Phase 1 clarify で回答済みのものは除外
-2. `ChatWorkflow` で `runAnalyze` の後に呼ぶ
-   - 質問あれば clarification カード表示 → 停止
-   - 回答後、produce に進む
-   - 既存 Phase 1 clarify のループ処理がそのまま流用できる
 
 ### 仕上げ系（後回し）
 
@@ -213,10 +207,11 @@ npm run dev
 2. clarify → 質問カード
 3. 回答 → 続行
 4. analyze (Phase 2) → md レポート
-5. ~~clarify-procedural~~ ← **未実装**
-6. produce → 書類生成（議案削除も適用される）
+5. clarify-procedural → 書面ルール上の確認カード (議案削除可否・表記揺れの統一等)
+6. 回答 → 続行
+7. produce → 書類生成（議案削除も適用される）
 
-ログで `POST /api/document-templates/analyze 200` が出てれば Phase 2 動いてる。
+ログで `POST /api/document-templates/clarify-procedural 200` が出てれば Phase 2 clarify 動いてる。
 
 ---
 
@@ -228,11 +223,12 @@ Claude for Word への置き換えではなく、recast 側で書類生成フロ
 3 フェーズに分離する設計を進行中。
 
 直近の状況: Phase 1 (案件整理 = 実体判断), Phase 2 (analyze = テンプレ
-突き合わせ分析) は実装済み。Phase 2 clarify (書面確認質問) が未実装。
+突き合わせ分析), Phase 2 clarify (書面確認質問) **すべて実装済み**。
 
-次やるべき: Phase 2 clarify の実装。
+次やるべき: 実運用で議案削除・表記揺れ統一の精度を観察し、必要に応じて
+プロンプト調整。仕上げ系 (折り畳み表示等) も残あり。
 詳細はリポジトリの `claude/review-workflow-BV1UD` ブランチ最新を見て。
-直近の commit: d0e2f14
+直近の commit: 5a4d3d1
 ```
 
 これを新セッションの最初に貼り付けて、必要に応じてこの md 全体も貼れば文脈引き継げる。
