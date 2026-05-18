@@ -116,17 +116,72 @@ export async function POST(request: NextRequest) {
 
   // テンプレ本文を読む (各テンプレの中身を全部 AI に渡す)。
   // 案件ファイル本体は organize ターンで既に aiMessages に積まれているので、AI は会話履歴経由で見られる。
+  //
+  // 重要: テンプレ本文には ★label★ マーカーを **必ず埋め込む**。
+  // (生テキストだと AI に slot 位置が見えず、肩書きをラベルから推測する誤判断の元になる)
+  // - docx: getMarkedDocumentTextWithSlots で ［要入力_N］ 入りテキストを取り、labels.json
+  //         の label に置き換える
+  // - xlsx: getXlsxMarkedTextWithSlots で同様
+  // - placeholder 形式 ({{...}}, 【...】) は f.content にそのまま入っているのでフォールバック
   const templateBlocks: string[] = [];
   if (templateFolderPath) {
     try {
+      const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
+      const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
+      const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
+
       const tpFiles = await readAllFilesInFolder(templateFolderPath);
       for (const f of tpFiles) {
         // テンプレフォルダ内のメモ (.txt/.md) はテンプレ注意事項として既に Phase 1 で渡し済みなのでスキップ
         if (f.name.endsWith(".txt") || f.name.endsWith(".md")) continue;
         // base64 (PDF/画像) はテンプレとしては想定外なのでスキップ
         if (f.base64) continue;
-        if (!f.content) continue;
-        templateBlocks.push(`### ${f.name}\n\`\`\`\n${f.content}\n\`\`\``);
+
+        const ext = f.name.toLowerCase().split(".").pop() || "";
+        let markedText = "";
+
+        if (ext === "docx" || ext === "docm") {
+          try {
+            const buf = await fs.readFile(f.path);
+            const { text } = getMarkedDocumentTextWithSlots(buf);
+            const labels = await ensureDocxLabels(f.path);
+            // ［要入力_N］ → ★label★ に置換 (label が無ければ ★要入力_N★ のまま)
+            const labelById = new Map<number, string>();
+            for (const s of labels?.slots || []) {
+              if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
+            }
+            markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
+              const id = Number(idStr);
+              const lbl = labelById.get(id) || `要入力_${id}`;
+              return `★${lbl}★`;
+            });
+          } catch (e) {
+            console.warn(`[analyze] docx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
+          }
+        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+          try {
+            const buf = await fs.readFile(f.path);
+            const { text } = getXlsxMarkedTextWithSlots(buf);
+            const labels = await ensureXlsxLabels(f.path);
+            const labelById = new Map<number, string>();
+            for (const s of labels?.slots || []) {
+              if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
+            }
+            markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
+              const id = Number(idStr);
+              const lbl = labelById.get(id) || `要入力_${id}`;
+              return `★${lbl}★`;
+            });
+          } catch (e) {
+            console.warn(`[analyze] xlsx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
+          }
+        }
+
+        // ハイライト系で取れなかった場合は f.content をフォールバック (placeholder 形式テンプレ用)
+        if (!markedText && f.content) markedText = f.content;
+        if (!markedText) continue;
+
+        templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\``);
       }
     } catch (e) {
       console.warn("[analyze] template read failed:", e instanceof Error ? e.message : e);
@@ -134,7 +189,7 @@ export async function POST(request: NextRequest) {
   }
   const templateBodyBlock =
     templateBlocks.length > 0
-      ? `\n## テンプレート本文 (各書類の中身。★ラベル★ や 【ラベル】 が穴を表す)\n\n${templateBlocks.join("\n\n")}\n`
+      ? `\n## テンプレート本文 (各書類の中身。★ラベル★ が埋めるべき穴。slot 直前直後の文字を必ず確認)\n\n${templateBlocks.join("\n\n")}\n`
       : "\n## テンプレート本文\n(読めませんでした)\n";
 
   // Phase 1 Q&A を明示的に渡す (会話履歴には AI 側の質問しか残らないので)
