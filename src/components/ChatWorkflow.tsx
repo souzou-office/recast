@@ -15,54 +15,6 @@ interface Props {
   onThreadUpdate: () => void;
 }
 
-/**
- * clarification 質問の source テキスト (例: "📄投資契約書_…docx 第2条" や "登記簿") から
- * 対応するファイルを案件 + 共通フォルダのファイル一覧から見つけて返す。
- *
- * 優先順位:
- *   1. ファイル名 (拡張子付き) が source に含まれていれば一致 (最も精度高い)
- *   2. 拡張子なしのベース名が含まれていれば一致
- *   3. キーワード (登記/投資契約/株主名簿/スケジュール/定款 等) で曖昧マッチ
- *
- * 📇 (基本情報) や ⚠ (verify指摘) は実ファイルじゃないのでスキップ。
- */
-function findFileForSources(
-  sources: string[],
-  files: { path: string; name: string }[]
-): { path: string; name: string } | null {
-  const KEYWORD_MAP: Array<{ kw: RegExp; fileKw: RegExp }> = [
-    { kw: /登記簿|履歴事項/, fileKw: /登記|履歴事項/ },
-    { kw: /投資契約/, fileKw: /投資契約|株式引受|株式譲渡/ },
-    { kw: /株主名簿/, fileKw: /株主名簿/ },
-    { kw: /スケジュール|案件スケジュール/, fileKw: /スケジュール/ },
-    { kw: /定款/, fileKw: /定款/ },
-    { kw: /印鑑証明/, fileKw: /印鑑証明/ },
-    { kw: /総数引受/, fileKw: /総数引受/ },
-  ];
-
-  for (const source of sources) {
-    if (!source) continue;
-    if (/^[📇⚠]/.test(source.trim())) continue; // ファイルじゃないやつは飛ばす
-
-    // 1. ファイル名 (拡張子付き) を source から抽出して直接照合
-    const fileMatch = source.match(/([^\s　📄📁\[\]\(\)（）]+\.(docx|xlsx|xls|xlsm|pdf|doc))/i);
-    if (fileMatch) {
-      const target = fileMatch[1];
-      const hit = files.find(f => f.name === target || f.name.includes(target) || target.includes(f.name));
-      if (hit) return hit;
-    }
-
-    // 2. キーワード一致
-    for (const { kw, fileKw } of KEYWORD_MAP) {
-      if (kw.test(source)) {
-        const hit = files.find(f => fileKw.test(f.name));
-        if (hit) return hit;
-      }
-    }
-  }
-  return null;
-}
-
 export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Props) {
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [input, setInput] = useState("");
@@ -82,11 +34,6 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingTemplatePath = useRef<string | null>(null);
-  // 案件フォルダ + 共通フォルダの file path 一覧。auto-preview で source テキストから
-  // ファイルを fuzzy match する用。
-  const [caseFiles, setCaseFiles] = useState<{ path: string; name: string }[]>([]);
-  // どの clarification card に対してすでに auto-preview したか記憶（再表示で重複しない）
-  const autoPreviewedRef = useRef<Set<string>>(new Set());
 
   // スレッド読み込み
   useEffect(() => {
@@ -156,100 +103,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   // （前のセッションの書類が右ペインに残ったままだと混乱の元）
   useEffect(() => {
     setPreviewFile(null);
-    autoPreviewedRef.current = new Set();
-    setCaseFiles([]);
   }, [threadId, company?.id]);
-
-  // 案件フォルダ + 共通フォルダのファイル一覧を取得 (auto-preview 用)。
-  // 案件フォルダが変わったら再取得する。
-  // /api/workspace/list-files は 1 階層のみ返すので、案件フォルダのサブフォルダも軽く展開する。
-  useEffect(() => {
-    if (!company || !thread?.folderPath) return;
-    let cancelled = false;
-    const listOne = async (p: string): Promise<{ files: { name: string; path: string }[]; subfolders: { name: string; path: string }[] }> => {
-      try {
-        const r = await fetch("/api/workspace/list-files", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: p }),
-        });
-        return r.ok ? await r.json() : { files: [], subfolders: [] };
-      } catch {
-        return { files: [], subfolders: [] };
-      }
-    };
-    (async () => {
-      try {
-        type FileEntry = { path: string; name: string };
-        const all: FileEntry[] = [];
-
-        // 案件フォルダ (現フォルダ + 1 階層下のサブフォルダ。司法書士作成書類等を catch)
-        const fp = thread.folderPath as string;
-        const caseRoot = await listOne(fp);
-        for (const f of (caseRoot.files || []) as FileEntry[]) {
-          if (f.path && f.name) all.push({ path: f.path, name: f.name });
-        }
-        const caseSubLists = await Promise.all((caseRoot.subfolders || []).map(s => listOne(s.path)));
-        for (const sub of caseSubLists) {
-          for (const f of (sub.files || []) as FileEntry[]) {
-            if (f.path && f.name) all.push({ path: f.path, name: f.name });
-          }
-        }
-
-        // 共通フォルダ (会社の subfolders で role === "common")
-        const commonPaths: string[] = [];
-        for (const sf of company.subfolders || []) {
-          if (sf.role === "common" && sf.active !== false) commonPaths.push(sf.id);
-        }
-        const commonResults = await Promise.all(commonPaths.map(p => listOne(p)));
-        for (const res of commonResults) {
-          for (const f of (res.files || []) as FileEntry[]) {
-            if (f.path && f.name) all.push({ path: f.path, name: f.name });
-          }
-        }
-
-        if (cancelled) return;
-        setCaseFiles(all);
-      } catch { /* ignore */ }
-    })();
-    return () => { cancelled = true; };
-  }, [thread?.folderPath, company?.id, company?.subfolders]);
-
-  // clarification card が出たら、その質問の source から関連ファイルを fuzzy match して
-  // 自動で右ペインプレビューに表示する。 user の確認作業をワンクリック減らす。
-  useEffect(() => {
-    if (!thread || caseFiles.length === 0) return;
-    if (previewFile) return; // user が既に何か開いてたら触らない
-
-    // 最後の未回答 clarification card を探す
-    let targetMsgId: string | null = null;
-    let targetSources: string[] = [];
-    for (let i = thread.messages.length - 1; i >= 0; i--) {
-      const m = thread.messages[i];
-      for (const c of m.cards || []) {
-        if (c.type !== "clarification") continue;
-        if (c.answered) continue;
-        targetMsgId = m.id;
-        // 全質問の全 option の source を集めて、優先度高い順 (先頭から)
-        for (const q of c.questions) {
-          for (const opt of q.options || []) {
-            if (opt.source) targetSources.push(opt.source);
-          }
-        }
-        break;
-      }
-      if (targetMsgId) break;
-    }
-    if (!targetMsgId || targetSources.length === 0) return;
-    if (autoPreviewedRef.current.has(targetMsgId)) return;
-
-    // source テキスト → ファイル名を抽出して fuzzy match
-    const matched = findFileForSources(targetSources, caseFiles);
-    if (!matched) return;
-
-    autoPreviewedRef.current.add(targetMsgId);
-    setPreviewFile({ filePath: matched.path, fileName: matched.name });
-  }, [thread, caseFiles, previewFile]);
 
   // 空スレッドに初期カード（フォルダ選択）を遅延生成して追加する。
   // POST /api/chat-threads が軽量化されて messages が空で返ってくるので、ここで補完。
