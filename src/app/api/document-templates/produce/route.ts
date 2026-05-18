@@ -4,6 +4,8 @@ import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
 import { logTokenUsage } from "@/lib/token-logger";
 import fs from "fs/promises";
+import path from "path";
+import crypto from "crypto";
 import {
   loadAiMessages,
   saveAiMessages,
@@ -13,6 +15,7 @@ import {
   toAnthropicMessages,
   hasStage,
 } from "@/lib/case-conversation";
+import type { ChatThread, Phase2Decisions } from "@/types";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const Docxtemplater = require("docxtemplater");
@@ -217,6 +220,36 @@ export async function POST(request: NextRequest) {
           placeholder, question: "", answer: String(answer),
         }))
       : [];
+
+  // Phase 2 (analyze) が決定した「テンプレに入れる値・削除する議案」を読む。
+  // Phase 3 (このルート) は Phase 2 の決定を最優先で適用する設計。
+  // Phase 2 が決めた slot 値は confirmedQA と同じ扱いで slot 一覧にインライン表示する。
+  // Phase 2 が決めた deletes は AI にプロンプト経由で渡し、removeBlocks に必ず含めさせる。
+  let phase2Decisions: Phase2Decisions | undefined;
+  try {
+    const hash = crypto.createHash("md5").update(company.id).digest("hex");
+    const tpath = path.join(process.cwd(), "data", "chat-threads", hash, `${threadId}.json`);
+    const raw = await fs.readFile(tpath, "utf-8");
+    const thr = JSON.parse(raw) as ChatThread;
+    phase2Decisions = thr.phase2Decisions;
+  } catch { /* ignore */ }
+
+  // Phase 2 が決めた slot 値を confirmedQA に追加（ユーザー回答と同じ仕組みで slot 一覧にインライン表示される）
+  if (phase2Decisions) {
+    const existing = new Set(confirmedQA.map((q) => q.placeholder));
+    for (const doc of phase2Decisions.documents) {
+      for (const s of doc.slots) {
+        if (!s.slot || !s.value) continue;
+        if (existing.has(s.slot)) continue; // ユーザー確定回答が既にあるならそちらを優先
+        confirmedQA.push({
+          placeholder: s.slot,
+          question: `Phase 2 決定 (${doc.templateFile})`,
+          answer: s.value,
+        });
+        existing.add(s.slot);
+      }
+    }
+  }
 
   const renderQABlock = (): string => {
     if (confirmedQA.length === 0) return "";
@@ -548,6 +581,19 @@ export async function POST(request: NextRequest) {
     ? `\n## 条件分岐フラグ（true/false で返す）\n${[...allConditionFlags].map(f => `- ${f}`).join("\n")}\n`
     : "";
 
+  // Phase 2 が決めた削除議案 (deletes) をプロンプトに明示する。
+  // AI は必ずこのリストを removeBlocks に含めること。
+  const phase2DeletesBlock = phase2Decisions && phase2Decisions.documents.some((d) => d.deletes.length > 0)
+    ? `\n## Phase 2 で削除決定済みの議案・ブロック (各書類で removeBlocks に必ず含めること)\n${
+        phase2Decisions.documents
+          .filter((d) => d.deletes.length > 0)
+          .map((d) =>
+            `### ${d.templateFile}\n${d.deletes.map((del) => `- ${del.block} (理由: ${del.reason})`).join("\n")}`
+          )
+          .join("\n\n")
+      }\n`
+    : "";
+
   const userTurnText = `## あなたが今やること（ターン3: 各書類のスロットに何を入れるかを決める）
 
 ターン1で整理した **実体判断** とターン2で確認した質問の回答を前提に、
@@ -561,7 +607,7 @@ export async function POST(request: NextRequest) {
 ターン1の「議題構成の判断」で **今回該当なし** とした議案がある書類については、
 **removeBlocks にその議案見出しを必ず列挙**してください（議案削除）。
 
-${renderQABlock()}${masterUpdateBlock}
+${renderQABlock()}${masterUpdateBlock}${phase2DeletesBlock}
 ## 各書類のスロット一覧（このキー名で返答すること）
 
 ${docPromptLines.join("\n")}

@@ -642,6 +642,26 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     };
     setThread(prev => prev ? { ...prev, messages: [...prev.messages, analyzeMsg] } : prev);
 
+    // Phase 1 clarify の Q&A を集めて analyze に渡す。
+    // 会話履歴 (aiMessages) には AI 側の質問しか残らないので、ユーザーの回答は明示的に渡す必要がある。
+    const previousQA: { question: string; answer: string }[] = [];
+    for (const m of currentThread.messages) {
+      for (const c of m.cards || []) {
+        if (c.type !== "clarification") continue;
+        for (const q of c.questions) {
+          let ans = "";
+          if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+          else if (q.selectedOptionId) {
+            const opt = q.options.find(o => o.id === q.selectedOptionId);
+            ans = opt?.label || "";
+          }
+          if (ans) {
+            previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+          }
+        }
+      }
+    }
+
     let fullText = "";
     try {
       const res = await fetch("/api/document-templates/analyze", {
@@ -651,6 +671,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           companyId: company.id,
           threadId: currentThread.id,
           templateFolderPath: templatePath,
+          previousQA,
         }),
       });
       const reader = res.body?.getReader();

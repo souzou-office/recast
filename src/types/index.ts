@@ -298,6 +298,28 @@ export interface ThreadMessage {
   timestamp: string;
 }
 
+// Phase 2 (analyze) が出力する「テンプレに何を入れるか」の決定。
+// analyze AI がテンプレ本文 + 案件ファイル + Phase 1 整理 + Phase 1 Q&A を読んで決める。
+// Phase 3 (produce) はこの決定をルールベースで適用するだけ。
+export interface Phase2Decisions {
+  // テンプレファイルごとの決定
+  documents: Phase2DocumentDecision[];
+}
+
+export interface Phase2DocumentDecision {
+  templateFile: string;            // テンプレファイル名 (例: "議事録.docx")
+  // 確定した値: slot ラベル → 値
+  slots: { slot: string; value: string; source: string }[];
+  // 削除する議案 / ブロック (削除のアンカー文字列)
+  deletes: { block: string; reason: string }[];
+  // 確定できなかった項目 (Phase 2 clarify で聞く)
+  unconfirmed: {
+    slot: string;
+    reason: string;
+    candidates?: { value: string; source: string }[];
+  }[];
+}
+
 // チャットスレッド（CaseRoom + chat-history 統合）
 export interface ChatThread {
   id: string;
@@ -310,6 +332,9 @@ export interface ChatThread {
   masterSheet?: MasterSheet;
   generatedDocuments?: GeneratedDocument[];
   checkResult?: string;
+  // Phase 2 で確定した「テンプレに入れる値・削除する議案・残る要確認」。
+  // clarify-procedural と produce の両方が参照する。
+  phase2Decisions?: Phase2Decisions;
   // 1案件=1会話: 案件整理→質問→書類生成→検証 を Claude の同じ会話履歴で進める
   // （別人感をなくし、各ステップが前段の判断・迷いを継承するため）
   aiMessages?: CaseAiMessage[];

@@ -1,19 +1,31 @@
 // /api/document-templates/analyze
-// Phase 2 = 「手続き上の整理」(テンプレ突き合わせ分析)。
-// Phase 1 (案件整理 = 実体判断) と clarify (実体の質問回答) の結果を踏まえて、
-// 選んだテンプレ群と突き合わせ、以下を md レポートで返す:
-//   ① テンプレ vs 実体判断の齟齬 (議案の取捨候補)
-//   ② 書類間の統一性チェック (表記揺れ・値の整合)
-//   ③ 穴の確認 (未確定スロット一覧、各書類で何個埋まらないか)
-//   末尾に ⚠ Phase 2 要確認事項 リスト (clarify2 で聞くべき項目)
+// Phase 2 = 「手続き判断」(テンプレに具体的に何を入れるかを確定する)。
 //
-// 出力はあくまで「分析レポート」。実際の議案削除・値置換は次のターン (produce) が担当。
-// このターンを挟むメリット: Phase 1 (実体判断) の決定が、選んだテンプレに対して
-// 「具体的にどこで衝突するか」を一覧化し、生成前にユーザーが書面ルール上の確認を済ませられる。
+// 設計の核心:
+//   - Phase 1 は実体判断 (案件構造・議題構成・整合性) を md で出力
+//   - Phase 2 (このルート) はテンプレ本文 + 案件ファイル + Phase 1 整理 + Phase 1 Q&A を
+//     全部読み直して、テンプレの各スロット / 各議案について
+//     「何を入れる / 削除する / 確定できない」を 1 つずつ決める
+//   - Phase 3 (produce) は Phase 2 の決定をルールベースで適用するだけ
+//
+// 入力:
+//   - companyId, threadId
+//   - templateFolderPath (テンプレフォルダのパス)
+//   - previousQA (Phase 1 clarify の Q&A。会話履歴には AI 側しか残ってないので明示的に渡す)
+//
+// 出力 (ストリーミング):
+//   - text: 人間向けの md 推論 (AI が考えながら書く)
+//   - decisions: 最終の構造化 JSON ({ documents: Phase2DocumentDecision[] })
+//   - done: 終了
+//
+// 副作用:
+//   - aiMessages に analyze ターンを追加 (md + 末尾の JSON ブロック)
+//   - thread.phase2Decisions に構造化決定を保存 (clarify-procedural / produce が参照)
 
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
+import path from "path";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
 import { logTokenUsage } from "@/lib/token-logger";
@@ -26,199 +38,191 @@ import {
   toAnthropicMessages,
   hasStage,
 } from "@/lib/case-conversation";
+import type { Phase2Decisions, Phase2DocumentDecision } from "@/types";
 
 const client = new Anthropic();
 const MODEL = "claude-sonnet-4-6";
 
+// JSON ブロック (```json ... ```) を AI 出力から抜き出してパースする。
+// 末尾だけでなく文中のどこにあっても拾えるようにする (AI が説明後に出すパターンに対応)。
+function extractDecisionsJson(text: string): Phase2Decisions | null {
+  const blockMatch = text.match(/```json\s*([\s\S]*?)```/);
+  const jsonText = blockMatch ? blockMatch[1] : null;
+  if (!jsonText) {
+    // フォールバック: 最後の { から最後の } までを試す
+    const start = text.lastIndexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      const obj = JSON.parse(text.slice(start, end + 1));
+      if (obj && Array.isArray(obj.documents)) return obj as Phase2Decisions;
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  try {
+    const obj = JSON.parse(jsonText.trim());
+    if (obj && Array.isArray(obj.documents)) return obj as Phase2Decisions;
+  } catch (e) {
+    console.warn("[analyze] JSON parse failed:", e instanceof Error ? e.message : e);
+  }
+  return null;
+}
+
+// thread.phase2Decisions を更新する小ヘルパー。
+async function savePhase2Decisions(companyId: string, threadId: string, decisions: Phase2Decisions): Promise<void> {
+  try {
+    const crypto = await import("crypto");
+    const hash = crypto.createHash("md5").update(companyId).digest("hex");
+    const filePath = path.join(process.cwd(), "data", "chat-threads", hash, `${threadId}.json`);
+    const raw = await fs.readFile(filePath, "utf-8");
+    const thread = JSON.parse(raw);
+    thread.phase2Decisions = decisions;
+    thread.updatedAt = new Date().toISOString();
+    await fs.writeFile(filePath, JSON.stringify(thread, null, 2), "utf-8");
+  } catch (e) {
+    console.error("[analyze] savePhase2Decisions failed:", e);
+  }
+}
+
 export async function POST(request: NextRequest) {
-  const { companyId, threadId, templateFolderPath } = (await request.json()) as {
+  const { companyId, threadId, templateFolderPath, previousQA } = (await request.json()) as {
     companyId: string;
     threadId: string;
     templateFolderPath?: string;
+    previousQA?: { question: string; answer: string }[];
   };
 
   const config = await getWorkspaceConfig();
-  const company = config.companies.find(c => c.id === companyId);
+  const company = config.companies.find((c) => c.id === companyId);
   if (!company) {
     return new Response(JSON.stringify({ error: "会社が見つかりません" }), {
-      status: 404, headers: { "Content-Type": "application/json" },
+      status: 404,
+      headers: { "Content-Type": "application/json" },
     });
   }
 
-  // organize (Phase 1) が完了済みであることを前提にする
+  // Phase 1 (organize) 完了が前提
   let aiMessages = await loadAiMessages(company.id, threadId);
   if (!hasStage(aiMessages, "organize")) {
     return new Response(JSON.stringify({ error: "案件整理 (Phase 1) が完了していません" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
+      status: 400,
+      headers: { "Content-Type": "application/json" },
     });
   }
-  // analyze の再実行時は analyze 以降を切り戻す (produce/verify があれば一緒に落ちる)
+  // 再実行時は analyze 以降を切り戻す
   aiMessages = truncateBeforeStage(aiMessages, "analyze");
 
-  // --- テンプレ情報の収集 ---
-  // 各テンプレについて:
-  //   - 書類名
-  //   - スロット (slot label の一覧、または placeholder 名)
-  //   - 議案ブロック構造 (parseDocxStructure)
-  // を AI プロンプトに渡す。実体は produce で読むので、ここでは「骨格」だけ
+  // テンプレ本文を読む (各テンプレの中身を全部 AI に渡す)。
+  // 案件ファイル本体は organize ターンで既に aiMessages に積まれているので、AI は会話履歴経由で見られる。
   const templateBlocks: string[] = [];
   if (templateFolderPath) {
     try {
-      const templateFiles = await readAllFilesInFolder(templateFolderPath);
-      const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
-      const { parseDocxStructure } = await import("@/lib/docx-structure-parser");
-
-      for (const tf of templateFiles) {
-        if (tf.base64) continue;
-        const ext = tf.name.toLowerCase().split(".").pop() || "";
-        const baseName = tf.name.replace(/\.[^.]+$/, "");
-        const lines: string[] = [`### ${baseName}`];
-
-        // ラベル (要入力_N → 意味ラベル)
-        let labelLines: string[] = [];
-        if (ext === "docx" || ext === "docm") {
-          try {
-            const labels = await ensureDocxLabels(tf.path);
-            if (labels) {
-              const seen = new Set<string>();
-              for (const s of labels.slots) {
-                if (!s.label || s.label === "不明" || seen.has(s.label)) continue;
-                seen.add(s.label);
-                const format = s.format ? ` (形式: ${s.format})` : "";
-                labelLines.push(`  - ${s.label}${format}`);
-              }
-            }
-          } catch { /* ignore */ }
-        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
-          try {
-            const labels = await ensureXlsxLabels(tf.path);
-            if (labels) {
-              const seen = new Set<string>();
-              for (const s of labels.slots) {
-                if (!s.label || s.label === "不明" || seen.has(s.label)) continue;
-                seen.add(s.label);
-                labelLines.push(`  - ${s.label}`);
-              }
-            }
-          } catch { /* ignore */ }
-        }
-
-        // placeholder 形式 ({{...}}, 【...】)
-        if (tf.content) {
-          const phPatterns = [/【([^】]+)】/g, /\{\{([^}]+)\}\}/g, /｛｛([^｝]+)｝｝/g];
-          const found = new Set<string>();
-          for (const re of phPatterns) {
-            let m;
-            while ((m = re.exec(tf.content)) !== null) {
-              const name = m[1].trim();
-              if (name.startsWith("#") || name.startsWith("/")) continue;
-              if (!found.has(name)) {
-                found.add(name);
-                labelLines.push(`  - ${name}`);
-              }
-            }
-          }
-        }
-
-        if (labelLines.length > 0) {
-          lines.push(`スロット (${labelLines.length}件):`);
-          lines.push(...labelLines.slice(0, 30)); // 多すぎたら頭の方だけ
-          if (labelLines.length > 30) lines.push(`  ... (他 ${labelLines.length - 30}件)`);
-        }
-
-        // 議案ブロック構造 (docx のみ)
-        if (ext === "docx" || ext === "docm") {
-          try {
-            const buf = await fs.readFile(tf.path);
-            const structure = parseDocxStructure(buf);
-            if (structure.sections.length > 0) {
-              lines.push(`議案ブロック:`);
-              for (const sec of structure.sections) {
-                lines.push(`  - ${sec}`);
-              }
-            }
-          } catch { /* ignore */ }
-        }
-
-        if (lines.length > 1) templateBlocks.push(lines.join("\n"));
+      const tpFiles = await readAllFilesInFolder(templateFolderPath);
+      for (const f of tpFiles) {
+        // テンプレフォルダ内のメモ (.txt/.md) はテンプレ注意事項として既に Phase 1 で渡し済みなのでスキップ
+        if (f.name.endsWith(".txt") || f.name.endsWith(".md")) continue;
+        // base64 (PDF/画像) はテンプレとしては想定外なのでスキップ
+        if (f.base64) continue;
+        if (!f.content) continue;
+        templateBlocks.push(`### ${f.name}\n\`\`\`\n${f.content}\n\`\`\``);
       }
     } catch (e) {
-      console.warn("[analyze] template scan failed:", e instanceof Error ? e.message : e);
+      console.warn("[analyze] template read failed:", e instanceof Error ? e.message : e);
     }
   }
+  const templateBodyBlock =
+    templateBlocks.length > 0
+      ? `\n## テンプレート本文 (各書類の中身。★ラベル★ や 【ラベル】 が穴を表す)\n\n${templateBlocks.join("\n\n")}\n`
+      : "\n## テンプレート本文\n(読めませんでした)\n";
 
-  const templateInfoBlock = templateBlocks.length > 0
-    ? `\n## 選んだ書類テンプレートの骨格 (スロット + 議案ブロック)\n\n${templateBlocks.join("\n\n")}\n`
-    : "\n## 選んだ書類テンプレートの骨格\n(テンプレ情報を読めませんでした)\n";
+  // Phase 1 Q&A を明示的に渡す (会話履歴には AI 側の質問しか残らないので)
+  const qaBlock =
+    previousQA && previousQA.length > 0
+      ? `\n## Phase 1 確認質問と回答 (ユーザー確定済み)\n${previousQA
+          .map((qa, i) => `${i + 1}. Q: ${qa.question}\n   A: ${qa.answer}`)
+          .join("\n")}\n`
+      : "\n## Phase 1 確認質問と回答\n(回答なし)\n";
 
-  const userTurnText = `## あなたが今やること (ターン3: Phase 2 = テンプレ突き合わせ分析)
+  const userTurnText = `## あなたが今やること (ターン3: Phase 2 = 手続き判断 / テンプレに具体的に何を入れるかを確定する)
 
-ターン1 (案件整理 = 実体判断) で出した判断と、ターン2 (実体確認質問の回答) を踏まえて、
-これから使う書類テンプレート群と **突き合わせ分析** を行ってください。
+ターン1 (案件整理 = 実体判断) と ターン2 (Phase 1 確認質問の回答) を踏まえて、
+**選んだテンプレートの中身を1つずつ読んで、各スロットに具体的に何を入れるかを確定** してください。
 
-このターンの目的は **「書類を生成する前に、書面ルール上で確認すべきこと」を洗い出す** ことです。
-**まだ書類は生成しません**。値の精密抽出も次のターンです。
+このターンの目的は **「テンプレに入れる内容と削除する内容を全部確定する」** ことです。
+次のターン (produce) は Phase 2 で確定した内容を **ルールベースで** テンプレに適用するだけ。
+つまり **AI 判断の最後のチャンスがこのターン** です。漏れがあると produce が困る。
 
-${templateInfoBlock}
+${qaBlock}
+${templateBodyBlock}
 
-## 出力フォーマット (必ずこの形式で md)
+## 仕事の進め方
 
-3つのセクション + 末尾に要確認事項。
+1. 各テンプレ書類ごとに、本文を **上から順に** 読む
+2. ★ラベル★ や 【ラベル】 のスロット箇所が出てきたら、何を入れるか決める
+   - 案件ファイル (Phase 1 で読んだ内容) と Phase 1 Q&A を使って値を決める
+   - 値が複数候補ある / どっちか分からない → unconfirmed に積む
+3. 議案ブロック (見出しが「第○号議案」「第○章」等) が出てきたら、今回必要か判断
+   - Phase 1 の議題構成判断と照合
+   - 「今回該当なし」と判断したものは deletes に積む
+4. 全部の書類について 1〜3 を繰り返す
+
+## 出力フォーマット
+
+**まず人間向けの md 推論を書く** (ストリーミングで見える)。例:
 
 \`\`\`
-# Phase 2 テンプレ整理結果
+# Phase 2: テンプレ穴埋め決定
 
-## ① テンプレ vs 実体判断の齟齬
+## 議事録.docx
+- 会社名 → 株式会社JINGS (登記簿)
+- 払込期日 → 令和8年6月15日 (案件スケジュール表)
+- 取締役会決議日 → ⚠ 投資契約書 5/20 vs スケジュール表 5/22 食い違い → unconfirmed
+- 第3号議案 (役員報酬の決定の件) → Phase 1で『今回該当なし』判断 → deletes
 
-ターン1で「今回該当なし」と判断した議案がテンプレに含まれているか、
-または「追加で必要」とした議案がテンプレに無いかを書き出す。
+## 招集通知.docx
+...
+\`\`\`
 
-- 「議事録.docx」第3号議案「役員報酬の決定の件」 → ターン1 で『今回該当なし』 → **削除推奨**
-- 「招集通知.docx」「監査報告」セクション → ターン1 で『監査役関連 該当なし』 → **削除推奨**
-- (追加が必要な議案があれば「テンプレに無いが追加すべき」と書く)
+**最後に必ず \`\`\`json ブロック で構造化決定を出す** (機械が読む):
 
-## ② 統一性チェック
-
-書類間で同じ値が出てくるスロット (会社名・代表者名・決議日等) を見つけ、
-ターン1の確定値 / 要確認の有無を確認する。
-
-- 「会社名」: 5書類で使用、ターン1で「株式会社JINGS」確定 ✓
-- 「代表者氏名」: 3書類で使用、ターン1で確定値あり ✓
-- 「引受人名」: 4書類で使用、ターン1で要確認 (商号表記揺れ) ⚠
-
-## ③ 穴の確認
-
-各書類でターン1 + ターン2の回答だけで埋まらない可能性のあるスロットを書き出す。
-(値抽出は次のターンでやるが、今の段階でも明らかに不足なものは洗い出せる)
-
-### 議事録.docx (11 スロット)
-- 確定可能: 8
-- 要確認: 3
-  - 払込期日 (案件ファイル参照で取得可)
-  - 引受人正式商号 (上記の要確認案件)
-  - 株主総会基準日公告日 (ターン1 ⚠で未確定)
-
-### 招集通知.docx (7 スロット)
-- 確定可能: 6
-- 要確認: 1
-  - 取締役会決議日 (ターン1で資料間矛盾)
-
-## ⚠ Phase 2 要確認事項 (書面ルール上の確認、最大10件)
-
-1. 「議事録.docx」第3号議案 (役員報酬) を削除でよいですか？
-2. 引受人の正式商号は全書類で「××株式会社」「株式会社××」どちらに統一しますか？
-3. 株主総会基準日の公告日が未定 → 公告予定日を教えてください
-4. 取締役会決議日: 5/20 (投資契約書) vs 5/22 (スケジュール表) → どちらで全書類を作成しますか？
-5. ...
+\`\`\`json
+{
+  "documents": [
+    {
+      "templateFile": "議事録.docx",
+      "slots": [
+        { "slot": "会社名", "value": "株式会社JINGS", "source": "登記簿 / Phase 1" },
+        { "slot": "払込期日", "value": "令和8年6月15日", "source": "案件スケジュール表" }
+      ],
+      "deletes": [
+        { "block": "第3号議案 役員報酬の決定の件", "reason": "Phase 1で『今回該当なし』判断" }
+      ],
+      "unconfirmed": [
+        {
+          "slot": "取締役会決議日",
+          "reason": "資料間で日付が食い違う",
+          "candidates": [
+            { "value": "令和8年5月20日", "source": "投資契約書" },
+            { "value": "令和8年5月22日", "source": "案件スケジュール表" }
+          ]
+        }
+      ]
+    }
+  ]
+}
 \`\`\`
 
 ## 重要原則
 
-1. **書類を生成しない**。骨格分析のみ
-2. **議案削除の決定権はユーザー**。AI は「削除推奨」と書くだけで実行しない
-3. **要確認事項は書面ルール上のもの**に絞る (実体的な事実は Phase 1 で確認済)
-4. **既に Phase 1 の clarify で回答済みの内容を再質問しない**
-5. 出力は **必ず md** (構造化 JSON は不要)`;
+1. **テンプレ全件・全スロットを網羅**。読み飛ばしたスロットがあると produce で 要確認 残骸になる
+2. **Phase 1 で確定した値は Phase 2 で再質問しない**。slots に書き込めば完了
+3. **議案削除は反映先テンプレを明示**。"templateFile" + "block" で一意に
+4. **unconfirmed は本当に分からないものだけ**。Phase 1 で確定済みなら slots に入れる
+5. **slot の表記は ★ラベル★ や 【ラベル】 の中身そのまま** (例: "会社名", "払込期日")。表記揺れさせない
+6. **json ブロックは最後に1つだけ**。複数置かない
+7. **値は最終形式で書く** (令和8年6月15日 / 株式会社JINGS 等)。produce はこの値をそのまま入れる`;
 
   const messagesWithUserTurn = appendUserTurn(aiMessages, userTurnText, "analyze");
 
@@ -232,7 +236,7 @@ ${templateInfoBlock}
         try {
           const aiStream = client.messages.stream({
             model: MODEL,
-            max_tokens: 8192,
+            max_tokens: 16384,
             messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
           });
 
@@ -246,7 +250,23 @@ ${templateInfoBlock}
           try {
             const final = await aiStream.finalMessage();
             logTokenUsage("/api/document-templates/analyze", MODEL, final.usage);
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
+
+          // 構造化 JSON を抜き出して保存
+          const decisions = extractDecisionsJson(assistantText);
+          if (decisions) {
+            await savePhase2Decisions(company.id, threadId, decisions);
+            const summary = decisions.documents.map((d: Phase2DocumentDecision) =>
+              `${d.templateFile}: slots ${d.slots.length} / deletes ${d.deletes.length} / unconfirmed ${d.unconfirmed.length}`
+            ).join("; ");
+            console.log(`[analyze] decisions saved: ${summary}`);
+            send(controller, { type: "decisions", decisions });
+          } else {
+            console.warn("[analyze] no JSON decisions block found in assistant output");
+            send(controller, { type: "decisions", decisions: null });
+          }
 
           const finalMessages = appendAssistantTurn(messagesWithUserTurn, assistantText, "analyze");
           await saveAiMessages(company.id, threadId, finalMessages);
@@ -255,9 +275,17 @@ ${templateInfoBlock}
         } catch (e) {
           const errMsg = e instanceof Error ? e.message : String(e);
           console.error("[analyze] stream failed:", errMsg);
-          try { send(controller, { type: "error", error: errMsg }); } catch { /* closed */ }
+          try {
+            send(controller, { type: "error", error: errMsg });
+          } catch {
+            /* closed */
+          }
         } finally {
-          try { controller.close(); } catch { /* closed */ }
+          try {
+            controller.close();
+          } catch {
+            /* closed */
+          }
         }
       },
     });
@@ -271,7 +299,8 @@ ${templateInfoBlock}
     });
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "analyze 失敗" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+      status: 500,
+      headers: { "Content-Type": "application/json" },
     });
   }
 }
