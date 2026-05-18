@@ -490,8 +490,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 確認事項なし → 書類生成へ
-      await generateDocuments(updatedThread, templatePath, cardData as Partial<ActionCard>);
+      // 確認事項なし → Phase 2 (テンプレ突き合わせ分析) → 書類生成
+      const afterAnalyze = await runAnalyze(updatedThread, templatePath);
+      await generateDocuments(afterAnalyze, templatePath, cardData as Partial<ActionCard>);
       pendingTemplatePath.current = null;
       return;
     }
@@ -733,10 +734,79 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 3. 質問なし→直接書類生成（organizeMsg を含む freshThread を渡す）
-      await generateDocuments(freshThread, templatePath);
+      // 3. 質問なし → Phase 2 (テンプレ突き合わせ分析) → 書類生成
+      const afterAnalyze = await runAnalyze(freshThread, templatePath);
+      await generateDocuments(afterAnalyze, templatePath);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
+  };
+
+  // Phase 2: テンプレ突き合わせ分析 (書類生成の前に挟む)
+  // 既に Phase 1 (案件整理) と clarify が完了している状態で呼ぶ。
+  // 結果は assistant メッセージとして md でストリーミング表示し、終わったら次の generateDocuments に進む。
+  const runAnalyze = async (currentThread: ChatThread, templatePath: string): Promise<ChatThread> => {
+    if (!company) return currentThread;
+    const analyzeMsg: ThreadMessage = {
+      id: `msg_${Date.now()}_analyze`,
+      role: "assistant",
+      content: "",
+      timestamp: new Date().toISOString(),
+    };
+    setThread(prev => prev ? { ...prev, messages: [...prev.messages, analyzeMsg] } : prev);
+
+    let fullText = "";
+    try {
+      const res = await fetch("/api/document-templates/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: currentThread.id,
+          templateFolderPath: templatePath,
+        }),
+      });
+      const reader = res.body?.getReader();
+      if (reader) {
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const match = line.match(/^data: (.+)$/m);
+            if (!match) continue;
+            const data = JSON.parse(match[1]);
+            if (data.type === "text") {
+              fullText += data.text;
+              setThread(prev => {
+                if (!prev) return prev;
+                const msgs = [...prev.messages];
+                const last = msgs[msgs.length - 1];
+                if (last.role === "assistant" && last.id === analyzeMsg.id) {
+                  msgs[msgs.length - 1] = { ...last, content: fullText };
+                }
+                return { ...prev, messages: msgs };
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[ChatWorkflow] analyze failed:", e instanceof Error ? e.message : e);
+    }
+
+    // 保存
+    const savedMsg = { ...analyzeMsg, content: fullText };
+    await fetch(`/api/chat-threads/${currentThread.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: company.id, message: savedMsg }),
+    });
+
+    return { ...currentThread, messages: [...currentThread.messages, savedMsg] };
   };
 
   // 書類生成

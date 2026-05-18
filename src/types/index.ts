@@ -326,7 +326,7 @@ export interface CaseAiMessage {
   role: "user" | "assistant";
   content: string | CaseAiContentBlock[];
   // どのステップが書き込んだか
-  stage?: "organize" | "clarify" | "produce" | "verify";
+  stage?: "organize" | "clarify" | "analyze" | "produce" | "verify";
 }
 
 // 右パネル
