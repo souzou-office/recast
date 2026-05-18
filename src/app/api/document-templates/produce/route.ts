@@ -550,8 +550,16 @@ export async function POST(request: NextRequest) {
 
   const userTurnText = `## あなたが今やること（ターン3: 各書類のスロットに何を入れるかを決める）
 
-ターン1で整理した内容、ターン2で確認した質問の回答を踏まえて、
-**全ての書類の全てのスロット**に入れる値を JSON で返してください。
+ターン1で整理した **実体判断** とターン2で確認した質問の回答を前提に、
+案件ファイル（このスレッドの最初のターンで添付したもの）を **改めて参照しながら**、
+**全ての書類の全てのスロット**に入れる値と、削除する議案ブロック (removeBlocks) を JSON で返してください。
+
+**重要**: ターン1の案件整理は「実体判断（議案構成・整合性チェック等）」が中心で、
+払込金額・氏名スペル・住所等の **値の精密抽出は意図的にやっていません**。
+このターンで案件ファイルを直接参照して値を取得してください。
+
+ターン1の「議題構成の判断」で **今回該当なし** とした議案がある書類については、
+**removeBlocks にその議案見出しを必ず列挙**してください（議案削除）。
 
 ${renderQABlock()}${masterUpdateBlock}
 ## 各書類のスロット一覧（このキー名で返答すること）
@@ -570,11 +578,23 @@ ${conditionFlagBlock}
         "要入力_0": "三上春香",
         "要入力_3": "令和８年１月１５日"
       },
-      "conditionFlags": { "出資者は法人": false, "出資者は個人": true }
+      "conditionFlags": { "出資者は法人": false, "出資者は個人": true },
+      "removeBlocks": [
+        "第3号議案 役員報酬の決定の件"
+      ]
     }
   ]
 }
 \`\`\`
+
+### removeBlocks について（重要）
+- ターン1（案件整理）の「議題構成の判断」で **今回該当なし** とした議案ブロックを **必ず removeBlocks に列挙**
+- アンカー文字列は **議案見出しそのもの**を指定（例: \`第3号議案 役員報酬の決定の件\`、\`議案2: 取締役の報酬に関する件\`）
+- システムはこのアンカーを含む段落を docx から丸ごと削除する
+- アンカーが他の段落にも含まれる短すぎる文字列は避ける（誤削除防止）
+- 該当ブロックがその書類に含まれていない場合は記載不要（書類別に判断）
+- 議案削除が今回不要なら \`removeBlocks\` は空配列か省略
+
 
 ## 重要ルール
 
@@ -658,7 +678,7 @@ ${conditionFlagBlock}
   await saveAiMessages(company.id, threadId, finalMessages);
 
   // JSON パース（途切れ救出付き）
-  type AiDoc = { fileName: string; values?: Record<string, string | string[] | boolean>; copies?: Record<string, string | boolean>[]; conditionFlags?: Record<string, boolean> };
+  type AiDoc = { fileName: string; values?: Record<string, string | string[] | boolean>; copies?: Record<string, string | boolean>[]; conditionFlags?: Record<string, boolean>; removeBlocks?: string[] };
   let parsed: { documents?: AiDoc[] } = {};
   const jsonMatch = aiResponseText.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
@@ -813,7 +833,28 @@ ${conditionFlagBlock}
             });
           }
 
-          const outputBuffer = replaceMarkedFields(a.workingBuffer, replacements);
+          let outputBuffer = replaceMarkedFields(a.workingBuffer, replacements);
+
+          // Phase 2 = 議案ブロック削除を適用 (AI が removeBlocks に挙げたアンカーを含む段落を削除)
+          if (Array.isArray(aiDoc.removeBlocks) && aiDoc.removeBlocks.length > 0) {
+            try {
+              const { applyProofreadEditsDocx } = await import("@/lib/proofread-edits");
+              const result = applyProofreadEditsDocx(
+                outputBuffer,
+                aiDoc.removeBlocks.map(anchor => ({ type: "delete-paragraph" as const, anchor })),
+              );
+              outputBuffer = result.buffer;
+              if (result.skipped.length > 0) {
+                console.warn(`[produce/removeBlocks] ${a.baseName}: skipped ${result.skipped.length}`, result.skipped);
+              }
+              if (result.applied.length > 0) {
+                console.log(`[produce/removeBlocks] ${a.baseName}: applied ${result.applied.length} block deletions`);
+              }
+            } catch (e) {
+              console.warn(`[produce/removeBlocks] ${a.baseName} failed:`, e instanceof Error ? e.message : e);
+            }
+          }
+
           const suffix = setsRaw.length > 1 ? `_${ci + 1}` : "";
           const fileName = `${company.name}_${a.baseName}${suffix}.docx`;
           let previewHtml = "";
@@ -919,7 +960,28 @@ ${conditionFlagBlock}
             nullGetter: () => "（要確認）",
           });
           doc.render(templateData);
-          const outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
+          let outputBuffer = doc.getZip().generate({ type: "nodebuffer" });
+
+          // Phase 2 = 議案ブロック削除を適用（プレースホルダー方式 docx でも同じ）
+          if (Array.isArray(aiDoc.removeBlocks) && aiDoc.removeBlocks.length > 0) {
+            try {
+              const { applyProofreadEditsDocx } = await import("@/lib/proofread-edits");
+              const result = applyProofreadEditsDocx(
+                outputBuffer,
+                aiDoc.removeBlocks.map(anchor => ({ type: "delete-paragraph" as const, anchor })),
+              );
+              outputBuffer = result.buffer;
+              if (result.skipped.length > 0) {
+                console.warn(`[produce/removeBlocks-ph] ${a.baseName}: skipped ${result.skipped.length}`, result.skipped);
+              }
+              if (result.applied.length > 0) {
+                console.log(`[produce/removeBlocks-ph] ${a.baseName}: applied ${result.applied.length} block deletions`);
+              }
+            } catch (e) {
+              console.warn(`[produce/removeBlocks-ph] ${a.baseName} failed:`, e instanceof Error ? e.message : e);
+            }
+          }
+
           const suffix = setsRaw.length > 1 ? `_${ci + 1}` : "";
           const fileName = `${company.name}_${a.baseName}${suffix}.docx`;
           let previewHtml = "";
