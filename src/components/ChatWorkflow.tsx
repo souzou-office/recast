@@ -675,6 +675,13 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
       const reader = res.body?.getReader();
+      // analyze は末尾に ```json ... ``` の構造化決定ブロックを出す。これは機械が読むだけで
+      // ユーザーには見せない。表示用テキストは json ブロックの直前で切る。
+      const stripJsonBlock = (s: string): string => {
+        const idx = s.search(/```json/);
+        if (idx >= 0) return s.slice(0, idx).trimEnd();
+        return s;
+      };
       if (reader) {
         const decoder = new TextDecoder();
         let buffer = "";
@@ -690,12 +697,13 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const data = JSON.parse(match[1]);
             if (data.type === "text") {
               fullText += data.text;
+              const displayText = stripJsonBlock(fullText);
               setThread(prev => {
                 if (!prev) return prev;
                 const msgs = [...prev.messages];
                 const last = msgs[msgs.length - 1];
                 if (last.role === "assistant" && last.id === analyzeMsg.id) {
-                  msgs[msgs.length - 1] = { ...last, content: fullText };
+                  msgs[msgs.length - 1] = { ...last, content: displayText };
                 }
                 return { ...prev, messages: msgs };
               });
@@ -707,8 +715,13 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       console.warn("[ChatWorkflow] analyze failed:", e instanceof Error ? e.message : e);
     }
 
-    // 保存
-    const savedMsg = { ...analyzeMsg, content: fullText };
+    // 保存も JSON ブロックを除いた表示用テキストで行う (リロード時に JSON が見えないように)
+    // 機械可読な決定は thread.phase2Decisions にバックエンドが保存済み
+    const displayText = (() => {
+      const idx = fullText.search(/```json/);
+      return idx >= 0 ? fullText.slice(0, idx).trimEnd() : fullText;
+    })();
+    const savedMsg = { ...analyzeMsg, content: displayText };
     await fetch(`/api/chat-threads/${currentThread.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
