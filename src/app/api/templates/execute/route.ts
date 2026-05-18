@@ -109,122 +109,13 @@ export async function POST(request: NextRequest) {
     ? `\n## 案件ルール（この案件特有のルール、必ず従うこと）\n${caseRules.join("\n\n")}\n`
     : "";
 
-  // テンプレ本体・ラベル一覧（後続ターンでも参照される共通知識として、ターン1の中に埋め込む）
-  let templateContext = "";
-  let templateBodies = "";
-  type FlatLabel = { docName: string; label: string; format: string; sourceHint?: string };
-  const allLabels: FlatLabel[] = [];
-  if (templateFolderPath) {
-    try {
-      const templateFiles = await readAllFilesInFolder(templateFolderPath);
-      const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
-      const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
-      const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
-      const fsLib = await import("fs/promises");
-
-      // テンプレ本体を「［要入力_N］」形式で取得（前案件の値は隠れている）。
-      // produce ターンでも同じ番号付けを使うので、会話を通じて一貫した参照ができる。
-      const bodies: string[] = [];
-      for (const tf of templateFiles) {
-        if (tf.base64) continue;
-        const ext = tf.name.toLowerCase().split(".").pop() || "";
-        const baseName = tf.name.replace(/\.[^.]+$/, "");
-        try {
-          if (ext === "docx" || ext === "docm") {
-            const buf = await fsLib.readFile(tf.path);
-            const { text } = getMarkedDocumentTextWithSlots(buf);
-            if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
-          } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
-            const buf = await fsLib.readFile(tf.path);
-            const { text } = getXlsxMarkedTextWithSlots(buf);
-            if (text.trim()) bodies.push(`### ${baseName}\n\`\`\`\n${text}\n\`\`\``);
-          } else if (tf.content) {
-            bodies.push(`### ${tf.name}\n\`\`\`\n${tf.content}\n\`\`\``);
-          }
-        } catch { /* skip unreadable */ }
-      }
-      if (bodies.length > 0) {
-        templateBodies = `\n## 作成予定書類のテンプレ本体
-
-各書類の \`［要入力_N］\` の部分が **これから埋めるべきスロット** です（N は番号）。
-- スロットの中身は **空欄** として扱ってください
-- 各スロットが何を表すかは前後の文脈と「## 必要な項目」のラベル一覧から判断してください
-- 後続ターンで「要入力_3 に〜を入れる」のように番号で参照します
-
-${bodies.join("\n\n")}
-`;
-      }
-
-      // プレースホルダー方式 ({{X}} / 【X】): その名前自体が意味ラベルなのでそのまま使う
-      const placeholderExists = new Set<string>();
-      for (const tf of templateFiles) {
-        if (tf.base64) continue;
-        const phPatterns = [/【([^】]+)】/g, /\{\{([^}]+)\}\}/g, /｛｛([^｝]+)｝｝/g];
-        for (const re of phPatterns) {
-          let m;
-          while ((m = re.exec(tf.content)) !== null) {
-            const name = m[1].trim();
-            if (name.startsWith("#") || name.startsWith("/")) continue;
-            if (!placeholderExists.has(name)) {
-              allLabels.push({ docName: tf.name, label: name, format: "" });
-              placeholderExists.add(name);
-            }
-          }
-        }
-      }
-
-      // ハイライト方式: キャッシュ利用のラベル解析
-      for (const tf of templateFiles) {
-        if (tf.base64) continue;
-        const ext = tf.name.toLowerCase().split(".").pop() || "";
-        const baseName = tf.name.replace(/\.[^.]+$/, "");
-        let labels;
-        if (ext === "docx" || ext === "docm") {
-          labels = await ensureDocxLabels(tf.path);
-        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
-          labels = await ensureXlsxLabels(tf.path);
-        }
-        if (!labels) continue;
-        const seen = new Set<string>();
-        for (const s of labels.slots) {
-          const labelKey = s.label;
-          if (!labelKey || labelKey === "不明" || seen.has(labelKey)) continue;
-          seen.add(labelKey);
-          allLabels.push({
-            docName: baseName,
-            label: s.label,
-            format: s.format,
-            sourceHint: s.sourceHint,
-          });
-        }
-      }
-
-      if (allLabels.length > 0) {
-        const byDoc: Record<string, FlatLabel[]> = {};
-        for (const l of allLabels) {
-          if (!byDoc[l.docName]) byDoc[l.docName] = [];
-          byDoc[l.docName].push(l);
-        }
-        const lines: string[] = [];
-        for (const [doc, labels] of Object.entries(byDoc)) {
-          lines.push(`### ${doc}`);
-          for (const l of labels) {
-            const parts = [`- **${l.label}**`];
-            if (l.format) parts.push(`形式: \`${l.format}\``);
-            if (l.sourceHint) parts.push(`出典候補: ${l.sourceHint}`);
-            lines.push(parts.join(" | "));
-          }
-          lines.push("");
-        }
-        templateContext = `\n## 作成予定の書類に必要な項目（これだけ抽出すればよい）\n各書類ごとに、必要な項目・記載形式・推定出典を示します。
-これに対応する値を案件資料から取ってきてください。
-
-${lines.join("\n")}
-**出力方針**: 上記ラベルと同じ項目名を使って表形式で整理してください。値は format の記載形式に揃えてください。
-`;
-      }
-    } catch { /* ignore */ }
-  }
+  // テンプレ本体・ラベル一覧は Phase 1 では渡さない。
+  // Phase 1 の役割は「実体判断」であって値の抽出ではないため、テンプレ詳細は不要。
+  // 値の抽出は Phase 2 (書類生成) が案件ファイルを直接再読込して行う。
+  //
+  // ただし「案件タイプ」はテンプレフォルダ名から取得する。AI が
+  // 「これは増資案件 / 役員変更 / ...」を識別するための文脈として使う。
+  const caseType = templateFolderPath ? path.basename(templateFolderPath) : "";
 
   // 会社の基本情報（profile.structured）も参考データとして添付する
   const profileBlock = company.profile?.structured
@@ -261,93 +152,93 @@ ${lines.join("\n")}
     } catch { /* ignore */ }
   }
 
+  const caseTypeBlock = caseType
+    ? `\n## 案件タイプ\n**${caseType}**\n（ユーザーが選択した書類テンプレフォルダ名から識別）\n`
+    : "";
+
   const promptText = `あなたは司法書士事務所の書類作成担当者です。これからこの案件を **最初から最後まで** 1人で担当してもらいます。
+
 今後の流れ:
-  ターン1（今）: 案件整理
-  ターン2: 不足項目の確認質問を作る
+  ターン1（今）: 案件整理（実体判断）
+  ターン2: 不足判断・矛盾の確認質問を作る
   ターン3: 書類のスロットに入れる値を決める
   ターン4: 原本と生成書類を突き合わせて検証
+
 各ターンで、自分が前のターンで何を判断したかを覚えておいてください。
 
-## あなたが今やること（ターン1: 案件整理）
-以下の「案件資料」を確認し、**上記の「必要な項目」だけ**を抽出・整理してください。
-案件整理の目的は **書類生成に必要な値を全て揃える** ことです。テンプレ本体の前後の文脈を見て、
-各スロットに何が入るべきかを正確に判断してください。
+## あなたが今やること（ターン1: 案件整理 = 実体判断のフェーズ）
 
-**重要**: テンプレ本体内の \`［要入力_N］\` は **これから埋めるべき空のスロット** です。
-中身は何も書かれていません（前案件の値は隠してあります）。各スロットが何を表すかは
-**前後の文脈**（例: 「代表取締役 ［要入力_0］ が」→ 代表取締役の氏名）と
-**「## 必要な項目」のラベル一覧** から判断してください。
+**重要**: このフェーズは「**実体判断**」が目的です。値を全部抽出することではありません。
+具体的な値（払込金額の数字、氏名のスペル、住所の番地等）は **後のターンで案件ファイルを直接再読込して取得します**。
+今のターンでは、**判断・確認・整合性チェック**に集中してください。
 
+### やるべきこと
+1. **案件構造の判断**: どんな案件か（例: 第三者割当 / 株主割当、現金 / 現物、特別決議要件の充足等）
+2. **議題構成の判断**: 必要な議案 / 不要な議案を洗い出す（例: 役員報酬議案は今回該当する？）
+3. **当事者の整合性チェック**: 複数資料で当事者・関係者が一致しているか
+4. **日程の整合性チェック**: 複数資料で日付が食い違ってないか
+5. **事実上の不明点・確認事項を洗い出す**
+
+### やらないこと
+- 払込金額・株数・氏名のフルネーム・住所等の **値の精密な抽出**（後段の責任）
+- テンプレートに穴があるかどうかの判断（テンプレ詳細は今のフェーズに渡されていない）
+- 抽出項目のチェックリスト化（このフェーズは事実駆動。チェックリスト駆動ではない）
+
+${caseTypeBlock}
 ${globalRulesBlock}
 ${templateMemoBlock}
 ${caseRulesBlock}
-${templateContext}
-${templateBodies}
 ${profileBlock}
 
-## 出力の作り方（ユーザーが読む内容）
+## 出力フォーマット（必ずこの形式で）
 
-見出しでグループ化し、項目ごとに短いコメントを添えて、**人が読みやすい** 形で整理してください。
+セクション付き Markdown で出力する。事実をセクション化するのは **AI（あなた）の判断**。
+案件タイプから「よくあるセクション」を頭に置きつつ、事実次第で柔軟にセクションを増減してよい。
 
-- **意味のまとまりごと** に \`## 見出し\` を置く（例: 日程 / 金銭条件 / 当事者 / 引受先 / その他）
-- 各グループ内は **表形式** で \`| 項目 | 値 | 根拠 |\`
-- 項目名は上記ラベルと対応するが、**読みやすさ優先**で自然な日本語に整える（例: 「払込期日（日付）」→「払込期日」）
-- 値は **正確に転記**（勝手な変換・四捨五入・補完は禁止）
-- **根拠欄**の書き方:
-  - 案件資料のファイルから取った → 📄<ファイル名>
-  - 会社の基本情報（上の「参照データ」JSON）から取った → **📇基本情報**
-  - 両方に載っていれば 📇基本情報 を先に
-- 資料にも基本情報にも見つからない項目は値欄を **\`*要確認*\`** にし、省略しない
+**先頭**: 1 文の「今回の手続き要約」を書く
 
-### 株主関連ラベルの解釈ガイド（重要）
-株主関連の項目は、基本情報の \`株主構成\` 配列（各要素が氏名・住所・持株数・持株比率を持つ）から必ず算出・抽出すること。要確認にしない。
-
-- **「議決権を行使することができる株主の数」** = 株主構成の要素数（全株主数）
-- **「議決権を行使することができる株主の議決権の数」** = 株主構成の持株数の合計
-- **「大量保有株主の氏名又は名称/住所/保有株式数」** = 株主構成の中で最大保有者（持株数が最多の1名）の値
-- **「大量保有株主の議決権数の割合」** = その株主の持株比率（％、小数点以下2桁）
-- **「上位株主の合計議決権数」「上位株主の合計議決権数の割合」** = 上位N名（通常は過半数に達するまで or 契約書指定数）の合計。指定がなければ全株主合計でよい
-- **「第N株主の氏名/住所/メールアドレス」** = 株主構成の N 番目（持株数降順）の値。メールは基本情報に無ければ 📄案件資料から探す
-- **「株主の氏名 / 住所（提案書兼同意書等の署名欄）」**= 株主全員分。値欄には「（株主構成全員分）」と書き、根拠は **📇基本情報：株主構成** とする（具体名列挙は不要、produce 段階で展開）
-- **「株主全員の連絡先」** など名前だけ一覧が必要な場合も同様に、**📇基本情報：株主構成** を根拠に書く（要確認にしない）
-- 矛盾・表記揺れ・要確認事項は最後に **\`## ⚠ 要確認事項\`** として箇条書き
-- 本文の頭に 1 文の「今回の手続き要約」を書いてよい（例: 「Deep30 投資事業有限責任組合を引受人とする第三者割当増資」）
-- **上記ラベルに無い情報は出さない**
-
-## 出力例（形式の参考）
+**中段**: セクション付き判断サマリー。例：
 
 \`\`\`
-今回の手続き: Deep30投資事業有限責任組合を引受人とする第三者割当増資。
+## 案件構造の判断
+- 募集方法: 第三者割当（投資契約書・取締役会議事録で一致）
+- 必要な決議: 取締役会 + 株主総会特別決議
+- 公開/非公開: 非公開会社
+- 取締役会設置: あり
 
-## 当事者
+## 議題構成の判断
+- 募集事項の決定: 必要
+- 払込期日の決定: 必要
+- 役員報酬議案: 今回該当なし
+- 監査役関連議案: 今回該当なし
 
-| 項目 | 値 | 根拠 |
-|------|-----|------|
-| 発行会社 | 株式会社JINGS | 📇基本情報 |
-| 代表取締役 | 三上春香 | 📇基本情報 |
-| 取締役総数 | 2名 | 📇基本情報 |
-| 引受人 | Deep30投資事業有限責任組合 | 📄10.普通株投資契約書.docx |
-
-## 日程
-
-| 項目 | 値 | 根拠 |
-|------|-----|------|
-| 取締役決定日 | 2025年1月21日 | 📄00.増資関連書類、スケジュール.xlsx |
-| 払込期日 | 2025年1月30日 | 📄10.普通株投資契約書.docx |
-
-## 金銭条件
-
-| 項目 | 値 | 根拠 |
-|------|-----|------|
-| 募集株式の数 | 5,263株（普通株式） | 📄10.普通株投資契約書.docx |
-| 1株払込金額 | 475円 | 📄10.普通株投資契約書.docx |
-| 増加する資本金 | 1,249,963円 | 📄10.普通株投資契約書.docx |
-| 増加する資本準備金 | 1,249,962円 | 📄10.普通株投資契約書.docx |
-
-## ⚠ 要確認事項
-- 発行会社の商号が「株式会社JING」と「株式会社JINGS」で混在
+## 整合性チェック
+- 発行会社・引受人: 資料間で一致 ✓
+- 取締役会決議日: ⚠ 食い違い検出
+  - 投資契約書: 令和8年5月20日
+  - スケジュール表: 令和8年5月22日
 \`\`\`
+
+**末尾**: \`## ⚠ 確認事項\` リスト（**最大10件程度**）。各項目は番号付き＋根拠付き：
+
+\`\`\`
+## ⚠ 確認事項
+1. 取締役会決議日: 5/20（投資契約書）vs 5/22（スケジュール表）、どちらが正？
+2. 引受人「××株式会社」の正式商号確認（登記資料が見当たらず）
+3. 株主総会基準日の公告予定日が資料に未記載
+4. ...
+\`\`\`
+
+### 確認事項に積むべきもの
+- (a) 複数資料で値が食い違う（矛盾検出）
+- (b) どの資料にも書かれてない（欠落検出）
+- (c) 業務判断が要る（規範的判断、例: 「就任承諾書は別途準備されますか？」）
+- (d) 形式が曖昧で解釈ぶれが起きうる
+
+### 注意
+- **値の精密性は気にしなくていい**（金額の数字、氏名スペル、住所の細部は後段で再読込される）
+- **セクション数は固定じゃない**。事実に応じて 3〜6 セクション程度で柔軟に
+- **判断と事実を区別する**: 「○○である」（事実）と「○○と判断される」（判断）は意識して書く
 
 ## 案件資料
 ${allTexts.join("\n\n")}`;
