@@ -431,6 +431,33 @@ function shiftRowsAfterXlsx(sheetXml: string, afterRowNum: number, delta: number
   );
 }
 
+// 数式 (<f>...</f>) 内のセル参照を delta だけシフト (afterRowNum より大きい行参照が対象)。
+// row.r や cell.r とは別軸: 数式は他のセルを「住所」で指しているので、シフトされた行の cell を
+// 参照している式は全部更新する必要がある (formula の存在場所は関係ない)。
+//
+// 対応する参照:
+//   - 単純参照: A1, $A$1, A$1, $A1
+//   - 範囲: A1:A10 (各端点を独立に更新)
+//   - シート修飾: Sheet1!A1 (regex がそのまま A1 部分を拾うので動く)
+//   - キャッシュ値 <v> は更新しない (Excel が開いたとき自動再計算)
+//
+// 対応しない: 名前定義 (workbook.xml の definedName) / 条件付き書式の範囲 / グラフ系
+function shiftFormulaRefs(sheetXml: string, afterRowNum: number, delta: number): string {
+  return sheetXml.replace(/<f\b([^>]*)>([\s\S]*?)<\/f>/g, (match: string, attrs: string, formula: string) => {
+    const newFormula = formula.replace(
+      /(\$?)([A-Z]+)(\$?)(\d+)/g,
+      (_: string, dollarCol: string, col: string, dollarRow: string, n: string) => {
+        const num = parseInt(n, 10);
+        if (num <= afterRowNum) return `${dollarCol}${col}${dollarRow}${n}`;
+        const newNum = num + delta;
+        if (newNum <= 0) return `${dollarCol}${col}${dollarRow}${n}`; // would be #REF! in Excel
+        return `${dollarCol}${col}${dollarRow}${newNum}`;
+      }
+    );
+    return `<f${attrs}>${newFormula}</f>`;
+  });
+}
+
 // 行 anchor 検索: anchor を含むセルがある最初の row を返す
 function findRowWithAnchorXlsx(
   sheetXml: string,
@@ -561,8 +588,9 @@ export async function applyProduceEditsXlsx(
       }
       // 行を削除
       sheetXml = sheetXml.slice(0, target.start) + sheetXml.slice(target.end);
-      // 後続の行番号を -1 シフト (削除した row の num から先)
+      // 後続の行番号を -1 シフト + 数式内のセル参照も同様にシフト
       sheetXml = shiftRowsAfterXlsx(sheetXml, target.rowNum, -1);
+      sheetXml = shiftFormulaRefs(sheetXml, target.rowNum, -1);
       log.applied.push({ kind: "delete-xlsx", detail: `row ${target.rowNum} (${d.anchor})` });
       changed = true;
     }
@@ -575,8 +603,9 @@ export async function applyProduceEditsXlsx(
         continue;
       }
       const numAdded = a.contents.length;
-      // 後続の行を +numAdded シフト
+      // 後続の行を +numAdded シフト + 数式内のセル参照も同様にシフト
       sheetXml = shiftRowsAfterXlsx(sheetXml, target.rowNum, numAdded);
+      sheetXml = shiftFormulaRefs(sheetXml, target.rowNum, numAdded);
       // target.end は不変 (target 以前のバイトは変わってないため)
       const newRows = a.contents
         .map((csv, i) => makeXlsxRow(target.rowNum + 1 + i, csv))
