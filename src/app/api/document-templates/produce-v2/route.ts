@@ -200,6 +200,23 @@ ${qaBlock}
 - 不要な操作は省略可 (deletes: [], adds: [], replaces: [] でも OK)
 - JSON のみ返す (説明文不要)
 
+## Phase 2 決定との対応 (必須)
+
+「この書類向けの Phase 2 決定」の \`deletes\` に書かれている項目は **全件もれなく**
+deletes に反映すること。**件数を数えて一致を確認**。
+
+例: Phase 2 deletes が:
+\`\`\`
+- "選任される取締役2の氏名"
+- "選任される取締役3の氏名"
+- "議案２　取締役の報酬に関する件"
+\`\`\`
+の 3 件なら、あなたの deletes も **必ず 3 件以上** (議案ブロック範囲削除なら 1 件で複数項目カバー
+できることもあるが、その場合は endAnchor を使った範囲指定で漏れない構造にする)。
+
+Phase 2 が「選任される取締役3の氏名」を delete と言ったら、テンプレ本文の
+\`★選任される取締役3の氏名★\` を含む段落を必ず削除する。1 件でも忘れたら書類が壊れる。
+
 ## 整合性チェック (必須・最も重要)
 
 **delete や add を決めたら、その影響でテンプレ本文の他の場所が辻褄合わなくなる箇所を
@@ -246,6 +263,31 @@ ${qaBlock}
         } catch (e) {
           console.warn(`[produce-v2] JSON parse failed for ${f.name}:`, e instanceof Error ? e.message : e);
           return null;
+        }
+
+        // AI が返した編集 JSON をログに残す (デバッグ用)
+        console.log(
+          `[produce-v2] ${f.name} edits:`,
+          JSON.stringify({
+            deletes: edits.deletes?.length ?? 0,
+            adds: edits.adds?.length ?? 0,
+            replaces: edits.replaces?.length ?? 0,
+            fills: Object.keys(edits.fills || {}).length,
+          })
+        );
+        if (edits.deletes && edits.deletes.length > 0) {
+          console.log(`[produce-v2] ${f.name} delete anchors:`, edits.deletes.map((d) => d.anchor));
+        }
+        // Phase 2 の deletes 件数とマッチするかチェック
+        const myDecisionForCheck = phase2Decisions.documents.find(
+          (d) => d.templateFile === f.name || d.templateFile === f.name.replace(/\.[^.]+$/, "")
+        );
+        if (myDecisionForCheck && (edits.deletes?.length ?? 0) < myDecisionForCheck.deletes.length) {
+          console.warn(
+            `[produce-v2] ${f.name} delete count mismatch: Phase 2 says ${myDecisionForCheck.deletes.length}, AI returned ${edits.deletes?.length ?? 0}`,
+            "Phase 2 deletes:",
+            myDecisionForCheck.deletes.map((d) => d.block)
+          );
         }
 
         // edit engine で適用 (xlsx / docx の振り分け)
