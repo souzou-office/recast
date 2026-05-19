@@ -869,20 +869,16 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       }
     }
 
-    // 1回目: テンプレ穴埋め (placeholder substitution)。
-    // 直後に verify を自動実行 → 指摘あればユーザーが「修正プラン」ボタンで proofread (2回目=校正モード) に進む。
-    // 校正モードは AI が edit list (replace/delete-paragraph) を返し、サーバーが docx に適用する仕組み。
-    const produceRes = await fetch("/api/document-templates/produce", {
+    // 新パイプライン: per-doc Haiku + edit engine。
+    // Phase 2 で確定した phase2Decisions は thread に保存済みなので、サーバ側でそれを読む。
+    // confirmedAnswers / masterContent / organizeContent は新ルートでは未使用 (Phase 2 経由で見える)。
+    const produceRes = await fetch("/api/document-templates/produce-v2", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         companyId: company.id,
-        templateFolderPath: templatePath,
-        masterContent: organizeContent,
-        confirmedAnswers,
-        folderPath: currentThread.folderPath,
-        disabledFiles: currentThread.disabledFiles,
         threadId: currentThread.id,
+        templateFolderPath: templatePath,
       }),
     });
     const produceData = await produceRes.json();
