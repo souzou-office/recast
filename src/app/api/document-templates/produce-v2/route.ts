@@ -24,11 +24,12 @@ import type { ChatThread, Phase2Decisions } from "@/types";
 const client = new Anthropic();
 const MODEL = "claude-haiku-4-5-20251001";
 
-// 1書類あたりの AI 応答 (JSON)
+// 1書類あたりの AI 応答 (JSON) — 段落番号方式
 interface DocResponse {
-  deletes?: { anchor: string; endAnchor?: string; expectedMatches?: number }[];
-  adds?: { afterAnchor: string; contents: string[]; expectedMatches?: number }[];
-  replaces?: { anchor: string; replacement: string; expectedMatches?: number }[];
+  deletes?: { paragraphIndex: number }[];
+  inserts?: { afterParagraphIndex: number; contents: string[] }[];
+  rewrites?: { paragraphIndex: number; newText: string }[];
+  replaces?: { anchor: string; replacement: string }[];
   fills?: Record<string, string>;
 }
 
@@ -128,11 +129,24 @@ export async function POST(request: NextRequest) {
         for (const s of labels?.slots || []) {
           if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
         }
-        const markedText = rawText.replace(/［要入力_(\d+)］/g, (_, idStr) => {
+        const markedTextRaw = rawText.replace(/［要入力_(\d+)］/g, (_, idStr) => {
           const id = Number(idStr);
           const lbl = labelById.get(id) || `要入力_${id}`;
           return `★${lbl}★`;
         });
+        // 段落番号を 1-indexed で付与する。
+        // docx: 各行 (= getMarkedDocumentTextWithSlots は段落単位で改行している)
+        // xlsx: 各行 (= getXlsxMarkedTextWithSlots は行単位で改行)
+        // 空行 (内容なし) は番号を付けない (= 段落 index には数えない)
+        let lineCounter = 0;
+        const markedText = markedTextRaw
+          .split("\n")
+          .map((line) => {
+            if (line.trim().length === 0) return line; // empty lines kept as-is
+            lineCounter++;
+            return `[${lineCounter}] ${line}`;
+          })
+          .join("\n");
 
         // 該当書類の Phase 2 決定 (slots / deletes / unconfirmed) を集める
         const myDecision = phase2Decisions.documents.find(
@@ -173,14 +187,17 @@ ${qaBlock}
 \`\`\`json
 {
   "deletes": [
-    { "anchor": "削除する段落の一意な文字列" },
-    { "anchor": "範囲削除の開始段落", "endAnchor": "範囲削除の終了段落 (この直前まで削除される)" }
+    { "paragraphIndex": 11 },
+    { "paragraphIndex": 12 }
   ],
-  "adds": [
-    { "afterAnchor": "挿入位置の前段落の一意な文字列", "contents": ["新しい段落の本文 (★label★ 含めて OK)"] }
+  "inserts": [
+    { "afterParagraphIndex": 10, "contents": ["新しい段落の本文 (★label★ 含めて OK)"] }
+  ],
+  "rewrites": [
+    { "paragraphIndex": 23, "newText": "議案２　代表取締役選任の件" }
   ],
   "replaces": [
-    { "anchor": "置換対象テキスト", "replacement": "置換後のテキスト" }
+    { "anchor": "議案３", "replacement": "議案２" }
   ],
   "fills": {
     "★label★": "値"
@@ -188,90 +205,53 @@ ${qaBlock}
 }
 \`\`\`
 
-## ルール
+## ルール (操作 5 種類)
 
-- anchor / afterAnchor は **他の段落と被らない一意な文字列** を選ぶ (段落見出し全体や ★label★ 等)
-- fills のキーは ★ で囲んだラベル名そのまま。値は最終形式 (令和8年5月29日 / 株式会社JINGS 等)
-- adds.contents で新段落を作るとき、★label★ を含めて OK (後段の fills で埋まる)
-- 個人 vs 法人で構造を変えるケース等は、適切に deletes + adds を組み合わせる
-- 不要な操作は省略可 (deletes: [], adds: [], replaces: [] でも OK)
+**deletes**: 段落番号で削除。テンプレに \`[11] 取締役 ★...★\` とあれば \`paragraphIndex: 11\`。
+- **議案ブロック等の複数段落をまとめて消したい場合は、各段落の番号を全部列挙する** (例:
+  議案2 ブロックが [14]〜[19] の 6 段落なら \`deletes\` に 6 件)
+
+**inserts**: 指定段落の直後に新規段落を挿入。\`afterParagraphIndex: 10\` で段落 10 の直後に。
+contents は段落単位の配列。各要素に ★label★ を含めて OK (後段の fills で値が入る)。
+
+**rewrites**: 段落本文を丸ごと書き換え (フォント等は元のまま、テキストだけ差し替え)。
+\`paragraphIndex\` で対象段落、\`newText\` で新しい本文。
+- 議案番号繰り上げで見出し全体を書き換えるとき等に使う
+  例: \`{ paragraphIndex: 23, newText: "議案２　代表取締役選任の件" }\`
+
+**replaces**: 全文書から anchor 文字列を探して replacement に一括置換。
+- 複数箇所に出てくる議案番号参照を全部書き換えるときに便利
+  例: \`{ anchor: "議案３", replacement: "議案２" }\` で「議案３」を全部「議案２」に
+
+**fills**: ★label★ マーカーを値で置換。
+- キーは \`★label★\` の形式そのまま (★ で囲む)。値は最終形式 (令和8年5月29日 等)
+
+## ルール (補助)
+
+- 段落番号 (paragraphIndex / afterParagraphIndex) は **テンプレ本文の \`[N]\` の番号**。1-indexed
+- 不要な操作は省略可 (deletes: [], inserts: [] 等空配列で OK)
 - JSON のみ返す (説明文不要)
-
-## delete の使い分け (重要、間違えやすい)
-
-**個別の項目を削除する場合 → entries を分けて 1 件ずつ書く** (endAnchor 使わない):
-
-\`\`\`json
-"deletes": [
-  { "anchor": "★選任される取締役2の氏名★" },
-  { "anchor": "★選任される取締役3の氏名★" }
-]
-\`\`\`
-
-**連続ブロック (議案・章・節など複数段落の塊) を削除する場合のみ endAnchor を使う**:
-
-\`\`\`json
-"deletes": [
-  { "anchor": "議案２　取締役の報酬に関する件", "endAnchor": "議案３　代表取締役選任の件" }
-]
-\`\`\`
-
-### endAnchor の挙動 (絶対に覚える)
-
-- endAnchor で指定した段落 **その段落は残る (削除されない)**
-- 削除されるのは「anchor の段落から endAnchor の **直前** の段落まで」
-- 例: 議案2 全体を消すために endAnchor に「議案3」を指定 → 議案2 ヘッダー + 議案2 本文すべて削除、
-  議案3 はそのまま残る (これが目的)
-- 逆に「2 つの slot 行を両方消す」目的で {anchor: slot2, endAnchor: slot3} と書くと
-  **slot 2 だけ消えて slot 3 が残る** → これは **bug** の元。やってはいけない
-
-判断基準: 「**endAnchor で指定した段落そのものを残したいか？**」
-- YES (それは消さずに残したい) → endAnchor 使う
-- NO (それも消したい / それを境界として使いたい) → endAnchor 使わない、個別 entry に分ける
 
 ## Phase 2 決定との対応 (必須)
 
 「この書類向けの Phase 2 決定」の \`deletes\` に書かれている項目は **全件もれなく**
-deletes に反映すること。**件数を数えて一致を確認**。
+deletes に反映すること。件数を数えて一致を確認。
+- Phase 2 deletes が「選任される取締役2の氏名」「選任される取締役3の氏名」「議案２...」の 3 項目
+  → テンプレ本文から ★選任される取締役2の氏名★ / ★選任される取締役3の氏名★ / 議案2 ブロック
+  が含まれる段落番号を全部見つけて deletes に積む
 
-例: Phase 2 deletes が:
-\`\`\`
-- "選任される取締役2の氏名"
-- "選任される取締役3の氏名"
-- "議案２　取締役の報酬に関する件"
-\`\`\`
-の 3 件なら、あなたの deletes も **必ず 3 件以上** (議案ブロック範囲削除なら 1 件で複数項目カバー
-できることもあるが、その場合は endAnchor を使った範囲指定で漏れない構造にする)。
+## 削除/追加の波及効果 (必須・自分でチェック)
 
-Phase 2 が「選任される取締役3の氏名」を delete と言ったら、テンプレ本文の
-\`★選任される取締役3の氏名★\` を含む段落を必ず削除する。1 件でも忘れたら書類が壊れる。
+delete / insert で構造を変えたら、テンプレ本文の他の場所も辻褄を合わせる:
 
-## 整合性チェック (必須・最も重要)
+1. **議案番号の繰り上げ**: 議案2 を削除 → 「議案３」「議案４」は「議案２」「議案３」に繰り上げ
+   → \`replaces\` か \`rewrites\` で対応 (見出し丸ごとなら rewrites、本文中の参照なら replaces)
+2. **項番の繰り上げ**: (1)(2)(3) や ア．イ．ウ． 等
+3. **件数の修正**: 「取締役3名」→「取締役2名」等
+4. **参照の整合**: 「上記○○」「下記○○」が指す先が削除されたら直す
 
-**delete や add を決めたら、その影響でテンプレ本文の他の場所が辻褄合わなくなる箇所を
-すべて洗い出して、replaces で書き換える** こと。これは AI のあなたの責任。サーバはやらない。
-
-チェック観点:
-
-1. **議案番号の繰り上げ**: 議案2 を削除した → 後続の "議案３" "議案４" は "議案２" "議案３" に繰り上げ。
-   "議案１により" のような **議案番号を引用してる本文** も対応する番号に書き換え
-   - 例: deletes に "議案２" → replaces に
-     \`{anchor: "議案３", replacement: "議案２"}\`
-     \`{anchor: "議案１により選任される各取締役の報酬額", replacement: ...}\` (該当なければ不要)
-
-2. **項番の繰り上げ**: (1)(2)(3) や ①②③ や ア．イ．ウ． 等の連番が壊れたら直す
-   - 例: (2) を削除 → "(3)" → "(2)", "(4)" → "(3)" 等
-
-3. **件数・人数の書き換え**: "取締役3名" などが書かれているテンプレで、2名に減った
-   → \`{anchor: "取締役３名", replacement: "取締役２名"}\`
-
-4. **参照の整合性**: 「上記○○の通り」「下記○○」のような参照先が削除されたら、参照側も書き換えるか
-   削除する
-
-5. **追加した場合の逆方向**: add で議案を追加したら、後続の議案番号を **下げる** 必要があるかも
-
-**手順**: deletes / adds を決めた後、テンプレ本文を **頭から最後まで読み返して**、
-「この削除/追加に伴って書き換えるべき箇所」を全部 replaces に積む。スキップしない。`;
+deletes / inserts を決めた後、**テンプレ本文を頭から最後まで読み返して**、書き換える箇所を
+全部 replaces / rewrites に積む。サーバは AI の指示通り動くだけ。AI が見落としたら書類が壊れる。`;
 
         const response = await client.messages.create({
           model: MODEL,
@@ -299,15 +279,16 @@ Phase 2 が「選任される取締役3の氏名」を delete と言ったら、
           `[produce-v2] ${f.name} edits:`,
           JSON.stringify({
             deletes: edits.deletes?.length ?? 0,
-            adds: edits.adds?.length ?? 0,
+            inserts: edits.inserts?.length ?? 0,
+            rewrites: edits.rewrites?.length ?? 0,
             replaces: edits.replaces?.length ?? 0,
             fills: Object.keys(edits.fills || {}).length,
           })
         );
         if (edits.deletes && edits.deletes.length > 0) {
-          console.log(`[produce-v2] ${f.name} delete anchors:`, edits.deletes.map((d) => d.anchor));
+          console.log(`[produce-v2] ${f.name} delete indices:`, edits.deletes.map((d) => d.paragraphIndex));
         }
-        // Phase 2 の deletes 件数とマッチするかチェック
+        // Phase 2 の deletes 件数とマッチするかチェック (議案ブロック等は複数段落の可能性あり)
         const myDecisionForCheck = phase2Decisions.documents.find(
           (d) => d.templateFile === f.name || d.templateFile === f.name.replace(/\.[^.]+$/, "")
         );

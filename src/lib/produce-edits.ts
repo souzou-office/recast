@@ -15,28 +15,34 @@ const PizZip = require("pizzip");
 import type { TemplateLabels } from "./template-labels";
 import { replaceXlsxMarkedCellsBySlot } from "./xlsx-marker-parser";
 
+// === 新方式: 段落番号で位置を指定 (1-indexed) ===
+// AI には marked text に `[N] paragraph text` の形式で番号付きで見せる。
+// N は「内容のある段落」のみを 1 から連番した値 (空段落は飛ばす)。
+// AI が出す全 op は同じ番号体系を使う。
+
 export interface DeleteOp {
-  anchor: string;
-  endAnchor?: string;       // 範囲削除: anchor から endAnchor の直前まで削除 (議案ブロック等)
-  expectedMatches?: number; // single anchor 削除時のマッチ件数検証。default 1
+  paragraphIndex: number; // 1-indexed
 }
-export interface AddOp {
-  afterAnchor: string;
-  contents: string[]; // 各要素 = 新しい1段落の本文
-  expectedMatches?: number; // default 1
+export interface InsertOp {
+  afterParagraphIndex: number; // 1-indexed (この段落の直後に挿入)
+  contents: string[];           // 各要素 = 1 段落分のテキスト
+}
+export interface RewriteOp {
+  paragraphIndex: number; // 1-indexed
+  newText: string;        // この段落の本文を newText に書き換え (フォント等は保持)
 }
 export type FillsOp = Record<string, string>; // { "★label★": "value" }
 
-// 任意テキスト置換 (議案番号繰り上げ等)
+// 任意テキスト置換 (議案番号繰り上げ等 / 全文書から anchor を探して replacement に)
 export interface ReplaceOp {
-  anchor: string;        // 検索対象テキスト (テンプレ内に出てくる文字列)
-  replacement: string;   // 置換後のテキスト
-  expectedMatches?: number; // default 1
+  anchor: string;
+  replacement: string;
 }
 
 export interface ProduceEdits {
   deletes?: DeleteOp[];
-  adds?: AddOp[];
+  inserts?: InsertOp[];
+  rewrites?: RewriteOp[];
   fills?: FillsOp;
   replaces?: ReplaceOp[];
 }
@@ -252,113 +258,127 @@ function makeStyledParagraphFromReference(text: string, referenceParaXml: string
   return `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
 }
 
-// --- ステップ 2: 削除 ---
+// --- 段落リスト構築 (中身のある段落のみ、1-indexed のため使用時は +1) ---
 
-function applyDeletes(
-  docXml: string,
-  deletes: DeleteOp[],
-  log: { applied: { kind: string; detail: string }[]; skipped: { kind: string; detail: string; reason: string }[] }
-): string {
-  for (const d of deletes) {
-    const paragraphs = findTopLevelParagraphs(docXml);
-
-    if (d.endAnchor) {
-      // 範囲削除: anchor を含む最初の段落から、endAnchor を含む段落の **直前** までを削除
-      const anchorIdx = paragraphs.findIndex((p) => {
-        const text = getParagraphText(docXml.slice(p.openEnd, p.end - "</w:p>".length));
-        return text.includes(d.anchor);
-      });
-      if (anchorIdx < 0) {
-        log.skipped.push({ kind: "delete", detail: `${d.anchor}〜${d.endAnchor}`, reason: "anchor が見つからない" });
-        continue;
-      }
-      const endIdx = paragraphs.findIndex((p, i) => {
-        if (i <= anchorIdx) return false;
-        const text = getParagraphText(docXml.slice(p.openEnd, p.end - "</w:p>".length));
-        return text.includes(d.endAnchor!);
-      });
-      if (endIdx < 0) {
-        log.skipped.push({ kind: "delete", detail: `${d.anchor}〜${d.endAnchor}`, reason: "endAnchor が見つからない" });
-        continue;
-      }
-      const delStart = paragraphs[anchorIdx].start;
-      const delEnd = paragraphs[endIdx].start; // endAnchor の直前まで
-      docXml = docXml.slice(0, delStart) + docXml.slice(delEnd);
-      log.applied.push({
-        kind: "delete",
-        detail: `${d.anchor}〜${d.endAnchor}直前 (${endIdx - anchorIdx}段落)`,
-      });
-      continue;
-    }
-
-    // 単一段落削除
-    const expected = d.expectedMatches ?? 1;
-    const matched: ParaRange[] = [];
-    for (const p of paragraphs) {
-      const innerXml = docXml.slice(p.openEnd, p.end - "</w:p>".length);
-      const text = getParagraphText(innerXml);
-      if (text.includes(d.anchor)) matched.push(p);
-    }
-    if (matched.length === 0) {
-      log.skipped.push({ kind: "delete", detail: d.anchor, reason: "anchor が見つからない" });
-      continue;
-    }
-    if (matched.length !== expected) {
-      log.skipped.push({
-        kind: "delete",
-        detail: d.anchor,
-        reason: `expectedMatches=${expected} と実マッチ数 ${matched.length} が一致しない`,
-      });
-      continue;
-    }
-    // 後ろから削除して位置ずれ防止
-    for (let i = matched.length - 1; i >= 0; i--) {
-      const r = matched[i];
-      docXml = docXml.slice(0, r.start) + docXml.slice(r.end);
-    }
-    log.applied.push({ kind: "delete", detail: d.anchor });
-  }
-  return docXml;
+// AI に提示する番号体系と同じ "非空段落" の配列を返す。
+// 全 op (deletes/inserts/rewrites) はこの配列の **index+1 (1-indexed)** を使う。
+function getContentParagraphs(docXml: string): ParaRange[] {
+  return findTopLevelParagraphs(docXml).filter((p) => {
+    const inner = docXml.slice(p.openEnd, p.end - "</w:p>".length);
+    return getParagraphText(inner).trim().length > 0;
+  });
 }
 
-// --- ステップ 3: 追加 ---
+// 段落を書き換え (フォント等を保持しつつテキスト本文だけ差し替え)
+function rewriteParagraphXml(paraXml: string, newText: string): string {
+  let firstReplaced = false;
+  let result = paraXml.replace(
+    /(<w:r\b[^>]*>)([\s\S]*?)(<\/w:r>)/g,
+    (match: string, openTag: string, inner: string, closeTag: string) => {
+      if (!inner.includes("<w:t")) return match; // 非テキスト run はそのまま
+      if (!firstReplaced) {
+        firstReplaced = true;
+        const newInner = inner.replace(
+          /<w:t\b[^>]*>[\s\S]*?<\/w:t>/,
+          `<w:t xml:space="preserve">${escapeXml(newText)}</w:t>`
+        );
+        return openTag + newInner + closeTag;
+      }
+      return "";
+    }
+  );
+  // テキスト run が 1 つも無かった → 新規 <w:r><w:t> を </w:p> 直前に追加
+  if (!firstReplaced) {
+    result = paraXml.replace(/<\/w:p>\s*$/, `<w:r><w:t xml:space="preserve">${escapeXml(newText)}</w:t></w:r></w:p>`);
+  }
+  return result;
+}
 
-function applyAdds(
+// --- 段落番号で全 op を適用 (delete / insert / rewrite) ---
+// 全 op を ORIGINAL の段落番号で受け取り、絶対位置に解決してから後ろから順に適用する。
+// 適用順は「位置の後ろ → 前」なので互いに影響しない。
+function applyIndexedOps(
   docXml: string,
-  adds: AddOp[],
+  deletes: DeleteOp[],
+  inserts: InsertOp[],
+  rewrites: RewriteOp[],
   log: { applied: { kind: string; detail: string }[]; skipped: { kind: string; detail: string; reason: string }[] }
 ): string {
-  for (const a of adds) {
-    const expected = a.expectedMatches ?? 1;
-    const paragraphs = findTopLevelParagraphs(docXml);
-    const matched: ParaRange[] = [];
-    for (const p of paragraphs) {
-      const innerXml = docXml.slice(p.openEnd, p.end - "</w:p>".length);
-      const text = getParagraphText(innerXml);
-      if (text.includes(a.afterAnchor)) matched.push(p);
-    }
-    if (matched.length === 0) {
-      log.skipped.push({ kind: "add", detail: a.afterAnchor, reason: "afterAnchor が見つからない" });
+  const paragraphs = getContentParagraphs(docXml);
+  const total = paragraphs.length;
+  const validIdx = (i: number) => i >= 1 && i <= total;
+
+  type Op =
+    | { kind: "delete"; pos: number; start: number; end: number; sortKey: number }
+    | { kind: "rewrite"; pos: number; start: number; end: number; sortKey: number; newText: string; originalXml: string }
+    | { kind: "insert"; pos: number; sortKey: number; contents: string[]; referenceXml: string };
+
+  const ops: Op[] = [];
+
+  for (const d of deletes) {
+    if (!validIdx(d.paragraphIndex)) {
+      log.skipped.push({ kind: "delete", detail: `index ${d.paragraphIndex}`, reason: `範囲外 (1〜${total})` });
       continue;
     }
-    if (matched.length !== expected) {
-      log.skipped.push({
-        kind: "add",
-        detail: a.afterAnchor,
-        reason: `expectedMatches=${expected} と実マッチ数 ${matched.length} が一致しない`,
-      });
-      continue;
-    }
-    // 最初のマッチの直後に挿入 (後ろから処理する必要なし。1 箇所のみ)
-    const target = matched[0];
-    // 参照段落の <w:pPr> / <w:rPr> を継承してフォント・インデント等をテンプレ本文と揃える
-    const targetParaXml = docXml.slice(target.start, target.end);
-    const newParagraphs = a.contents
-      .map((text) => makeStyledParagraphFromReference(text, targetParaXml))
-      .join("");
-    docXml = docXml.slice(0, target.end) + newParagraphs + docXml.slice(target.end);
-    log.applied.push({ kind: "add", detail: `${a.afterAnchor} → ${a.contents.length} 段落` });
+    const p = paragraphs[d.paragraphIndex - 1];
+    ops.push({ kind: "delete", pos: d.paragraphIndex, start: p.start, end: p.end, sortKey: p.start });
   }
+
+  for (const r of rewrites) {
+    if (!validIdx(r.paragraphIndex)) {
+      log.skipped.push({ kind: "rewrite", detail: `index ${r.paragraphIndex}`, reason: `範囲外 (1〜${total})` });
+      continue;
+    }
+    const p = paragraphs[r.paragraphIndex - 1];
+    ops.push({
+      kind: "rewrite",
+      pos: r.paragraphIndex,
+      start: p.start,
+      end: p.end,
+      sortKey: p.start,
+      newText: r.newText,
+      originalXml: docXml.slice(p.start, p.end),
+    });
+  }
+
+  for (const ins of inserts) {
+    if (!validIdx(ins.afterParagraphIndex)) {
+      log.skipped.push({ kind: "insert", detail: `afterIndex ${ins.afterParagraphIndex}`, reason: `範囲外 (1〜${total})` });
+      continue;
+    }
+    const p = paragraphs[ins.afterParagraphIndex - 1];
+    // 同じ位置の delete/rewrite との干渉を避けるため、insert は p.end (= 段落末尾の直後) を sortKey にし、
+    // 同位置 delete (sortKey = p.start) より後ろになるよう調整
+    ops.push({
+      kind: "insert",
+      pos: ins.afterParagraphIndex,
+      sortKey: p.end,
+      contents: ins.contents,
+      referenceXml: docXml.slice(p.start, p.end),
+    });
+  }
+
+  // 後ろから順に適用 (位置が大きい op を先に処理 → 前の op の絶対位置は変わらない)
+  ops.sort((a, b) => b.sortKey - a.sortKey);
+
+  for (const op of ops) {
+    if (op.kind === "delete") {
+      docXml = docXml.slice(0, op.start) + docXml.slice(op.end);
+      log.applied.push({ kind: "delete", detail: `段落 ${op.pos}` });
+    } else if (op.kind === "rewrite") {
+      const newPara = rewriteParagraphXml(op.originalXml, op.newText);
+      docXml = docXml.slice(0, op.start) + newPara + docXml.slice(op.end);
+      log.applied.push({ kind: "rewrite", detail: `段落 ${op.pos}` });
+    } else if (op.kind === "insert") {
+      const insertPos = op.sortKey; // = referenceParagraph.end
+      const newParas = op.contents
+        .map((text) => makeStyledParagraphFromReference(text, op.referenceXml))
+        .join("");
+      docXml = docXml.slice(0, insertPos) + newParas + docXml.slice(insertPos);
+      log.applied.push({ kind: "insert", detail: `段落 ${op.pos} 直後 → ${op.contents.length} 段落` });
+    }
+  }
+
   return docXml;
 }
 
@@ -443,22 +463,27 @@ export async function applyProduceEditsDocx(
   // 1. flatten (highlights → ★label★ plain text)
   docXml = flattenHighlights(docXml, labels);
 
-  // 2. deletes
-  if (edits.deletes && edits.deletes.length > 0) {
-    docXml = applyDeletes(docXml, edits.deletes, log);
+  // 2. delete / insert / rewrite を段落番号で一括処理 (絶対位置に解決して後ろから適用)
+  if (
+    (edits.deletes && edits.deletes.length > 0) ||
+    (edits.inserts && edits.inserts.length > 0) ||
+    (edits.rewrites && edits.rewrites.length > 0)
+  ) {
+    docXml = applyIndexedOps(
+      docXml,
+      edits.deletes || [],
+      edits.inserts || [],
+      edits.rewrites || [],
+      log
+    );
   }
 
-  // 3. adds
-  if (edits.adds && edits.adds.length > 0) {
-    docXml = applyAdds(docXml, edits.adds, log);
-  }
-
-  // 4. replaces (議案番号繰り上げ等の任意テキスト置換)
+  // 3. replaces (議案番号繰り上げ等の任意テキスト置換)
   if (edits.replaces && edits.replaces.length > 0) {
     docXml = applyReplaces(docXml, edits.replaces, log);
   }
 
-  // 5. fills (★label★ → 値)
+  // 4. fills (★label★ → 値)
   if (edits.fills && Object.keys(edits.fills).length > 0) {
     docXml = applyFills(docXml, edits.fills, log);
   }
@@ -674,45 +699,106 @@ export async function applyProduceEditsXlsx(
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText() || "";
   const sharedStrings = parseSharedStrings(ssXml);
 
+  // 行を Excel の行番号 (r="N") で探す
+  const findRowByNumber = (sheetXml: string, rowNum: number): { start: number; end: number } | null => {
+    const re = new RegExp(`<row\\b[^>]*?r="${rowNum}"[^>]*>[\\s\\S]*?</row>`, "g");
+    const m = re.exec(sheetXml);
+    if (!m) return null;
+    return { start: m.index, end: m.index + m[0].length };
+  };
+
+  // 全シート (xlsx は通常 1 シート用途が多いが、念のため全シート対象)。
+  // 全 op を集めて絶対位置で sort して後ろから適用 (docx 同様)。
   for (const sheetFile of sheetFiles) {
     let sheetXml = zip.file(sheetFile)?.asText();
     if (!sheetXml) continue;
     let changed = false;
 
-    // 2-1. deletes
+    type XlsxOp =
+      | { kind: "delete"; rowNum: number; start: number; end: number }
+      | { kind: "rewrite"; rowNum: number; start: number; end: number; newCsv: string }
+      | { kind: "insert"; afterRowNum: number; pos: number; contents: string[] };
+
+    const xlsxOps: XlsxOp[] = [];
+
     for (const d of edits.deletes || []) {
-      const target = findRowWithAnchorXlsx(sheetXml, d.anchor, sharedStrings);
+      const target = findRowByNumber(sheetXml, d.paragraphIndex);
       if (!target) {
-        log.skipped.push({ kind: "delete-xlsx", detail: d.anchor, reason: "anchor が見つからない" });
+        log.skipped.push({ kind: "delete-xlsx", detail: `row ${d.paragraphIndex}`, reason: "行が見つからない" });
         continue;
       }
-      // 行を削除
-      sheetXml = sheetXml.slice(0, target.start) + sheetXml.slice(target.end);
-      // 後続の行番号を -1 シフト + 数式内のセル参照も同様にシフト
-      sheetXml = shiftRowsAfterXlsx(sheetXml, target.rowNum, -1);
-      sheetXml = shiftFormulaRefs(sheetXml, target.rowNum, -1);
-      log.applied.push({ kind: "delete-xlsx", detail: `row ${target.rowNum} (${d.anchor})` });
-      changed = true;
+      xlsxOps.push({ kind: "delete", rowNum: d.paragraphIndex, start: target.start, end: target.end });
     }
 
-    // 2-2. adds
-    for (const a of edits.adds || []) {
-      const target = findRowWithAnchorXlsx(sheetXml, a.afterAnchor, sharedStrings);
+    for (const r of edits.rewrites || []) {
+      const target = findRowByNumber(sheetXml, r.paragraphIndex);
       if (!target) {
-        log.skipped.push({ kind: "add-xlsx", detail: a.afterAnchor, reason: "afterAnchor が見つからない" });
+        log.skipped.push({ kind: "rewrite-xlsx", detail: `row ${r.paragraphIndex}`, reason: "行が見つからない" });
         continue;
       }
-      const numAdded = a.contents.length;
-      // 後続の行を +numAdded シフト + 数式内のセル参照も同様にシフト
-      sheetXml = shiftRowsAfterXlsx(sheetXml, target.rowNum, numAdded);
-      sheetXml = shiftFormulaRefs(sheetXml, target.rowNum, numAdded);
-      // target.end は不変 (target 以前のバイトは変わってないため)
-      const newRows = a.contents
-        .map((csv, i) => makeXlsxRow(target.rowNum + 1 + i, csv))
-        .join("");
-      sheetXml = sheetXml.slice(0, target.end) + newRows + sheetXml.slice(target.end);
-      log.applied.push({ kind: "add-xlsx", detail: `${a.afterAnchor} 後に ${numAdded} 行追加` });
-      changed = true;
+      xlsxOps.push({
+        kind: "rewrite",
+        rowNum: r.paragraphIndex,
+        start: target.start,
+        end: target.end,
+        newCsv: r.newText,
+      });
+    }
+
+    for (const ins of edits.inserts || []) {
+      const target = findRowByNumber(sheetXml, ins.afterParagraphIndex);
+      if (!target) {
+        log.skipped.push({ kind: "insert-xlsx", detail: `after row ${ins.afterParagraphIndex}`, reason: "行が見つからない" });
+        continue;
+      }
+      xlsxOps.push({
+        kind: "insert",
+        afterRowNum: ins.afterParagraphIndex,
+        pos: target.end,
+        contents: ins.contents,
+      });
+    }
+
+    // 後ろから順に処理 (sortKey: insert は pos、delete/rewrite は start)
+    type Sortable = XlsxOp & { sortKey: number };
+    const sortable: Sortable[] = xlsxOps.map((op) => {
+      if (op.kind === "insert") return { ...op, sortKey: op.pos };
+      return { ...op, sortKey: op.start };
+    });
+    sortable.sort((a, b) => b.sortKey - a.sortKey);
+
+    // 適用 + 後続行シフトを毎回計算 (位置を再取得)
+    // 注意: 後ろから処理しているので「下の行のシフト」は無関係 (削除/追加箇所より下に op がない)
+    for (const op of sortable) {
+      if (op.kind === "delete") {
+        sheetXml = sheetXml.slice(0, op.start) + sheetXml.slice(op.end);
+        sheetXml = shiftRowsAfterXlsx(sheetXml, op.rowNum, -1);
+        sheetXml = shiftFormulaRefs(sheetXml, op.rowNum, -1);
+        log.applied.push({ kind: "delete-xlsx", detail: `row ${op.rowNum}` });
+        changed = true;
+      } else if (op.kind === "rewrite") {
+        // セルを全部 inline string で作り直す (新規 CSV を1行に展開)
+        const newRow = makeXlsxRow(op.rowNum, op.newCsv);
+        sheetXml = sheetXml.slice(0, op.start) + newRow + sheetXml.slice(op.end);
+        log.applied.push({ kind: "rewrite-xlsx", detail: `row ${op.rowNum}` });
+        changed = true;
+      } else if (op.kind === "insert") {
+        const numAdded = op.contents.length;
+        sheetXml = shiftRowsAfterXlsx(sheetXml, op.afterRowNum, numAdded);
+        sheetXml = shiftFormulaRefs(sheetXml, op.afterRowNum, numAdded);
+        const newRows = op.contents
+          .map((csv, i) => makeXlsxRow(op.afterRowNum + 1 + i, csv))
+          .join("");
+        // shift で長さが変わったので pos を再計算
+        const reTarget = findRowByNumber(sheetXml, op.afterRowNum);
+        if (!reTarget) {
+          log.skipped.push({ kind: "insert-xlsx", detail: `after row ${op.afterRowNum}`, reason: "shift 後の再検索に失敗" });
+          continue;
+        }
+        sheetXml = sheetXml.slice(0, reTarget.end) + newRows + sheetXml.slice(reTarget.end);
+        log.applied.push({ kind: "insert-xlsx", detail: `row ${op.afterRowNum} 後に ${numAdded} 行` });
+        changed = true;
+      }
     }
 
     if (changed) zip.file(sheetFile, sheetXml);
