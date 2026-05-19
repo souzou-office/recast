@@ -101,6 +101,7 @@ ${previousQABlock}
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 4096,
+      temperature: 0,
       messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
     });
     logTokenUsage("/api/document-templates/clarify", MODEL, response.usage);

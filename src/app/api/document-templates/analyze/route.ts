@@ -256,6 +256,7 @@ ${templateBodyBlock}
           const aiStream = client.messages.stream({
             model: MODEL,
             max_tokens: 16384,
+            temperature: 0,
             messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
           });
 

@@ -17,7 +17,8 @@ import { replaceXlsxMarkedCellsBySlot } from "./xlsx-marker-parser";
 
 export interface DeleteOp {
   anchor: string;
-  expectedMatches?: number; // default 1
+  endAnchor?: string;       // 範囲削除: anchor から endAnchor の直前まで削除 (議案ブロック等)
+  expectedMatches?: number; // single anchor 削除時のマッチ件数検証。default 1
 }
 export interface AddOp {
   afterAnchor: string;
@@ -213,8 +214,20 @@ function makePlainRun(text: string): string {
   return `<w:r><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>`;
 }
 
+// テキストだけの裸段落 (フォールバック)。本番では makeStyledParagraph を使うべき。
 function makeParagraph(text: string): string {
   return `<w:p><w:r><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
+}
+
+// 参照段落 (の XML) から <w:pPr> と <w:rPr> を取り出して、それを用いた段落を作る。
+// これで挿入段落のフォント・サイズ・インデント等がテンプレ本文と揃う。
+function makeStyledParagraphFromReference(text: string, referenceParaXml: string): string {
+  const pPrMatch = referenceParaXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
+  const pPr = pPrMatch ? pPrMatch[0] : "";
+  // 最初の <w:rPr> を取得 (run の書式)
+  const rPrMatch = referenceParaXml.match(/<w:r\b[^>]*>[\s\S]*?(<w:rPr>[\s\S]*?<\/w:rPr>)/);
+  const rPr = rPrMatch ? rPrMatch[1] : "";
+  return `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
 }
 
 // --- ステップ 2: 削除 ---
@@ -225,8 +238,39 @@ function applyDeletes(
   log: { applied: { kind: string; detail: string }[]; skipped: { kind: string; detail: string; reason: string }[] }
 ): string {
   for (const d of deletes) {
-    const expected = d.expectedMatches ?? 1;
     const paragraphs = findTopLevelParagraphs(docXml);
+
+    if (d.endAnchor) {
+      // 範囲削除: anchor を含む最初の段落から、endAnchor を含む段落の **直前** までを削除
+      const anchorIdx = paragraphs.findIndex((p) => {
+        const text = getParagraphText(docXml.slice(p.openEnd, p.end - "</w:p>".length));
+        return text.includes(d.anchor);
+      });
+      if (anchorIdx < 0) {
+        log.skipped.push({ kind: "delete", detail: `${d.anchor}〜${d.endAnchor}`, reason: "anchor が見つからない" });
+        continue;
+      }
+      const endIdx = paragraphs.findIndex((p, i) => {
+        if (i <= anchorIdx) return false;
+        const text = getParagraphText(docXml.slice(p.openEnd, p.end - "</w:p>".length));
+        return text.includes(d.endAnchor!);
+      });
+      if (endIdx < 0) {
+        log.skipped.push({ kind: "delete", detail: `${d.anchor}〜${d.endAnchor}`, reason: "endAnchor が見つからない" });
+        continue;
+      }
+      const delStart = paragraphs[anchorIdx].start;
+      const delEnd = paragraphs[endIdx].start; // endAnchor の直前まで
+      docXml = docXml.slice(0, delStart) + docXml.slice(delEnd);
+      log.applied.push({
+        kind: "delete",
+        detail: `${d.anchor}〜${d.endAnchor}直前 (${endIdx - anchorIdx}段落)`,
+      });
+      continue;
+    }
+
+    // 単一段落削除
+    const expected = d.expectedMatches ?? 1;
     const matched: ParaRange[] = [];
     for (const p of paragraphs) {
       const innerXml = docXml.slice(p.openEnd, p.end - "</w:p>".length);
@@ -285,7 +329,11 @@ function applyAdds(
     }
     // 最初のマッチの直後に挿入 (後ろから処理する必要なし。1 箇所のみ)
     const target = matched[0];
-    const newParagraphs = a.contents.map(makeParagraph).join("");
+    // 参照段落の <w:pPr> / <w:rPr> を継承してフォント・インデント等をテンプレ本文と揃える
+    const targetParaXml = docXml.slice(target.start, target.end);
+    const newParagraphs = a.contents
+      .map((text) => makeStyledParagraphFromReference(text, targetParaXml))
+      .join("");
     docXml = docXml.slice(0, target.end) + newParagraphs + docXml.slice(target.end);
     log.applied.push({ kind: "add", detail: `${a.afterAnchor} → ${a.contents.length} 段落` });
   }

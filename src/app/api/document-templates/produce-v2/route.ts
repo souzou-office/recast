@@ -172,7 +172,8 @@ ${qaBlock}
 \`\`\`json
 {
   "deletes": [
-    { "anchor": "削除する段落の中の一意な文字列", "expectedMatches": 1 }
+    { "anchor": "削除する段落の一意な文字列", "expectedMatches": 1 },
+    { "anchor": "範囲削除の開始段落", "endAnchor": "範囲削除の終了段落 (この直前まで削除される)" }
   ],
   "adds": [
     { "afterAnchor": "挿入位置の前段落の一意な文字列", "contents": ["新しい段落1の本文 (★label★ 含めて OK)"], "expectedMatches": 1 }
@@ -186,16 +187,19 @@ ${qaBlock}
 ## ルール
 
 - anchor / afterAnchor は **他の段落と被らない一意な文字列** を選ぶ (段落見出し全体や ★label★ 等)
+- **議案ブロックなど複数段落を一括削除したい場合は endAnchor を使う** (例: 議案2 全体を消したい
+  → anchor: "議案２　取締役の報酬に関する件", endAnchor: "議案３　代表取締役選任の件")
+  endAnchor 指定の段落は **残る**。endAnchor の直前までが削除対象
 - fills のキーは ★ で囲んだラベル名そのまま。値は最終形式 (令和8年5月29日 / 株式会社JINGS 等)
 - adds.contents で新段落を作るとき、★label★ を含めて OK (後段の fills で埋まる)
 - 不要な操作は省略可 (deletes: [], adds: [] でも OK)
-- expectedMatches で件数指定 (省略時は 1)。1件しかマッチしない anchor を使うのが原則
 - 個人 vs 法人で構造を変えるケース等は、適切に deletes + adds を組み合わせる
 - JSON のみ返す (説明文不要)`;
 
         const response = await client.messages.create({
           model: MODEL,
           max_tokens: 4096,
+          temperature: 0,
           messages: [{ role: "user", content: prompt }],
         });
         logTokenUsage(`/api/document-templates/produce-v2 (${f.name})`, MODEL, response.usage);

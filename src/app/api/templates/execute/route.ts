@@ -286,6 +286,7 @@ ${allTexts.join("\n\n")}`;
           const aiStream = client.messages.stream({
             model: MODEL,
             max_tokens: 8192,
+            temperature: 0,
             messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
           });
 
