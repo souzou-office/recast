@@ -26,8 +26,9 @@ const MODEL = "claude-haiku-4-5-20251001";
 
 // 1書類あたりの AI 応答 (JSON)
 interface DocResponse {
-  deletes?: { anchor: string; expectedMatches?: number }[];
+  deletes?: { anchor: string; endAnchor?: string; expectedMatches?: number }[];
   adds?: { afterAnchor: string; contents: string[]; expectedMatches?: number }[];
+  replaces?: { anchor: string; replacement: string; expectedMatches?: number }[];
   fills?: Record<string, string>;
 }
 
@@ -172,11 +173,14 @@ ${qaBlock}
 \`\`\`json
 {
   "deletes": [
-    { "anchor": "削除する段落の一意な文字列", "expectedMatches": 1 },
+    { "anchor": "削除する段落の一意な文字列" },
     { "anchor": "範囲削除の開始段落", "endAnchor": "範囲削除の終了段落 (この直前まで削除される)" }
   ],
   "adds": [
-    { "afterAnchor": "挿入位置の前段落の一意な文字列", "contents": ["新しい段落1の本文 (★label★ 含めて OK)"], "expectedMatches": 1 }
+    { "afterAnchor": "挿入位置の前段落の一意な文字列", "contents": ["新しい段落の本文 (★label★ 含めて OK)"] }
+  ],
+  "replaces": [
+    { "anchor": "置換対象テキスト", "replacement": "置換後のテキスト" }
   ],
   "fills": {
     "★label★": "値"
@@ -190,10 +194,13 @@ ${qaBlock}
 - **議案ブロックなど複数段落を一括削除したい場合は endAnchor を使う** (例: 議案2 全体を消したい
   → anchor: "議案２　取締役の報酬に関する件", endAnchor: "議案３　代表取締役選任の件")
   endAnchor 指定の段落は **残る**。endAnchor の直前までが削除対象
+- **議案を削除したら、後続の議案番号を繰り上げる** (例: 議案2 を消したら "議案３" → "議案２",
+  "議案１により" のような議案番号への参照も同様に書き換える)
+  → \`replaces\` で対応: \`{ "anchor": "議案３", "replacement": "議案２" }\`
 - fills のキーは ★ で囲んだラベル名そのまま。値は最終形式 (令和8年5月29日 / 株式会社JINGS 等)
 - adds.contents で新段落を作るとき、★label★ を含めて OK (後段の fills で埋まる)
-- 不要な操作は省略可 (deletes: [], adds: [] でも OK)
 - 個人 vs 法人で構造を変えるケース等は、適切に deletes + adds を組み合わせる
+- 不要な操作は省略可 (deletes: [], adds: [], replaces: [] でも OK)
 - JSON のみ返す (説明文不要)`;
 
         const response = await client.messages.create({

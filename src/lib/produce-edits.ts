@@ -27,10 +27,18 @@ export interface AddOp {
 }
 export type FillsOp = Record<string, string>; // { "★label★": "value" }
 
+// 任意テキスト置換 (議案番号繰り上げ等)
+export interface ReplaceOp {
+  anchor: string;        // 検索対象テキスト (テンプレ内に出てくる文字列)
+  replacement: string;   // 置換後のテキスト
+  expectedMatches?: number; // default 1
+}
+
 export interface ProduceEdits {
   deletes?: DeleteOp[];
   adds?: AddOp[];
   fills?: FillsOp;
+  replaces?: ReplaceOp[];
 }
 
 export interface EditResult {
@@ -146,8 +154,10 @@ function flattenHighlights(docXml: string, labels: TemplateLabels | null): strin
     if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
   }
 
-  // 全 paragraph を forward に走査して slot 範囲と slotId を採取
-  type SlotGroup = { paraIdx: number; absStart: number; absEnd: number; slotId: number; label: string };
+  // 全 paragraph を forward に走査して slot 範囲と slotId、最初の run の rPr を採取。
+  // rPr を継承することで、フォント・サイズ・カラー等を保持して ★label★ プレーン化する
+  // (ハイライト属性と赤フォント色だけは除去)。
+  type SlotGroup = { paraIdx: number; absStart: number; absEnd: number; slotId: number; label: string; rPr: string };
   const allGroups: SlotGroup[] = [];
   const paragraphs = findTopLevelParagraphs(docXml);
 
@@ -155,8 +165,6 @@ function flattenHighlights(docXml: string, labels: TemplateLabels | null): strin
   for (let p = 0; p < paragraphs.length; p++) {
     const para = paragraphs[p];
     const inner = docXml.slice(para.openEnd, para.end - "</w:p>".length);
-    // テキストボックス内の run は別段落扱い (この走査では除外)
-    // → 走査時にスキップする
     const txbxRanges: { start: number; end: number }[] = [];
     const txbxRe = /<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g;
     let txm;
@@ -168,6 +176,7 @@ function flattenHighlights(docXml: string, labels: TemplateLabels | null): strin
     const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
     let groupStart: number | null = null;
     let groupEnd: number | null = null;
+    let groupRPr = "";
     const flushGroup = () => {
       if (groupStart !== null && groupEnd !== null) {
         const label = labelById.get(slotId) || `要入力_${slotId}`;
@@ -177,10 +186,12 @@ function flattenHighlights(docXml: string, labels: TemplateLabels | null): strin
           absEnd: para.openEnd + groupEnd,
           slotId,
           label,
+          rPr: groupRPr,
         });
         slotId++;
         groupStart = null;
         groupEnd = null;
+        groupRPr = "";
       }
     };
     let rm;
@@ -189,7 +200,18 @@ function flattenHighlights(docXml: string, labels: TemplateLabels | null): strin
       const text = getRunText(rm[0]);
       if (!text) continue;
       if (hasHighlight(rm[0])) {
-        if (groupStart === null) groupStart = rm.index;
+        if (groupStart === null) {
+          groupStart = rm.index;
+          // 最初の highlighted run の <w:rPr> を抜き出して、ハイライト属性・赤フォント色を除去
+          const rPrMatch = rm[0].match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+          if (rPrMatch) {
+            groupRPr = rPrMatch[0]
+              .replace(/<w:highlight\b[^/>]*\/>/gi, "")
+              .replace(/<w:color\s+w:val="FF0000"\s*\/>/gi, "");
+            // 空の <w:rPr></w:rPr> になるなら空文字に
+            if (/<w:rPr>\s*<\/w:rPr>/.test(groupRPr)) groupRPr = "";
+          }
+        }
         groupEnd = rm.index + rm[0].length;
       } else {
         flushGroup();
@@ -203,7 +225,7 @@ function flattenHighlights(docXml: string, labels: TemplateLabels | null): strin
   // 置換は reverse 順 (後ろから) に適用して位置ずれを防ぐ
   for (let g = allGroups.length - 1; g >= 0; g--) {
     const grp = allGroups[g];
-    const replacement = makePlainRun(`★${grp.label}★`);
+    const replacement = `<w:r>${grp.rPr}<w:t xml:space="preserve">★${grp.label}★</w:t></w:r>`;
     docXml = docXml.slice(0, grp.absStart) + replacement + docXml.slice(grp.absEnd);
   }
 
@@ -340,6 +362,36 @@ function applyAdds(
   return docXml;
 }
 
+// --- 追加: 任意テキスト置換 (議案番号繰り上げ等) ---
+
+function applyReplaces(
+  docXml: string,
+  replaces: ReplaceOp[],
+  log: { applied: { kind: string; detail: string }[]; skipped: { kind: string; detail: string; reason: string }[] }
+): string {
+  for (const r of replaces) {
+    if (!r.anchor) continue;
+    const escAnchor = escapeXml(r.anchor);
+    const escReplacement = escapeXml(r.replacement ?? "");
+    let count = 0;
+    docXml = docXml.replace(/<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/g, (m, attrs, txt) => {
+      if (!txt.includes(escAnchor)) return m;
+      const replaced = txt.split(escAnchor).join(escReplacement);
+      count += (txt.match(new RegExp(escapeRegexLocal(escAnchor), "g")) || []).length;
+      const hasPreserve = /xml:space="preserve"/.test(attrs);
+      const newAttrs = hasPreserve ? attrs : `${attrs} xml:space="preserve"`;
+      return `<w:t${newAttrs}>${replaced}</w:t>`;
+    });
+    if (count > 0) log.applied.push({ kind: "replace", detail: `${r.anchor} → ${r.replacement} (${count}件)` });
+    else log.skipped.push({ kind: "replace", detail: r.anchor, reason: "テキストが見つからない" });
+  }
+  return docXml;
+}
+
+function escapeRegexLocal(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // --- ステップ 4: ★label★ → 値 のテキスト置換 ---
 
 function applyFills(
@@ -401,7 +453,12 @@ export async function applyProduceEditsDocx(
     docXml = applyAdds(docXml, edits.adds, log);
   }
 
-  // 4. fills
+  // 4. replaces (議案番号繰り上げ等の任意テキスト置換)
+  if (edits.replaces && edits.replaces.length > 0) {
+    docXml = applyReplaces(docXml, edits.replaces, log);
+  }
+
+  // 5. fills (★label★ → 値)
   if (edits.fills && Object.keys(edits.fills).length > 0) {
     docXml = applyFills(docXml, edits.fills, log);
   }
@@ -661,7 +718,17 @@ export async function applyProduceEditsXlsx(
     if (changed) zip.file(sheetFile, sheetXml);
   }
 
-  // 3. fills: 全 xml の <t>...</t> 内テキストで ★label★ → 値 (text 置換)
+  // 3. replaces: 任意テキスト置換 (議案番号繰り上げ等)
+  if (edits.replaces && edits.replaces.length > 0) {
+    const replacesAsFills: FillsOp = {};
+    for (const r of edits.replaces) {
+      if (r.anchor) replacesAsFills[r.anchor] = r.replacement ?? "";
+    }
+    const r = applyFillsTextEverywhere(zip, replacesAsFills);
+    if (r.applied > 0) log.applied.push({ kind: "replace-xlsx", detail: `${r.applied} 件のテキストを置換` });
+  }
+
+  // 4. fills: 全 xml の <t>...</t> 内テキストで ★label★ → 値 (text 置換)
   if (edits.fills && Object.keys(edits.fills).length > 0) {
     const r = applyFillsTextEverywhere(zip, edits.fills);
     if (r.applied > 0) log.applied.push({ kind: "fill-xlsx", detail: `${r.applied} 件の ★label★ を置換` });
