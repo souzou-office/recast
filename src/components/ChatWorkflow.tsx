@@ -663,9 +663,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     }
 
     let fullText = "";
-    // analyze ルートが SSE で送ってくる構造化決定 (phase2Decisions)。
-    // ストリーミング完了後、人間向けの md の下に <details> で折り畳んで表示する。
+    // analyze ルートが SSE で送ってくる構造化決定 (phase2Decisions) とテンプレ構造。
+    // ストリーミング完了後、人間向けの md の下に <details> で折り畳んで両方表示する。
     let receivedDecisions: import("@/types").Phase2Decisions | null = null;
+    let receivedStructures: { templateFile: string; markedText: string }[] = [];
     try {
       const res = await fetch("/api/document-templates/analyze", {
         method: "POST",
@@ -712,6 +713,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               });
             } else if (data.type === "decisions") {
               receivedDecisions = data.decisions || null;
+            } else if (data.type === "structures") {
+              receivedStructures = data.structures || [];
             }
           }
         }
@@ -726,11 +729,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const idx = fullText.search(/```json/);
       return idx >= 0 ? fullText.slice(0, idx).trimEnd() : fullText;
     })();
-    // 折り畳みで「最終データ」を見せる
+    // 折り畳みで「最終データ」と「テンプレ構造」を見せる
     const decisionsBlock = receivedDecisions
       ? `\n\n<details>\n<summary>📋 書類作成に使う最終データ (Phase 2 決定 — クリックで展開)</summary>\n\n\`\`\`json\n${JSON.stringify(receivedDecisions, null, 2)}\n\`\`\`\n\n</details>`
       : "";
-    const displayText = stripped + decisionsBlock;
+    const structuresBlock = receivedStructures.length > 0
+      ? `\n\n<details>\n<summary>🗂️ テンプレ構造 (★label★ = 穴埋め位置 — クリックで展開)</summary>\n\n${receivedStructures.map(s => `#### ${s.templateFile}\n\n\`\`\`\n${s.markedText}\n\`\`\``).join("\n\n")}\n\n</details>`
+      : "";
+    const displayText = stripped + decisionsBlock + structuresBlock;
     // 折り畳みも含めて状態に反映
     setThread(prev => {
       if (!prev) return prev;

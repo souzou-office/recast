@@ -124,6 +124,8 @@ export async function POST(request: NextRequest) {
   // - xlsx: getXlsxMarkedTextWithSlots で同様
   // - placeholder 形式 ({{...}}, 【...】) は f.content にそのまま入っているのでフォールバック
   const templateBlocks: string[] = [];
+  // フロントの「構造表示」で使うために、テンプレ別の marked text を別配列で持っておく。
+  const templateStructures: { templateFile: string; markedText: string }[] = [];
   if (templateFolderPath) {
     try {
       const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
@@ -182,6 +184,7 @@ export async function POST(request: NextRequest) {
         if (!markedText) continue;
 
         templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\``);
+        templateStructures.push({ templateFile: f.name, markedText });
       }
     } catch (e) {
       console.warn("[analyze] template read failed:", e instanceof Error ? e.message : e);
@@ -245,6 +248,11 @@ ${templateBodyBlock}
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          // フロントに「テンプレ構造」を最初に渡す (折り畳み表示用)
+          if (templateStructures.length > 0) {
+            send(controller, { type: "structures", structures: templateStructures });
+          }
+
           const aiStream = client.messages.stream({
             model: MODEL,
             max_tokens: 16384,
