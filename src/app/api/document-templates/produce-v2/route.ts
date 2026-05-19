@@ -285,6 +285,19 @@ deletes / inserts を決めた後、**テンプレ本文を頭から最後まで
             fills: Object.keys(edits.fills || {}).length,
           })
         );
+        // デバッグ用に AI の生応答と edits を /tmp に保存 (後で内容を inspect できるように)
+        try {
+          const debugDir = path.join(process.cwd(), "data", "produce-v2-debug");
+          await fs.mkdir(debugDir, { recursive: true });
+          const slug = f.name.replace(/[^\w.\-]/g, "_");
+          await fs.writeFile(
+            path.join(debugDir, `${threadId}_${slug}.json`),
+            JSON.stringify({ markedText, aiResponseText: aiText, parsedEdits: edits }, null, 2),
+            "utf-8"
+          );
+        } catch (e) {
+          console.warn("[produce-v2] debug write failed:", e instanceof Error ? e.message : e);
+        }
         if (edits.deletes && edits.deletes.length > 0) {
           console.log(`[produce-v2] ${f.name} delete indices:`, edits.deletes.map((d) => d.paragraphIndex));
         }
