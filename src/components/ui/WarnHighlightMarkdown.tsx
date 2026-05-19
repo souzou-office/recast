@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Children, Fragment, isValidElement } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 
 // 文字列中の 要確認 / （要確認） / *要確認* を赤文字 span に差し替える
 function hiliteText(text: string): ReactNode {
@@ -36,6 +37,7 @@ export function WarnHighlightMarkdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeRaw]}
       components={{
         p: ({ children }) => <p>{walk(children)}</p>,
         li: ({ children }) => <li>{walk(children)}</li>,

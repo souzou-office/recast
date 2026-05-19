@@ -663,6 +663,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     }
 
     let fullText = "";
+    // analyze ルートが SSE で送ってくる構造化決定 (phase2Decisions)。
+    // ストリーミング完了後、人間向けの md の下に <details> で折り畳んで表示する。
+    let receivedDecisions: import("@/types").Phase2Decisions | null = null;
     try {
       const res = await fetch("/api/document-templates/analyze", {
         method: "POST",
@@ -707,6 +710,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                 }
                 return { ...prev, messages: msgs };
               });
+            } else if (data.type === "decisions") {
+              receivedDecisions = data.decisions || null;
             }
           }
         }
@@ -717,10 +722,25 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
     // 保存も JSON ブロックを除いた表示用テキストで行う (リロード時に JSON が見えないように)
     // 機械可読な決定は thread.phase2Decisions にバックエンドが保存済み
-    const displayText = (() => {
+    const stripped = (() => {
       const idx = fullText.search(/```json/);
       return idx >= 0 ? fullText.slice(0, idx).trimEnd() : fullText;
     })();
+    // 折り畳みで「最終データ」を見せる
+    const decisionsBlock = receivedDecisions
+      ? `\n\n<details>\n<summary>📋 書類作成に使う最終データ (Phase 2 決定 — クリックで展開)</summary>\n\n\`\`\`json\n${JSON.stringify(receivedDecisions, null, 2)}\n\`\`\`\n\n</details>`
+      : "";
+    const displayText = stripped + decisionsBlock;
+    // 折り畳みも含めて状態に反映
+    setThread(prev => {
+      if (!prev) return prev;
+      const msgs = [...prev.messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "assistant" && last.id === analyzeMsg.id) {
+        msgs[msgs.length - 1] = { ...last, content: displayText };
+      }
+      return { ...prev, messages: msgs };
+    });
     const savedMsg = { ...analyzeMsg, content: displayText };
     await fetch(`/api/chat-threads/${currentThread.id}`, {
       method: "PATCH",
