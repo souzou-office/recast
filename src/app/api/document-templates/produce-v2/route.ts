@@ -18,7 +18,7 @@ import crypto from "crypto";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder } from "@/lib/files";
 import { logTokenUsage } from "@/lib/token-logger";
-import { applyProduceEditsDocx } from "@/lib/produce-edits";
+import { applyProduceEditsDocx, applyProduceEditsXlsx } from "@/lib/produce-edits";
 import type { ChatThread, Phase2Decisions } from "@/types";
 
 const client = new Anthropic();
@@ -86,27 +86,43 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // テンプレファイル一覧 (docx のみ。xlsx は今は別ロジックが必要なのでスキップ予定)
+  // テンプレファイル一覧 (docx + xlsx)
   const tpFiles = await readAllFilesInFolder(templateFolderPath);
-  const docxFiles = tpFiles.filter((f) => /\.(docx|docm)$/i.test(f.name) && !f.name.endsWith(".labels.json"));
+  const targetFiles = tpFiles.filter(
+    (f) => /\.(docx|docm|xlsx|xlsm|xls)$/i.test(f.name) && !f.name.endsWith(".labels.json")
+  );
 
-  if (docxFiles.length === 0) {
-    return NextResponse.json({ error: "docx テンプレートが見つかりません" }, { status: 400 });
+  if (targetFiles.length === 0) {
+    return NextResponse.json({ error: "対象テンプレートが見つかりません" }, { status: 400 });
   }
 
-  // テンプレ別に marked text を作る (★label★ 入り)。analyze で使ったのと同じ方法
+  // テンプレ別に marked text を作る (★label★ 入り)
   const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
-  const { ensureDocxLabels } = await import("@/lib/template-labels");
+  const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
+  const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mammoth = require("mammoth");
 
   // 書類別に並列で AI 呼び出し → edit 適用
   const docOuts = await Promise.all(
-    docxFiles.map(async (f): Promise<DocOut | null> => {
+    targetFiles.map(async (f): Promise<DocOut | null> => {
       try {
         const buf = await fs.readFile(f.path);
-        const { text: rawText } = getMarkedDocumentTextWithSlots(buf);
-        const labels = await ensureDocxLabels(f.path);
+        const ext = f.name.toLowerCase().split(".").pop() || "";
+        const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";
+
+        // marked text + labels を取得
+        let rawText = "";
+        let labels = null as Awaited<ReturnType<typeof ensureDocxLabels>> | null;
+        if (isXlsx) {
+          const r = getXlsxMarkedTextWithSlots(buf);
+          rawText = r.text;
+          labels = await ensureXlsxLabels(f.path);
+        } else {
+          const r = getMarkedDocumentTextWithSlots(buf);
+          rawText = r.text;
+          labels = await ensureDocxLabels(f.path);
+        }
         const labelById = new Map<number, string>();
         for (const s of labels?.slots || []) {
           if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
@@ -197,20 +213,24 @@ ${qaBlock}
           return null;
         }
 
-        // edit engine で適用
-        const result = await applyProduceEditsDocx(buf, edits, labels);
+        // edit engine で適用 (xlsx / docx の振り分け)
+        const result = isXlsx
+          ? await applyProduceEditsXlsx(buf, edits, labels)
+          : await applyProduceEditsDocx(buf, edits, labels);
         if (result.skipped.length > 0) {
           console.warn(`[produce-v2] ${f.name} skipped:`, result.skipped);
         }
         console.log(`[produce-v2] ${f.name} applied: ${result.applied.length}, skipped: ${result.skipped.length}`);
 
-        // mammoth で previewHtml を生成
+        // previewHtml: docx は mammoth で、xlsx は簡易な空表示 (フロントの FilePreview が xlsx も扱える前提)
         let previewHtml = "";
-        try {
-          const { value } = await mammoth.convertToHtml({ buffer: result.buf });
-          previewHtml = value;
-        } catch (e) {
-          console.warn(`[produce-v2] mammoth failed for ${f.name}:`, e instanceof Error ? e.message : e);
+        if (!isXlsx) {
+          try {
+            const { value } = await mammoth.convertToHtml({ buffer: result.buf });
+            previewHtml = value;
+          } catch (e) {
+            console.warn(`[produce-v2] mammoth failed for ${f.name}:`, e instanceof Error ? e.message : e);
+          }
         }
 
         return {

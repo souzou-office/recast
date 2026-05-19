@@ -13,6 +13,7 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const PizZip = require("pizzip");
 import type { TemplateLabels } from "./template-labels";
+import { replaceXlsxMarkedCellsBySlot } from "./xlsx-marker-parser";
 
 export interface DeleteOp {
   anchor: string;
@@ -366,3 +367,235 @@ export async function applyProduceEditsDocx(
   const outBuf = zip.generate({ type: "nodebuffer" });
   return { buf: outBuf, applied: log.applied, skipped: log.skipped };
 }
+
+// ===========================================================================
+// xlsx
+// ===========================================================================
+
+// 共有文字列を解析して string[] にする
+function parseSharedStrings(ssXml: string): string[] {
+  const result: string[] = [];
+  const siRe = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
+  let m;
+  while ((m = siRe.exec(ssXml)) !== null) {
+    // <rPh> や <phoneticPr> は除外
+    const stripped = m[1]
+      .replace(/<rPh\b[\s\S]*?<\/rPh>/g, "")
+      .replace(/<phoneticPr\b[^>]*\/>/g, "");
+    const tRe = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+    const parts: string[] = [];
+    let tm;
+    while ((tm = tRe.exec(stripped)) !== null) parts.push(decodeXml(tm[1]));
+    result.push(parts.join(""));
+  }
+  return result;
+}
+
+// 1セル分のテキストを解決 (shared string / inline string / direct value)
+function resolveCellText(cellAttrs: string, cellInner: string, sharedStrings: string[]): string {
+  const tMatch = cellAttrs.match(/\bt="([^"]*)"/);
+  const t = tMatch ? tMatch[1] : "";
+  if (t === "s") {
+    const vMatch = cellInner.match(/<v>(\d+)<\/v>/);
+    if (vMatch) return sharedStrings[parseInt(vMatch[1], 10)] || "";
+    return "";
+  }
+  if (t === "inlineStr") {
+    const tRe = /<t\b[^>]*>([\s\S]*?)<\/t>/g;
+    const parts: string[] = [];
+    let m;
+    while ((m = tRe.exec(cellInner)) !== null) parts.push(decodeXml(m[1]));
+    return parts.join("");
+  }
+  // direct value
+  const vMatch = cellInner.match(/<v>([^<]*)<\/v>/);
+  return vMatch ? decodeXml(vMatch[1]) : "";
+}
+
+// row r="N" 属性と内部の <c r="ColN"> を delta だけシフト (afterRowNum より大きい行が対象)
+function shiftRowsAfterXlsx(sheetXml: string, afterRowNum: number, delta: number): string {
+  return sheetXml.replace(
+    /<row\b([^>]*?)r="(\d+)"([^>]*?)>([\s\S]*?)<\/row>/g,
+    (match: string, pre: string, n: string, post: string, inner: string) => {
+      const num = parseInt(n, 10);
+      if (num <= afterRowNum) return match;
+      const newNum = num + delta;
+      if (newNum <= 0) return match;
+      const newInner = inner.replace(/(r=")([A-Z]+)(\d+)(")/g, (mm: string, p1: string, col: string, n2: string, p4: string) => {
+        const cellRow = parseInt(n2, 10);
+        if (cellRow !== num) return mm;
+        return `${p1}${col}${newNum}${p4}`;
+      });
+      return `<row${pre}r="${newNum}"${post}>${newInner}</row>`;
+    }
+  );
+}
+
+// 行 anchor 検索: anchor を含むセルがある最初の row を返す
+function findRowWithAnchorXlsx(
+  sheetXml: string,
+  anchor: string,
+  sharedStrings: string[]
+): { rowNum: number; start: number; end: number } | null {
+  const rowRe = /<row\b[^>]*?r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+  let m;
+  while ((m = rowRe.exec(sheetXml)) !== null) {
+    const rowNum = parseInt(m[1], 10);
+    const inner = m[2];
+    const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+    let cm;
+    while ((cm = cellRe.exec(inner)) !== null) {
+      const text = resolveCellText(cm[1], cm[2] || "", sharedStrings);
+      if (text.includes(anchor)) {
+        return { rowNum, start: m.index, end: m.index + m[0].length };
+      }
+    }
+  }
+  return null;
+}
+
+// 列番号 → A,B,C... AA,AB...
+function colLetter(idx: number): string {
+  let n = idx;
+  let s = "";
+  while (n >= 0) {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  }
+  return s;
+}
+
+function makeXlsxRow(rowNum: number, csvLine: string): string {
+  // CSV を簡易パース (タブ or カンマ区切り、引用符はあれば剥がす)
+  const sep = csvLine.includes("\t") ? "\t" : ",";
+  const cells = csvLine.split(sep).map((c) => c.trim().replace(/^"(.*)"$/, "$1"));
+  const cellXml = cells
+    .map((val, i) => {
+      const ref = `${colLetter(i)}${rowNum}`;
+      return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${escapeXml(val)}</t></is></c>`;
+    })
+    .join("");
+  return `<row r="${rowNum}">${cellXml}</row>`;
+}
+
+// 全 xml ファイル (sharedStrings, 各 sheet) の <t>...</t> 中の marker を value に置換
+function applyFillsTextEverywhere(zip: typeof PizZip.prototype, fills: FillsOp): { applied: number } {
+  let totalApplied = 0;
+  const targetFiles = Object.keys(zip.files).filter(
+    (fn) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn) || fn === "xl/sharedStrings.xml"
+  );
+  for (const fn of targetFiles) {
+    let xml = zip.file(fn)?.asText();
+    if (!xml) continue;
+    let changed = false;
+    for (const [marker, rawValue] of Object.entries(fills)) {
+      if (!marker) continue;
+      const escMarker = escapeXml(marker);
+      const escValue = escapeXml(rawValue ?? "");
+      const newXml = xml.replace(
+        /<t\b([^>]*)>([\s\S]*?)<\/t>/g,
+        (m: string, attrs: string, content: string) => {
+          if (!content.includes(escMarker)) return m;
+          const replaced = content.split(escMarker).join(escValue);
+          totalApplied += (content.match(new RegExp(escapeRegex(escMarker), "g")) || []).length;
+          const hasPreserve = /xml:space="preserve"/.test(attrs);
+          const newAttrs = hasPreserve ? attrs : `${attrs} xml:space="preserve"`;
+          return `<t${newAttrs}>${replaced}</t>`;
+        }
+      );
+      if (newXml !== xml) {
+        xml = newXml;
+        changed = true;
+      }
+    }
+    if (changed) zip.file(fn, xml);
+  }
+  return { applied: totalApplied };
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export async function applyProduceEditsXlsx(
+  buf: Buffer,
+  edits: ProduceEdits,
+  labels: TemplateLabels | null
+): Promise<EditResult> {
+  const log = {
+    applied: [] as { kind: string; detail: string }[],
+    skipped: [] as { kind: string; detail: string; reason: string }[],
+  };
+
+  // 1. flatten: 既存マーカー (黄色/赤フォント/赤rich text) を ★label★ プレーンテキストに変換
+  //    → 後段の deletes/adds/fills が全部テキストベースで動く
+  const slotReplacements = new Map<number, string>();
+  for (const s of labels?.slots || []) {
+    const label = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
+    slotReplacements.set(s.slotId, `★${label}★`);
+  }
+  if (slotReplacements.size > 0) {
+    buf = replaceXlsxMarkedCellsBySlot(buf, slotReplacements);
+    log.applied.push({ kind: "flatten", detail: `${slotReplacements.size} 個のマーカーを ★label★ に展開` });
+  }
+
+  // 2. deletes / adds は各シートに対して XML 操作で適用
+  const zip = new PizZip(buf);
+  const sheetFiles = Object.keys(zip.files)
+    .filter((fn) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
+    .sort();
+  const ssXml = zip.file("xl/sharedStrings.xml")?.asText() || "";
+  const sharedStrings = parseSharedStrings(ssXml);
+
+  for (const sheetFile of sheetFiles) {
+    let sheetXml = zip.file(sheetFile)?.asText();
+    if (!sheetXml) continue;
+    let changed = false;
+
+    // 2-1. deletes
+    for (const d of edits.deletes || []) {
+      const target = findRowWithAnchorXlsx(sheetXml, d.anchor, sharedStrings);
+      if (!target) {
+        log.skipped.push({ kind: "delete-xlsx", detail: d.anchor, reason: "anchor が見つからない" });
+        continue;
+      }
+      // 行を削除
+      sheetXml = sheetXml.slice(0, target.start) + sheetXml.slice(target.end);
+      // 後続の行番号を -1 シフト (削除した row の num から先)
+      sheetXml = shiftRowsAfterXlsx(sheetXml, target.rowNum, -1);
+      log.applied.push({ kind: "delete-xlsx", detail: `row ${target.rowNum} (${d.anchor})` });
+      changed = true;
+    }
+
+    // 2-2. adds
+    for (const a of edits.adds || []) {
+      const target = findRowWithAnchorXlsx(sheetXml, a.afterAnchor, sharedStrings);
+      if (!target) {
+        log.skipped.push({ kind: "add-xlsx", detail: a.afterAnchor, reason: "afterAnchor が見つからない" });
+        continue;
+      }
+      const numAdded = a.contents.length;
+      // 後続の行を +numAdded シフト
+      sheetXml = shiftRowsAfterXlsx(sheetXml, target.rowNum, numAdded);
+      // target.end は不変 (target 以前のバイトは変わってないため)
+      const newRows = a.contents
+        .map((csv, i) => makeXlsxRow(target.rowNum + 1 + i, csv))
+        .join("");
+      sheetXml = sheetXml.slice(0, target.end) + newRows + sheetXml.slice(target.end);
+      log.applied.push({ kind: "add-xlsx", detail: `${a.afterAnchor} 後に ${numAdded} 行追加` });
+      changed = true;
+    }
+
+    if (changed) zip.file(sheetFile, sheetXml);
+  }
+
+  // 3. fills: 全 xml の <t>...</t> 内テキストで ★label★ → 値 (text 置換)
+  if (edits.fills && Object.keys(edits.fills).length > 0) {
+    const r = applyFillsTextEverywhere(zip, edits.fills);
+    if (r.applied > 0) log.applied.push({ kind: "fill-xlsx", detail: `${r.applied} 件の ★label★ を置換` });
+  }
+
+  const outBuf = zip.generate({ type: "nodebuffer" });
+  return { buf: outBuf, applied: log.applied, skipped: log.skipped };
+}
+
