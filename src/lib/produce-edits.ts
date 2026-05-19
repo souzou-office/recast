@@ -133,6 +133,11 @@ function getParagraphText(pXml: string): string {
 }
 
 // --- ステップ 1: ハイライトを ★label★ プレーンテキストに変換 ---
+//
+// 重要: slotId は labels.json と完全一致させる必要がある (= forward 順)。
+//       labels.json は文書を上から走査して 0, 1, 2... と採番されている。
+//       なので flatten も forward に走査して slotId を採取し、
+//       実際の置換は位置ずれ防止のため reverse に適用する。
 
 function flattenHighlights(docXml: string, labels: TemplateLabels | null): string {
   const labelById = new Map<number, string>();
@@ -140,75 +145,65 @@ function flattenHighlights(docXml: string, labels: TemplateLabels | null): strin
     if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
   }
 
-  let slotId = 0;
+  // 全 paragraph を forward に走査して slot 範囲と slotId を採取
+  type SlotGroup = { paraIdx: number; absStart: number; absEnd: number; slotId: number; label: string };
+  const allGroups: SlotGroup[] = [];
   const paragraphs = findTopLevelParagraphs(docXml);
 
-  // 各段落を後ろから処理して位置ずれを防ぐ
-  for (let p = paragraphs.length - 1; p >= 0; p--) {
+  let slotId = 0;
+  for (let p = 0; p < paragraphs.length; p++) {
     const para = paragraphs[p];
     const inner = docXml.slice(para.openEnd, para.end - "</w:p>".length);
-    // テキストボックス内の <w:p> はスキップ (= 別段落として扱わない)
-    const innerNoTxbx = inner.replace(/<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g, "");
-
-    // 段落内の連続したハイライトラン群を 1 つの slot として扱い、★label★ プレーン run に置換
-    const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
-    const runMatches: { start: number; end: number; highlighted: boolean; text: string }[] = [];
-    let m;
-    while ((m = runRe.exec(inner)) !== null) {
-      // テキストボックス内の run は除外
-      const txbxStart = inner.indexOf("<w:txbxContent", 0);
-      const txbxEnd = inner.indexOf("</w:txbxContent>", 0);
-      if (txbxStart >= 0 && txbxEnd > txbxStart && m.index > txbxStart && m.index < txbxEnd) continue;
-      const text = getRunText(m[0]);
-      if (!text) continue;
-      runMatches.push({
-        start: m.index,
-        end: m.index + m[0].length,
-        highlighted: hasHighlight(m[0]),
-        text,
-      });
+    // テキストボックス内の run は別段落扱い (この走査では除外)
+    // → 走査時にスキップする
+    const txbxRanges: { start: number; end: number }[] = [];
+    const txbxRe = /<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g;
+    let txm;
+    while ((txm = txbxRe.exec(inner)) !== null) {
+      txbxRanges.push({ start: txm.index, end: txm.index + txm[0].length });
     }
-    // この段落でハイライトされた slot を確認しないことには slotId を進められない (順番依存)。
-    // 一度走査して slot 範囲を抽出する。
-    const slotGroups: { start: number; end: number; slotId: number; label: string }[] = [];
+    const isInTxbx = (pos: number) => txbxRanges.some((r) => pos >= r.start && pos < r.end);
+
+    const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
     let groupStart: number | null = null;
     let groupEnd: number | null = null;
     const flushGroup = () => {
       if (groupStart !== null && groupEnd !== null) {
         const label = labelById.get(slotId) || `要入力_${slotId}`;
-        slotGroups.push({ start: groupStart, end: groupEnd, slotId, label });
+        allGroups.push({
+          paraIdx: p,
+          absStart: para.openEnd + groupStart,
+          absEnd: para.openEnd + groupEnd,
+          slotId,
+          label,
+        });
         slotId++;
         groupStart = null;
         groupEnd = null;
       }
     };
-    for (const r of runMatches) {
-      if (r.highlighted) {
-        if (groupStart === null) groupStart = r.start;
-        groupEnd = r.end;
+    let rm;
+    while ((rm = runRe.exec(inner)) !== null) {
+      if (isInTxbx(rm.index)) continue;
+      const text = getRunText(rm[0]);
+      if (!text) continue;
+      if (hasHighlight(rm[0])) {
+        if (groupStart === null) groupStart = rm.index;
+        groupEnd = rm.index + rm[0].length;
       } else {
         flushGroup();
       }
     }
     flushGroup();
+  }
 
-    if (slotGroups.length === 0) continue;
+  if (allGroups.length === 0) return docXml;
 
-    // 段落内の文字列を slot ごとに「★label★ プレーン run」に置き換える (後ろから)
-    let newInner = inner;
-    // 段落 inner は元の docXml の slice なので、置換は inner ベースで行う。
-    // slotGroups の start/end は inner 内 offset。
-    for (let g = slotGroups.length - 1; g >= 0; g--) {
-      const grp = slotGroups[g];
-      const replacement = makePlainRun(`★${grp.label}★`);
-      newInner = newInner.slice(0, grp.start) + replacement + newInner.slice(grp.end);
-    }
-
-    // 段落本体を更新 (テキストボックス含む inner を更新)
-    // ただし上記の slotGroups は innerNoTxbx ベースでなく inner ベースで取った。
-    // テキストボックス内の run は除外したので、置換位置はテキストボックス外。
-    docXml = docXml.slice(0, para.openEnd) + newInner + docXml.slice(para.end - "</w:p>".length);
-    void innerNoTxbx; // unused
+  // 置換は reverse 順 (後ろから) に適用して位置ずれを防ぐ
+  for (let g = allGroups.length - 1; g >= 0; g--) {
+    const grp = allGroups[g];
+    const replacement = makePlainRun(`★${grp.label}★`);
+    docXml = docXml.slice(0, grp.absStart) + replacement + docXml.slice(grp.absEnd);
   }
 
   return docXml;
