@@ -87,6 +87,38 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // 共通ルール (templateBasePath 直下や「共通」フォルダ配下のメモ等) を読む。
+  // 総数引受契約書の【法人引受人のため本行削除】等の条件付き処理ルールはここに書かれている。
+  let globalRulesBlock = "";
+  if (config.templateBasePath) {
+    try {
+      const { loadGlobalRules } = await import("@/lib/global-rules");
+      const rules = await loadGlobalRules(config.templateBasePath, templateFolderPath);
+      if (rules && rules.trim()) {
+        globalRulesBlock = `\n## 共通ルール (最優先で従うこと)\n${rules}\n`;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // テンプレフォルダ内のメモ (.txt/.md) もテンプレ固有のルールとして渡す
+  let templateMemoBlock = "";
+  if (templateFolderPath) {
+    try {
+      const tpFilesAll = await readAllFilesInFolder(templateFolderPath);
+      const memoText = tpFilesAll
+        .filter((f) => !f.base64 && (f.name.endsWith(".txt") || f.name.endsWith(".md")))
+        .map((f) => `【${f.name}】\n${f.content}`)
+        .join("\n\n");
+      if (memoText.trim()) {
+        templateMemoBlock = `\n## テンプレート注意事項 (このテンプレ固有のルール)\n${memoText}\n`;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   // テンプレファイル一覧 (docx + xlsx)
   const tpFiles = await readAllFilesInFolder(templateFolderPath);
   const targetFiles = tpFiles.filter(
@@ -271,6 +303,7 @@ ${serverDeleteBlock}${aiDeleteBlock}
 ## 全書類の Phase 2 決定 (整合性確認用、参考)
 ${allDecisionsBlock}
 ${qaBlock}
+${globalRulesBlock}${templateMemoBlock}
 
 ## 出力形式
 
@@ -320,6 +353,14 @@ ${qaBlock}
   (slot レベルの単純削除はサーバが機械的に処理する)
 - **「AI が判断して paragraphActions に追加する削除」リストは、あなたがブロック範囲を特定して
   全段落番号を paragraphActions に列挙する** (議案1ブロック全体の各段落など)
+
+## xlsx に対する追加ルール (重要)
+
+- **「株主リスト」等の行構造が固定 (上位10名分の行 1-10 が事前に用意) されているテンプレでは
+  inserts (行追加) を絶対に使わない**。fills で空欄の slot に値を入れるだけ。余ったスロットは
+  そのまま空欄のままで OK (要確認 や空文字を入れない)
+- 数値が入る slot (議決権数 / 株式数 等) は数値文字列で渡す (例: "49000")。
+  サーバが自動で数値セルに変換するので Excel で計算できる
 
 ## 「議案2 を削除して 議案3 を 議案2 に繰り上げる」場合の例
 

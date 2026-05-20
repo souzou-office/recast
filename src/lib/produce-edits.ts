@@ -870,6 +870,45 @@ export async function applyProduceEditsXlsx(
     if (r.applied > 0) log.applied.push({ kind: "fill-xlsx", detail: `${r.applied} 件の ★label★ を置換` });
   }
 
+  // 5. 数値セル化: shared string が純数値になっているセル (t="s") を数値セル (t なし) に変換。
+  // これをしないと Excel では文字列扱いで SUM 等の数式が動かないし、セルクリックしないと
+  // 数値として表示されない問題が起きる。
+  {
+    const ssXmlAfter = zip.file("xl/sharedStrings.xml")?.asText() || "";
+    const ssTableAfter = parseSharedStrings(ssXmlAfter);
+    const isNumeric = (s: string): string | null => {
+      const halfWidth = s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+      const cleaned = halfWidth.replace(/,/g, "").trim();
+      if (!cleaned) return null;
+      return /^-?\d+(\.\d+)?$/.test(cleaned) ? cleaned : null;
+    };
+    let totalConverted = 0;
+    const sheetFilesPost = Object.keys(zip.files)
+      .filter((fn) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
+      .sort();
+    for (const sf of sheetFilesPost) {
+      let xml = zip.file(sf)?.asText();
+      if (!xml) continue;
+      let changed = false;
+      xml = xml.replace(
+        /<c\b([^>]*)\bt="s"([^>]*)>\s*<v>(\d+)<\/v>\s*<\/c>/g,
+        (m: string, pre: string, post: string, idxStr: string) => {
+          const idx = parseInt(idxStr, 10);
+          const text = ssTableAfter[idx];
+          if (text === undefined) return m;
+          const num = isNumeric(text);
+          if (num === null) return m;
+          totalConverted++;
+          changed = true;
+          // t="s" を除いた attrs で数値セルとして書き出す
+          return `<c${pre}${post}><v>${num}</v></c>`;
+        }
+      );
+      if (changed) zip.file(sf, xml);
+    }
+    if (totalConverted > 0) log.applied.push({ kind: "numeric-fix-xlsx", detail: `${totalConverted} セルを数値型に変換` });
+  }
+
   const outBuf = zip.generate({ type: "nodebuffer" });
   return { buf: outBuf, applied: log.applied, skipped: log.skipped };
 }
