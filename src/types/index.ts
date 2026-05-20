@@ -302,22 +302,25 @@ export interface ThreadMessage {
 // analyze AI がテンプレ本文 + 案件ファイル + Phase 1 整理 + Phase 1 Q&A を読んで決める。
 // Phase 3 (produce) はこの決定をルールベースで適用するだけ。
 export interface Phase2Decisions {
-  // テンプレファイルごとの決定
   documents: Phase2DocumentDecision[];
 }
 
+// 1 slot あたりの決定。各 slot は配列に 1 度だけ登場し、action は必ず 1 つ。
+// (旧設計では slots / deletes / unconfirmed が別配列で、AI が同じ slot に複数指示を
+//  書き込む事故 (value に指示文を埋め込む等) が発生していた → 構造的に防ぐ)
+export interface SlotDecision {
+  slot: string;          // labels.json のラベル名 (例: "乙の無限責任組合員の名称")
+  action: "fill" | "delete-row" | "unconfirmed";
+  value?: string;                                          // fill のとき
+  source?: string;                                         // fill のとき
+  reason?: string;                                         // delete-row / unconfirmed のとき
+  candidates?: { value: string; source: string }[];        // unconfirmed のとき
+}
+
 export interface Phase2DocumentDecision {
-  templateFile: string;            // テンプレファイル名 (例: "議事録.docx")
-  // 確定した値: slot ラベル → 値
-  slots: { slot: string; value: string; source: string }[];
-  // 削除する議案 / ブロック (削除のアンカー文字列)
-  deletes: { block: string; reason: string }[];
-  // 確定できなかった項目 (Phase 2 clarify で聞く)
-  unconfirmed: {
-    slot: string;
-    reason: string;
-    candidates?: { value: string; source: string }[];
-  }[];
+  templateFile: string;
+  slotDecisions: SlotDecision[];                           // 各 slot 1 entry のみ
+  blockDeletes: { block: string; reason: string }[];       // 議案ブロック等の複数段落削除
 }
 
 // チャットスレッド（CaseRoom + chat-history 統合）

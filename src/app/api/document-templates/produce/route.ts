@@ -255,15 +255,16 @@ export async function POST(request: NextRequest) {
   if (phase2Decisions) {
     const existing = new Set(confirmedQA.map((q) => q.placeholder));
     for (const doc of phase2Decisions.documents) {
-      for (const s of doc.slots) {
-        if (!s.slot || !s.value) continue;
-        if (existing.has(s.slot)) continue;
+      for (const sd of doc.slotDecisions || []) {
+        if (sd.action !== "fill") continue;
+        if (!sd.slot || !sd.value) continue;
+        if (existing.has(sd.slot)) continue;
         confirmedQA.push({
-          placeholder: s.slot,
+          placeholder: sd.slot,
           question: `Phase 2 決定 (${doc.templateFile})`,
-          answer: s.value,
+          answer: sd.value,
         });
-        existing.add(s.slot);
+        existing.add(sd.slot);
       }
     }
   }
@@ -580,17 +581,25 @@ export async function POST(request: NextRequest) {
     ? `\n## 条件分岐フラグ（true/false で返す）\n${[...allConditionFlags].map(f => `- ${f}`).join("\n")}\n`
     : "";
 
-  // Phase 2 が決めた削除議案 (deletes) をプロンプトに明示する。
+  // Phase 2 が決めた削除 (slotDecisions の delete-row + blockDeletes) をプロンプトに明示する。
   // AI は必ずこのリストを removeBlocks に含めること。
-  const phase2DeletesBlock = phase2Decisions && phase2Decisions.documents.some((d) => d.deletes.length > 0)
-    ? `\n## Phase 2 で削除決定済みの議案・ブロック (各書類で removeBlocks に必ず含めること)\n${
-        phase2Decisions.documents
-          .filter((d) => d.deletes.length > 0)
-          .map((d) =>
-            `### ${d.templateFile}\n${d.deletes.map((del) => `- ${del.block} (理由: ${del.reason})`).join("\n")}`
-          )
-          .join("\n\n")
-      }\n`
+  const phase2DeletesByDoc = phase2Decisions
+    ? phase2Decisions.documents
+        .map((d) => {
+          const items: string[] = [
+            ...(d.slotDecisions || [])
+              .filter((sd) => sd.action === "delete-row")
+              .map((sd) => `- ${sd.slot} (理由: ${sd.reason || ""})`),
+            ...(d.blockDeletes || []).map((bd) => `- ${bd.block} (理由: ${bd.reason})`),
+          ];
+          return items.length > 0 ? { templateFile: d.templateFile, items } : null;
+        })
+        .filter((x): x is { templateFile: string; items: string[] } => x !== null)
+    : [];
+  const phase2DeletesBlock = phase2DeletesByDoc.length > 0
+    ? `\n## Phase 2 で削除決定済みの項目 (各書類で removeBlocks に必ず含めること)\n${phase2DeletesByDoc
+        .map((d) => `### ${d.templateFile}\n${d.items.join("\n")}`)
+        .join("\n\n")}\n`
     : "";
 
   const userTurnText = `## あなたが今やること

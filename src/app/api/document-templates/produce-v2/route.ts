@@ -249,8 +249,15 @@ export async function POST(request: NextRequest) {
         const serverAutoHandledAnchors: { anchor: string; paragraphIndex: number }[] = [];
         const aiHandledAnchors: string[] = [];
         if (myDecision) {
-          for (const phaseDelete of myDecision.deletes) {
-            const anchor = phaseDelete.block;
+          // 「Phase 2 の action="delete-row" の slot」と「blockDeletes の block」を集めて
+          // 各 anchor について markedText から該当段落を探す
+          const allDeleteAnchors: string[] = [
+            ...(myDecision.slotDecisions || [])
+              .filter((sd) => sd.action === "delete-row")
+              .map((sd) => sd.slot),
+            ...(myDecision.blockDeletes || []).map((bd) => bd.block),
+          ];
+          for (const anchor of allDeleteAnchors) {
             const anchorNorm = anchor.replace(/\s/g, "");
             let matchedIdx: number | null = null;
             for (const nl of numberedLines) {

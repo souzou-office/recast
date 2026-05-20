@@ -220,23 +220,66 @@ ${templateBodyBlock}
   "documents": [
     {
       "templateFile": "議事録.docx",
-      "slots": [{ "slot": "★ の中身そのまま", "value": "値", "source": "出典" }],
-      "deletes": [{ "block": "削除する議案見出し", "reason": "..." }],
-      "unconfirmed": [
-        { "slot": "label", "reason": "...", "candidates": [{ "value": "...", "source": "..." }] }
+      "slotDecisions": [
+        { "slot": "★ の中身そのまま", "action": "fill", "value": "値", "source": "出典" },
+        { "slot": "乙の無限責任組合員の名称", "action": "delete-row", "reason": "引受人が法人なのでこの行は不要" },
+        { "slot": "取締役会決議日", "action": "unconfirmed", "reason": "資料間で日付が食い違う",
+          "candidates": [
+            { "value": "令和8年5月20日", "source": "投資契約書" },
+            { "value": "令和8年5月22日", "source": "案件スケジュール表" }
+          ]
+        }
+      ],
+      "blockDeletes": [
+        { "block": "議案２　取締役の報酬に関する件", "reason": "役員報酬議案は今回該当なし" }
       ]
     }
   ]
 }
 \`\`\`
 
-## ルール
+## slotDecisions のルール (構造的に重要)
 
-- value は slot 位置に **貼り付けた時に自然に読める形**。テンプレの slot 前後 (上に渡した本文) を見て、
-  既に肩書き/単位が書かれていれば value からは外す
-- Phase 1 で確定した値は slots へ。本当に分からないものだけ unconfirmed へ
-- 議案削除は templateFile + block で指定
-- json ブロックは末尾に1つだけ`;
+各 slot は配列に **1 度だけ** 登場。**action は必ず 1 つだけ**:
+
+- \`action: "fill"\` → \`value\` に値を入れる、\`source\` に出典を書く
+- \`action: "delete-row"\` → この slot を含む段落 (= 行) を丸ごと削除する、\`reason\` で理由
+- \`action: "unconfirmed"\` → ユーザーに聞く、\`reason\` と任意で \`candidates\`
+
+**絶対にやってはいけないこと**:
+
+- \`value\` に **指示文・注記・説明文を書く** (例: "【法人引受人のため本行削除】", "(該当なし)",
+  "削除", "—" は **全部 NG**)。値じゃないものを value に書くな
+- 同じ slot を 2 度書く (構造的に 1 entry のみ)
+- 「値を埋める」と「行を削除」を 1 entry に混ぜる (action は 1 つだけ)
+
+**該当しない slot の扱い**:
+
+「テンプレに slot はあるが、この案件では該当しない」(例: 引受人が法人なのにテンプレに
+「乙の無限責任組合員の名称」slot がある) → \`action: "delete-row"\` でその行を削除する。
+**絶対に value に指示文を書かない**。
+
+**共通ルール (Phase 1 ターンで渡された) を必ず参照** する:
+- 「引受人が法人なら無限責任組合員 と 組合員 行は削除」「主たる事務所 → 本店」等の
+  書類フォーマット変換ルールが共通ルールに書かれていれば、それに従って delete-row と fill を
+  組み合わせる
+
+## value に何を入れるか (fill action のみ)
+
+produce は value を slot 位置に **そのまま挿入** するので:
+
+- テンプレの slot 前後 (上に渡した本文) を見て、既に肩書き/単位が書かれていれば value から外す
+- 値は最終形式 (令和8年5月29日 / 株式会社JINGS / 1,000,000 等)
+- 指示文・条件分岐・複数アクションは **絶対書かない**
+
+## blockDeletes
+
+議案ブロック (議案2 全体等) のように **複数段落にまたがる削除** で、特定の 1 slot に紐づかない
+ものは \`blockDeletes\` に書く。
+- \`block\`: 削除対象ブロックのヘッダー文字列 (例: "議案２　取締役の報酬に関する件")
+- \`reason\`: 理由
+
+## json ブロックは末尾に 1 つだけ`;
 
   const messagesWithUserTurn = appendUserTurn(aiMessages, userTurnText, "analyze");
 
@@ -278,9 +321,12 @@ ${templateBodyBlock}
           const decisions = extractDecisionsJson(assistantText);
           if (decisions) {
             await savePhase2Decisions(company.id, threadId, decisions);
-            const summary = decisions.documents.map((d: Phase2DocumentDecision) =>
-              `${d.templateFile}: slots ${d.slots.length} / deletes ${d.deletes.length} / unconfirmed ${d.unconfirmed.length}`
-            ).join("; ");
+            const summary = decisions.documents.map((d: Phase2DocumentDecision) => {
+              const fills = d.slotDecisions.filter((s) => s.action === "fill").length;
+              const dels = d.slotDecisions.filter((s) => s.action === "delete-row").length;
+              const uncs = d.slotDecisions.filter((s) => s.action === "unconfirmed").length;
+              return `${d.templateFile}: fill ${fills} / delete-row ${dels} / unconfirmed ${uncs} / blockDeletes ${d.blockDeletes.length}`;
+            }).join("; ");
             console.log(`[analyze] decisions saved: ${summary}`);
             send(controller, { type: "decisions", decisions });
           } else {

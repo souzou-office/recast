@@ -58,13 +58,14 @@ export async function POST(request: NextRequest) {
     if (m) answeredPlaceholders.add(m[1].trim());
   }
 
-  // unconfirmed 群を ClarificationQuestion[] に変換 (回答済みは除外)
+  // slotDecisions の action="unconfirmed" を ClarificationQuestion[] に変換 (回答済みは除外)
   const questions: ClarificationQuestion[] = [];
   for (const doc of decisions.documents) {
-    for (const u of doc.unconfirmed) {
-      const placeholder = `${doc.templateFile}:${u.slot}`;
+    for (const sd of doc.slotDecisions || []) {
+      if (sd.action !== "unconfirmed") continue;
+      const placeholder = `${doc.templateFile}:${sd.slot}`;
       if (answeredPlaceholders.has(placeholder)) continue;
-      const options = (u.candidates || []).map((c, j) => ({
+      const options = (sd.candidates || []).map((c, j) => ({
         id: `c${j + 1}`,
         label: c.value,
         source: c.source,
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
       questions.push({
         id: `p_${questions.length + 1}`,
         placeholder,
-        question: `${u.slot} (${doc.templateFile}): ${u.reason}`,
+        question: `${sd.slot} (${doc.templateFile}): ${sd.reason || "(理由なし)"}`,
         options,
       });
     }
