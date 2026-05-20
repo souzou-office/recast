@@ -15,36 +15,37 @@ const PizZip = require("pizzip");
 import type { TemplateLabels } from "./template-labels";
 import { replaceXlsxMarkedCellsBySlot } from "./xlsx-marker-parser";
 
-// === 新方式: 段落番号で位置を指定 (1-indexed) ===
-// AI には marked text に `[N] paragraph text` の形式で番号付きで見せる。
-// N は「内容のある段落」のみを 1 から連番した値 (空段落は飛ばす)。
-// AI が出す全 op は同じ番号体系を使う。
+// === 段落番号方式 (1-indexed) ===
+// AI には marked text に `段落N: paragraph text` の形式で番号付きで見せる。
+// 1 つの段落に対して同時に複数 op を指定できない構造にして、
+// 重複指示による XML 破壊を **構造的に** 防ぐ。
 
-export interface DeleteOp {
-  paragraphIndex: number; // 1-indexed
+// 段落単位の操作 (この段落をどうするか)。同じ paragraphIndex は配列に 1 度だけ。
+export interface ParagraphActionOp {
+  paragraphIndex: number;             // 1-indexed
+  action: "delete" | "rewrite";
+  newText?: string;                   // action="rewrite" のとき必須
 }
+
+// 指定段落の直後に新規段落を挿入 (段落単位の操作とは別軸)
 export interface InsertOp {
-  afterParagraphIndex: number; // 1-indexed (この段落の直後に挿入)
+  afterParagraphIndex: number; // 1-indexed
   contents: string[];           // 各要素 = 1 段落分のテキスト
 }
-export interface RewriteOp {
-  paragraphIndex: number; // 1-indexed
-  newText: string;        // この段落の本文を newText に書き換え (フォント等は保持)
-}
+
 export type FillsOp = Record<string, string>; // { "★label★": "value" }
 
-// 任意テキスト置換 (議案番号繰り上げ等 / 全文書から anchor を探して replacement に)
+// 任意テキスト置換 (議案番号繰り上げ等)
 export interface ReplaceOp {
   anchor: string;
   replacement: string;
 }
 
 export interface ProduceEdits {
-  deletes?: DeleteOp[];
-  inserts?: InsertOp[];
-  rewrites?: RewriteOp[];
-  fills?: FillsOp;
-  replaces?: ReplaceOp[];
+  paragraphActions?: ParagraphActionOp[]; // 段落ごとに delete or rewrite (重複不可)
+  inserts?: InsertOp[];                    // 段落追加 (afterParagraphIndex 指定)
+  fills?: FillsOp;                         // ★label★ → 値
+  replaces?: ReplaceOp[];                  // 全文一括テキスト置換
 }
 
 export interface EditResult {
@@ -294,14 +295,14 @@ function rewriteParagraphXml(paraXml: string, newText: string): string {
   return result;
 }
 
-// --- 段落番号で全 op を適用 (delete / insert / rewrite) ---
+// --- 段落番号で全 op を適用 (paragraphActions + inserts) ---
 // 全 op を ORIGINAL の段落番号で受け取り、絶対位置に解決してから後ろから順に適用する。
 // 適用順は「位置の後ろ → 前」なので互いに影響しない。
+// paragraphActions は段落単位で 1 op 限定 (重複してたら最初の 1 件のみ採用)。
 function applyIndexedOps(
   docXml: string,
-  deletes: DeleteOp[],
+  paragraphActions: ParagraphActionOp[],
   inserts: InsertOp[],
-  rewrites: RewriteOp[],
   log: { applied: { kind: string; detail: string }[]; skipped: { kind: string; detail: string; reason: string }[] }
 ): string {
   const paragraphs = getContentParagraphs(docXml);
@@ -315,58 +316,57 @@ function applyIndexedOps(
 
   const ops: Op[] = [];
 
-  // 同じ paragraphIndex に rewrite がある場合は delete を skip する (rewrite 優先)。
-  // AI が delete と rewrite を同じ段落に重複して指定した場合の混乱対策 (古いコードは
-  // 位置 cache がズレて XML を破壊していた)。
-  const rewrittenIndices = new Set<number>(
-    rewrites.filter((r) => validIdx(r.paragraphIndex)).map((r) => r.paragraphIndex)
-  );
-
-  for (const d of deletes) {
-    if (!validIdx(d.paragraphIndex)) {
-      log.skipped.push({ kind: "delete", detail: `index ${d.paragraphIndex}`, reason: `範囲外 (1〜${total})` });
-      continue;
-    }
-    if (rewrittenIndices.has(d.paragraphIndex)) {
+  // 同じ paragraphIndex が複数 action にあるなら最初の 1 件のみ採用 (構造的に重複できない設計だが保険)
+  const seenIndices = new Set<number>();
+  for (const pa of paragraphActions) {
+    if (!validIdx(pa.paragraphIndex)) {
       log.skipped.push({
-        kind: "delete",
-        detail: `段落 ${d.paragraphIndex}`,
-        reason: "同段落に rewrite が指定されているため rewrite 優先で skip",
+        kind: pa.action,
+        detail: `index ${pa.paragraphIndex}`,
+        reason: `範囲外 (1〜${total})`,
       });
       continue;
     }
-    const p = paragraphs[d.paragraphIndex - 1];
-    ops.push({ kind: "delete", pos: d.paragraphIndex, start: p.start, end: p.end, sortKey: p.start });
-  }
-
-  for (const r of rewrites) {
-    if (!validIdx(r.paragraphIndex)) {
-      log.skipped.push({ kind: "rewrite", detail: `index ${r.paragraphIndex}`, reason: `範囲外 (1〜${total})` });
+    if (seenIndices.has(pa.paragraphIndex)) {
+      log.skipped.push({
+        kind: pa.action,
+        detail: `段落 ${pa.paragraphIndex}`,
+        reason: "同じ段落に複数 action 指定。最初の 1 件のみ採用",
+      });
       continue;
     }
-    const p = paragraphs[r.paragraphIndex - 1];
-    ops.push({
-      kind: "rewrite",
-      pos: r.paragraphIndex,
-      start: p.start,
-      end: p.end,
-      sortKey: p.start,
-      newText: r.newText,
-      originalXml: docXml.slice(p.start, p.end),
-    });
+    seenIndices.add(pa.paragraphIndex);
+    const p = paragraphs[pa.paragraphIndex - 1];
+    if (pa.action === "delete") {
+      ops.push({ kind: "delete", pos: pa.paragraphIndex, start: p.start, end: p.end, sortKey: p.start });
+    } else if (pa.action === "rewrite") {
+      if (typeof pa.newText !== "string") {
+        log.skipped.push({
+          kind: "rewrite",
+          detail: `段落 ${pa.paragraphIndex}`,
+          reason: "newText が無い",
+        });
+        continue;
+      }
+      ops.push({
+        kind: "rewrite",
+        pos: pa.paragraphIndex,
+        start: p.start,
+        end: p.end,
+        sortKey: p.start,
+        newText: pa.newText,
+        originalXml: docXml.slice(p.start, p.end),
+      });
+    }
   }
 
-  // 同じ位置の delete と insert の干渉:
-  // delete の対象段落に insert.afterParagraphIndex が一致した場合、その位置は消えるので
-  // 「直前の段落の末尾」に挿入位置を変更 (= 段落 N-1 の末尾)。N=1 の場合は skip。
   for (const ins of inserts) {
     if (!validIdx(ins.afterParagraphIndex)) {
       log.skipped.push({ kind: "insert", detail: `afterIndex ${ins.afterParagraphIndex}`, reason: `範囲外 (1〜${total})` });
       continue;
     }
     const p = paragraphs[ins.afterParagraphIndex - 1];
-    // 同じ位置の delete/rewrite との干渉を避けるため、insert は p.end (= 段落末尾の直後) を sortKey にし、
-    // 同位置 delete (sortKey = p.start) より後ろになるよう調整
+    // 同位置の delete/rewrite との干渉を避けるため、insert は p.end (= 段落末尾の直後) を sortKey にする
     ops.push({
       kind: "insert",
       pos: ins.afterParagraphIndex,
@@ -388,7 +388,7 @@ function applyIndexedOps(
       docXml = docXml.slice(0, op.start) + newPara + docXml.slice(op.end);
       log.applied.push({ kind: "rewrite", detail: `段落 ${op.pos}` });
     } else if (op.kind === "insert") {
-      const insertPos = op.sortKey; // = referenceParagraph.end
+      const insertPos = op.sortKey;
       const newParas = op.contents
         .map((text) => makeStyledParagraphFromReference(text, op.referenceXml))
         .join("");
@@ -481,17 +481,15 @@ export async function applyProduceEditsDocx(
   // 1. flatten (highlights → ★label★ plain text)
   docXml = flattenHighlights(docXml, labels);
 
-  // 2. delete / insert / rewrite を段落番号で一括処理 (絶対位置に解決して後ろから適用)
+  // 2. paragraphActions (delete/rewrite) + inserts を段落番号で一括処理
   if (
-    (edits.deletes && edits.deletes.length > 0) ||
-    (edits.inserts && edits.inserts.length > 0) ||
-    (edits.rewrites && edits.rewrites.length > 0)
+    (edits.paragraphActions && edits.paragraphActions.length > 0) ||
+    (edits.inserts && edits.inserts.length > 0)
   ) {
     docXml = applyIndexedOps(
       docXml,
-      edits.deletes || [],
+      edits.paragraphActions || [],
       edits.inserts || [],
-      edits.rewrites || [],
       log
     );
   }
@@ -739,28 +737,38 @@ export async function applyProduceEditsXlsx(
 
     const xlsxOps: XlsxOp[] = [];
 
-    for (const d of edits.deletes || []) {
-      const target = findRowByNumber(sheetXml, d.paragraphIndex);
-      if (!target) {
-        log.skipped.push({ kind: "delete-xlsx", detail: `row ${d.paragraphIndex}`, reason: "行が見つからない" });
+    // paragraphActions = 行単位の delete or rewrite (xlsx では paragraphIndex = Excel 行番号)
+    const seenRows = new Set<number>();
+    for (const pa of edits.paragraphActions || []) {
+      if (seenRows.has(pa.paragraphIndex)) {
+        log.skipped.push({
+          kind: pa.action + "-xlsx",
+          detail: `row ${pa.paragraphIndex}`,
+          reason: "同じ行に複数 action 指定。最初のみ採用",
+        });
         continue;
       }
-      xlsxOps.push({ kind: "delete", rowNum: d.paragraphIndex, start: target.start, end: target.end });
-    }
-
-    for (const r of edits.rewrites || []) {
-      const target = findRowByNumber(sheetXml, r.paragraphIndex);
+      seenRows.add(pa.paragraphIndex);
+      const target = findRowByNumber(sheetXml, pa.paragraphIndex);
       if (!target) {
-        log.skipped.push({ kind: "rewrite-xlsx", detail: `row ${r.paragraphIndex}`, reason: "行が見つからない" });
+        log.skipped.push({ kind: pa.action + "-xlsx", detail: `row ${pa.paragraphIndex}`, reason: "行が見つからない" });
         continue;
       }
-      xlsxOps.push({
-        kind: "rewrite",
-        rowNum: r.paragraphIndex,
-        start: target.start,
-        end: target.end,
-        newCsv: r.newText,
-      });
+      if (pa.action === "delete") {
+        xlsxOps.push({ kind: "delete", rowNum: pa.paragraphIndex, start: target.start, end: target.end });
+      } else if (pa.action === "rewrite") {
+        if (typeof pa.newText !== "string") {
+          log.skipped.push({ kind: "rewrite-xlsx", detail: `row ${pa.paragraphIndex}`, reason: "newText が無い" });
+          continue;
+        }
+        xlsxOps.push({
+          kind: "rewrite",
+          rowNum: pa.paragraphIndex,
+          start: target.start,
+          end: target.end,
+          newCsv: pa.newText,
+        });
+      }
     }
 
     for (const ins of edits.inserts || []) {
