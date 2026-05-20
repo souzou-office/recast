@@ -590,7 +590,7 @@ export async function POST(request: NextRequest) {
             ...(d.slotDecisions || [])
               .filter((sd) => sd.action === "delete-row")
               .map((sd) => `- ${sd.slot} (理由: ${sd.reason || ""})`),
-            ...(d.blockDeletes || []).map((bd) => `- ${bd.block} (理由: ${bd.reason})`),
+            ...(d.blockDeletes || []).map((bd) => `- ${bd.startAnchor}${bd.endAnchor ? `〜${bd.endAnchor} の直前` : "〜文書末尾"} (理由: ${bd.reason})`),
           ];
           return items.length > 0 ? { templateFile: d.templateFile, items } : null;
         })
