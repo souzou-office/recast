@@ -317,12 +317,49 @@ export interface SlotDecision {
   candidates?: { value: string; source: string }[];        // unconfirmed のとき
 }
 
+// 行挿入: 既存 slot の行の直後に「新ラベル付き行」を追加する。
+// 設計思想:
+// - 「行を追加する」= 必ず案件依存の値が入る = 必ず ★label★ を立てる
+// - 固定文の追加はテンプレ側に書けばいいので row insertion の対象外
+// - template に書いた ★label★ ごとの値を fills に **同じエントリに** 入れさせる
+//   ことで、AI が「行は挿入したが値を埋め忘れた」事故を構造的に防止する
+export interface RowInsertion {
+  afterSlot: string;            // この slot を含む行の直後に挿入
+  template: string;             // 行のテンプレ文字列 (例: "代表取締役　★乙の代表取締役★")
+                                 // template 中の ★label★ は必ず fills に対応 entry が要る (サーバ検証)
+  fills: {                       // template 内の ★label★ ごとの値
+    slot: string;
+    value: string;
+    source?: string;
+  }[];
+  reason: string;
+}
+
+// テキスト一括置換: 議案番号繰り上げ (議案3 → 議案2) 等、blockDeletes の副作用を表現する。
+// Phase 2 が delete を決めた時点でその副作用も Phase 2 が同時に決める (Phase 3 に判断させない)
+export interface TextReplace {
+  anchor: string;       // 検索文字列 (完全一致部分文字列)
+  replacement: string;  // 置換文字列
+  reason: string;
+}
+
+// 議案ブロック等の複数段落削除。Phase 3 で機械処理するため範囲を明示する。
+// startAnchor: ブロック開始段落に含まれる文字列 (例: "議案２　取締役の報酬に関する件")
+// endAnchor:   削除終了 = この文字列を含む段落の **直前まで** 削除。省略時は文書末尾まで
+export interface BlockDelete {
+  startAnchor: string;
+  endAnchor?: string;
+  reason: string;
+}
+
 export interface Phase2DocumentDecision {
   templateFile: string;                                    // クリーンな物理テンプレファイル名 (例: "2-1.提案書兼同意書.docx")
   outputLabel?: string;                                    // 同一テンプレから複数出力する場合の識別 (例: "藤崎用", "先端機構用")
                                                             // 省略時は同一テンプレに 1 出力。出力ファイル名は {base}_{outputLabel}.{ext}
   slotDecisions: SlotDecision[];                           // 各 slot 1 entry のみ
-  blockDeletes: { block: string; reason: string }[];       // 議案ブロック等の複数段落削除
+  blockDeletes: BlockDelete[];                             // 議案ブロック等の複数段落削除 (start/end anchor で範囲指定)
+  rowInsertions?: RowInsertion[];                          // 新規行挿入 (法人引受人なら代表取締役行を足す等)
+  textReplaces?: TextReplace[];                            // blockDeletes に伴う議案番号繰り上げ等
 }
 
 // チャットスレッド（CaseRoom + chat-history 統合）

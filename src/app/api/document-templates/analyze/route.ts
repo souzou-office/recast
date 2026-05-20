@@ -232,14 +232,45 @@ ${templateBodyBlock}
         }
       ],
       "blockDeletes": [
-        { "block": "議案２　取締役の報酬に関する件", "reason": "役員報酬議案は今回該当なし" }
+        {
+          "startAnchor": "議案２　取締役の報酬に関する件",
+          "endAnchor": "議案３",
+          "reason": "役員報酬議案は今回該当なし"
+        }
+      ],
+      "rowInsertions": [
+        {
+          "afterSlot": "乙の名称",
+          "template": "代表取締役　★乙の代表取締役★",
+          "fills": [ { "slot": "乙の代表取締役", "value": "川上 登福", "source": "案件メモ" } ],
+          "reason": "引受人が株式会社の場合 代表取締役行 必須 (共通ルール)"
+        }
+      ],
+      "textReplaces": [
+        { "anchor": "議案３", "replacement": "議案２", "reason": "議案2 削除に伴う繰り上げ" },
+        { "anchor": "議案４", "replacement": "議案３", "reason": "同上" }
       ]
     }
   ]
 }
 \`\`\`
 
-## slotDecisions のルール (構造的に重要)
+## あなたが出せる 4 種類の指示
+
+各書類について、必要なものだけ出す (使わないなら空配列 or 省略):
+
+1. **slotDecisions** (テンプレ既存の★label★ への指示。各 slot 1 entry のみ)
+2. **blockDeletes** (議案ブロック等の複数段落削除)
+3. **rowInsertions** (新規行追加。法人引受人なら代表取締役行 を足す等)
+4. **textReplaces** (議案番号繰り上げ等のテキスト一括置換)
+
+**設計原則 = 「行一つにつき 1 指定」**。1 行に対する指示は 1 つだけ。
+ラベル名が違うフォーマットに変えたいとき (例: 主たる事務所 → 本店) は
+**「delete-row + rowInsertions」** で対応。**書換 (rewrite) アクションは存在しない**。
+
+---
+
+## 1. slotDecisions のルール
 
 各 slot は配列に **1 度だけ** 登場。**action は必ず 1 つだけ**:
 
@@ -261,9 +292,10 @@ ${templateBodyBlock}
 **絶対に value に指示文を書かない**。
 
 **共通ルール (Phase 1 ターンで渡された) を必ず参照** する:
-- 「引受人が法人なら無限責任組合員 と 組合員 行は削除」「主たる事務所 → 本店」等の
-  書類フォーマット変換ルールが共通ルールに書かれていれば、それに従って delete-row と fill を
-  組み合わせる
+- 「引受人が法人なら無限責任組合員 と 組合員 行は削除」等のルールが共通ルールに書かれていれば、
+  それに従って delete-row / fill / rowInsertions を組み合わせる
+- 「主たる事務所 → 本店」のような **ラベル変換が必要なケース** は
+  **delete-row (旧ラベル行) + rowInsertions (新ラベル行)** で実現する
 
 ## value に何を入れるか (fill action のみ)
 
@@ -273,12 +305,81 @@ produce は value を slot 位置に **そのまま挿入** するので:
 - 値は最終形式 (令和8年5月29日 / 株式会社JINGS / 1,000,000 等)
 - 指示文・条件分岐・複数アクションは **絶対書かない**
 
-## blockDeletes
+---
+
+## 2. blockDeletes
 
 議案ブロック (議案2 全体等) のように **複数段落にまたがる削除** で、特定の 1 slot に紐づかない
-ものは \`blockDeletes\` に書く。
-- \`block\`: 削除対象ブロックのヘッダー文字列 (例: "議案２　取締役の報酬に関する件")
+ものは \`blockDeletes\` に書く。Phase 3 は範囲を機械的に削除するので **start/end anchor で範囲を明示**:
+
+- \`startAnchor\`: 削除開始段落に含まれる文字列 (例: "議案２　取締役の報酬に関する件")
+- \`endAnchor\`: 削除終了の **次** の段落に含まれる文字列 (例: "議案３")。この段落の **直前まで** 削除。
+  省略時は文書末尾まで削除
 - \`reason\`: 理由
+
+\`\`\`json
+{ "startAnchor": "議案２", "endAnchor": "議案３", "reason": "..." }
+\`\`\`
+
+**議案を削除したら textReplaces で繰り上げも必ず指示する** (下記参照)。
+
+---
+
+## 3. rowInsertions (新規行挿入)
+
+テンプレに存在しないラベルの行を **新規に立てる** ときに使う。
+典型例: 引受人が株式会社なのにテンプレが組合フォーマットで「代表取締役」行が無い → 追加する。
+
+\`\`\`json
+{
+  "afterSlot": "乙の名称",                            // この slot を含む行の直後に挿入
+  "template": "代表取締役　★乙の代表取締役★",         // 行のテンプレ文字列
+  "fills": [
+    { "slot": "乙の代表取締役", "value": "川上 登福", "source": "案件メモ" }
+  ],
+  "reason": "..."
+}
+\`\`\`
+
+**ルール (構造的に重要)**:
+
+- \`template\` に書いた **★label★ は必ず同じエントリの fills に対応 entry が要る**
+  (★乙の代表取締役★ を書いたら fills に \`{slot:"乙の代表取締役", value:...}\` を必ず入れる)
+- \`afterSlot\` はテンプレに既存の slot 名 (新規挿入する行の slot 名ではない)
+- 固定文 (注釈・定型句) を足したいだけならテンプレ側に書くべき。rowInsertions は使わない
+
+**ラベル変換のパターン (例: 主たる事務所 → 本店)**:
+
+\`\`\`json
+"slotDecisions": [
+  { "slot": "乙の主たる事務所", "action": "delete-row", "reason": "法人なので 本店 ラベルに変更" },
+  { "slot": "乙の名称",         "action": "delete-row", "reason": "法人なので 商号 ラベルに変更" }
+],
+"rowInsertions": [
+  {
+    "afterSlot": "(削除した 主たる事務所行 の直前の slot)",
+    "template": "本店　★乙の本店所在地★",
+    "fills": [ { "slot": "乙の本店所在地", "value": "東京都...", "source": "基本情報" } ],
+    "reason": "法人引受人のため 本店 行に変換"
+  },
+  { "afterSlot": "乙の本店所在地", "template": "商号　★乙の商号★",
+    "fills": [ { "slot": "乙の商号", "value": "株式会社...", "source": "基本情報" } ],
+    "reason": "..." }
+]
+\`\`\`
+
+---
+
+## 4. textReplaces (テキスト一括置換)
+
+\`blockDeletes\` で議案を消したときの **議案番号繰り上げ** 等、本文中の文字列を全置換する。
+
+\`\`\`json
+{ "anchor": "議案３", "replacement": "議案２", "reason": "議案2 削除に伴う繰り上げ" }
+\`\`\`
+
+**ルール**: blockDeletes で議案N を消したら、それより後ろの議案N+1, N+2... を必ず繰り上げる
+textReplaces を出す。Phase 3 はルールベース適用のみで気付かない。
 
 ## outputLabel: 同じテンプレから複数出力する場合 (重要)
 
@@ -342,12 +443,34 @@ produce は value を slot 位置に **そのまま挿入** するので:
           // 構造化 JSON を抜き出して保存
           const decisions = extractDecisionsJson(assistantText);
           if (decisions) {
+            // === rowInsertions の整合性検証 ===
+            // template に書かれた ★label★ が fills に対応 entry を持つか確認。
+            // ない場合は warn ログ。Phase 3 はそのままだと ★ がマーカー残骸として書類に出るので、
+            // unconfirmed エントリを auto-add しておく (ユーザーが clarify-procedural で気付ける)。
+            for (const doc of decisions.documents) {
+              if (!doc.rowInsertions) continue;
+              for (const ins of doc.rowInsertions) {
+                const labelsInTemplate = [...(ins.template || "").matchAll(/★([^★]+)★/g)].map((m) => m[1]);
+                const filledSlots = new Set((ins.fills || []).map((f) => f.slot));
+                for (const lbl of labelsInTemplate) {
+                  if (!filledSlots.has(lbl)) {
+                    console.warn(`[analyze] rowInsertion missing fill for "★${lbl}★" in template "${ins.template}"`);
+                    // fills に空 entry を追加して produce-v2 で必ず ★が消えるようにする
+                    ins.fills = ins.fills || [];
+                    ins.fills.push({ slot: lbl, value: "", source: "(自動補完: AI が fill を出し忘れた)" });
+                  }
+                }
+              }
+            }
+
             await savePhase2Decisions(company.id, threadId, decisions);
             const summary = decisions.documents.map((d: Phase2DocumentDecision) => {
               const fills = d.slotDecisions.filter((s) => s.action === "fill").length;
               const dels = d.slotDecisions.filter((s) => s.action === "delete-row").length;
               const uncs = d.slotDecisions.filter((s) => s.action === "unconfirmed").length;
-              return `${d.templateFile}: fill ${fills} / delete-row ${dels} / unconfirmed ${uncs} / blockDeletes ${d.blockDeletes.length}`;
+              const ins = d.rowInsertions?.length ?? 0;
+              const repl = d.textReplaces?.length ?? 0;
+              return `${d.templateFile}: fill ${fills} / delete-row ${dels} / unconfirmed ${uncs} / blockDeletes ${d.blockDeletes.length} / rowInsertions ${ins} / textReplaces ${repl}`;
             }).join("; ");
             console.log(`[analyze] decisions saved: ${summary}`);
             send(controller, { type: "decisions", decisions });
