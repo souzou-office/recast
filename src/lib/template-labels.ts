@@ -28,7 +28,7 @@ export interface TemplateSlotLabel {
 //   v5: ラベル生成モデルを Haiku 4.5 → Sonnet 4.6 に変更（精度向上）。
 //       旧 Haiku 生成のラベルは「99,500 が並んでる slot に『資金調達総額』」のような
 //       誤判定があり、verify の false alarm を引き起こしていた。
-const PARSER_VERSION = 5;
+const PARSER_VERSION = 6;
 
 export interface TemplateLabels {
   templateHash: string;
@@ -99,7 +99,6 @@ ${valueList}
 - **全てのスロットに対して出力する**（省略不可）
 - 周辺の文脈（「募集株式の数 ○○○株」「代表取締役　○○●●」等）を手がかりに意味を特定
 - 同じ型の値が複数あっても、文脈から区別する（例: 払込期日 vs 決議日 vs 作成日）
-- 推測が難しいときは label を "不明" にしてよい（format/sourceHint は空でも可）
 - JSON のみ返す（説明文不要）`;
 
   // テンプレラベル付けは「1テンプレ1回キャッシュ」されるので、コストは無視できる範囲。
