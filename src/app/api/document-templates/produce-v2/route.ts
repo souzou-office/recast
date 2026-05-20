@@ -306,16 +306,56 @@ export async function POST(request: NextRequest) {
         }
 
         // 4. rowInsertions → inserts + fills
-        for (const ri of decisionDoc.rowInsertions || []) {
-          const afterIdx = findParagraphIndex(numberedLines, ri.afterSlot);
+        //
+        // 連鎖挿入対応 (重要):
+        //   AI は「★前の挿入で作った新ラベル★ の直後にさらに新しい行を挿入」というパターンを
+        //   出力する (例: 本店行 → afterSlot=本店 で 商号行 → afterSlot=商号 で 代表取締役行)。
+        //   afterSlot が markedText の既存 slot に無くても、前段の rowInsertion の template に
+        //   含まれていれば「同じ afterParagraphIndex の挿入グループの末尾」に追加扱いする。
+        //
+        // 実装:
+        //   - rowInsertions を順に走査し、各 ri の解決済み afterParagraphIndex を riToIdx に記録
+        //   - afterSlot が既存 slot で見つからなければ、過去 ri の template に含まれる ★label★
+        //     をスキャンして「親 ri」を見つけ、その afterParagraphIndex を継承
+        //   - 最終的に afterParagraphIndex 単位で contents をまとめて 1 InsertOp にする
+        //     (engine の制約: 同位置への複数 inserts はマージ順が逆転するため)
+        const riList = decisionDoc.rowInsertions || [];
+        const riToIdx = new Map<number, number>(); // ri 配列の index → afterParagraphIndex
+        const insertsByPos = new Map<number, string[]>(); // afterParagraphIndex → contents (順序保持)
+        for (let i = 0; i < riList.length; i++) {
+          const ri = riList[i];
+          let afterIdx = findParagraphIndex(numberedLines, ri.afterSlot);
+          // 既存 slot で見つからない → 過去 ri の template に含まれるラベルかチェック (連鎖挿入)
+          if (afterIdx === null) {
+            for (let j = 0; j < i; j++) {
+              const prevRi = riList[j];
+              const labelsInPrev = [...(prevRi.template || "").matchAll(/★([^★]+)★/g)].map((m) => m[1]);
+              const norm = (s: string) => s.replace(/\s/g, "");
+              const targetNorm = norm(ri.afterSlot);
+              const hit = labelsInPrev.some((lbl) => {
+                const lN = norm(lbl);
+                return targetNorm.includes(lN) || lN.includes(targetNorm);
+              });
+              if (hit) {
+                afterIdx = riToIdx.get(j) ?? null;
+                if (afterIdx !== null) break;
+              }
+            }
+          }
           if (afterIdx === null) {
             console.warn(`[produce-v2] ${f.name} rowInsertion afterSlot not found: ${ri.afterSlot}`);
             continue;
           }
-          inserts.push({ afterParagraphIndex: afterIdx, contents: [ri.template] });
+          riToIdx.set(i, afterIdx);
+          const arr = insertsByPos.get(afterIdx) || [];
+          arr.push(ri.template);
+          insertsByPos.set(afterIdx, arr);
           for (const f0 of ri.fills || []) {
             fills[`★${f0.slot}★`] = f0.value ?? "";
           }
+        }
+        for (const [afterIdx, contents] of insertsByPos) {
+          inserts.push({ afterParagraphIndex: afterIdx, contents });
         }
 
         // 5. slotDecisions[fill] → fills
