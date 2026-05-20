@@ -159,6 +159,50 @@ export async function POST(request: NextRequest) {
           ? `\`\`\`json\n${JSON.stringify(myDecision, null, 2)}\n\`\`\``
           : "(この書類向けの Phase 2 決定なし)";
 
+        // === Phase 2 delete から段落番号を機械的にマッピング (AI に列挙させない) ===
+        // 「Phase 2 anchor → ★label★ を含む段落」が一致するスロットレベル削除はサーバが自動処理。
+        // AI に段落番号を列挙させるとカウントミスで段落抜けが起きるため。
+        const numberedLines: { idx: number; text: string }[] = [];
+        for (const line of markedText.split("\n")) {
+          const m = line.match(/^段落(\d+):\s(.*)$/);
+          if (m) numberedLines.push({ idx: Number(m[1]), text: m[2] });
+        }
+        const serverAutoDeleteIndices = new Set<number>();
+        const serverAutoHandledAnchors: { anchor: string; paragraphIndex: number }[] = [];
+        const aiHandledAnchors: string[] = [];
+        if (myDecision) {
+          for (const phaseDelete of myDecision.deletes) {
+            const anchor = phaseDelete.block;
+            const anchorNorm = anchor.replace(/\s/g, "");
+            let matchedIdx: number | null = null;
+            for (const nl of numberedLines) {
+              const markers = [...nl.text.matchAll(/★([^★]+)★/g)];
+              for (const [, label] of markers) {
+                const labelNorm = label.replace(/\s/g, "");
+                // 双方向 substring (Phase 2 anchor とラベルが表記揺れしても拾えるように)
+                if (anchorNorm.includes(labelNorm) || labelNorm.includes(anchorNorm)) {
+                  matchedIdx = nl.idx;
+                  break;
+                }
+              }
+              if (matchedIdx !== null) break;
+            }
+            if (matchedIdx !== null) {
+              serverAutoDeleteIndices.add(matchedIdx);
+              serverAutoHandledAnchors.push({ anchor, paragraphIndex: matchedIdx });
+            } else {
+              // ★label★ で対応する slot が無い (= ブロック削除や section header 系) → AI が判断
+              aiHandledAnchors.push(anchor);
+            }
+          }
+        }
+        const serverDeleteBlock = serverAutoHandledAnchors.length > 0
+          ? `\n## サーバが自動処理する削除 (paragraphActions に含めなくて良い)\n${serverAutoHandledAnchors.map((a) => `- 「${a.anchor}」→ 段落 ${a.paragraphIndex}`).join("\n")}\n`
+          : "";
+        const aiDeleteBlock = aiHandledAnchors.length > 0
+          ? `\n## AI が判断して paragraphActions に追加する削除 (ブロック / 範囲削除)\n${aiHandledAnchors.map((a) => `- 「${a}」(ブロック全体の段落番号を全部 paragraphActions に列挙)`).join("\n")}\n`
+          : "";
+
         const qaBlock =
           previousQA.length > 0
             ? `\n## Phase 1 確認質問と回答\n${previousQA.map((qa, i) => `${i + 1}. Q: ${qa.question}\n   A: ${qa.answer}`).join("\n")}\n`
@@ -176,6 +220,7 @@ ${markedText}
 
 ## この書類向けの Phase 2 決定
 ${myDecisionBlock}
+${serverDeleteBlock}${aiDeleteBlock}
 
 ## 全書類の Phase 2 決定 (整合性確認用、参考)
 ${allDecisionsBlock}
@@ -223,6 +268,10 @@ ${qaBlock}
 - 段落番号 (paragraphIndex / afterParagraphIndex) は **テンプレ本文の \`段落N:\` の数字**。1-indexed
 - 不要な操作は省略可 (paragraphActions: [], inserts: [] 等空配列で OK)
 - JSON のみ返す (説明文不要)
+- **「サーバが自動処理する削除」リストにある項目はあなたが paragraphActions に含めなくて良い**
+  (slot レベルの単純削除はサーバが機械的に処理する)
+- **「AI が判断して paragraphActions に追加する削除」リストは、あなたがブロック範囲を特定して
+  全段落番号を paragraphActions に列挙する** (議案1ブロック全体の各段落など)
 
 ## 「議案2 を削除して 議案3 を 議案2 に繰り上げる」場合の例
 
@@ -310,30 +359,37 @@ deletes / inserts を決めた後、**テンプレ本文を頭から最後まで
         } catch (e) {
           console.warn("[produce-v2] debug write failed:", e instanceof Error ? e.message : e);
         }
-        const deletes = (edits.paragraphActions || []).filter((a) => a.action === "delete");
-        if (deletes.length > 0) {
-          console.log(`[produce-v2] ${f.name} delete indices:`, deletes.map((d) => d.paragraphIndex));
-        }
-        // Phase 2 の deletes 件数とマッチするかチェック
-        const myDecisionForCheck = phase2Decisions.documents.find(
-          (d) => d.templateFile === f.name || d.templateFile === f.name.replace(/\.[^.]+$/, "")
-        );
-        if (myDecisionForCheck && deletes.length < myDecisionForCheck.deletes.length) {
-          console.warn(
-            `[produce-v2] ${f.name} delete count mismatch: Phase 2 says ${myDecisionForCheck.deletes.length}, AI returned ${deletes.length}`,
-            "Phase 2 deletes:",
-            myDecisionForCheck.deletes.map((d) => d.block)
+        // サーバ pre-compute した auto-delete を AI の paragraphActions にマージ
+        // (AI のカウントミスで slot 削除が抜けても、ここで補完される)
+        if (serverAutoDeleteIndices.size > 0) {
+          edits.paragraphActions = edits.paragraphActions || [];
+          const existing = new Set(edits.paragraphActions.map((a) => a.paragraphIndex));
+          for (const idx of serverAutoDeleteIndices) {
+            if (!existing.has(idx)) {
+              edits.paragraphActions.push({ paragraphIndex: idx, action: "delete" });
+            }
+          }
+          console.log(
+            `[produce-v2] ${f.name} server auto-deletes merged:`,
+            [...serverAutoDeleteIndices]
           );
         }
 
+        const deletes = (edits.paragraphActions || []).filter((a) => a.action === "delete");
+        if (deletes.length > 0) {
+          console.log(`[produce-v2] ${f.name} delete indices (after merge):`, deletes.map((d) => d.paragraphIndex));
+        }
+
         // edit engine で適用 (xlsx / docx の振り分け)
-        const result = isXlsx
+        let result = isXlsx
           ? await applyProduceEditsXlsx(buf, edits, labels)
           : await applyProduceEditsDocx(buf, edits, labels);
         if (result.skipped.length > 0) {
           console.warn(`[produce-v2] ${f.name} skipped:`, result.skipped);
         }
         console.log(`[produce-v2] ${f.name} applied: ${result.applied.length}, skipped: ${result.skipped.length}`);
+
+        // (safety net は pre-compute によって不要になったため削除)
 
         // previewHtml: docx は mammoth で、xlsx は簡易な空表示 (フロントの FilePreview が xlsx も扱える前提)
         let previewHtml = "";

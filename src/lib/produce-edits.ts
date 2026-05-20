@@ -299,10 +299,12 @@ function rewriteParagraphXml(paraXml: string, newText: string): string {
 // 全 op を ORIGINAL の段落番号で受け取り、絶対位置に解決してから後ろから順に適用する。
 // 適用順は「位置の後ろ → 前」なので互いに影響しない。
 // paragraphActions は段落単位で 1 op 限定 (重複してたら最初の 1 件のみ採用)。
+// 同段落の delete と fill (★label★) の競合は fill 優先で delete を skip する (AI ミス対策)。
 function applyIndexedOps(
   docXml: string,
   paragraphActions: ParagraphActionOp[],
   inserts: InsertOp[],
+  fillMarkers: Set<string>, // fills で埋める ★label★ のラベル名集合 (delete 競合チェック用)
   log: { applied: { kind: string; detail: string }[]; skipped: { kind: string; detail: string; reason: string }[] }
 ): string {
   const paragraphs = getContentParagraphs(docXml);
@@ -338,6 +340,21 @@ function applyIndexedOps(
     seenIndices.add(pa.paragraphIndex);
     const p = paragraphs[pa.paragraphIndex - 1];
     if (pa.action === "delete") {
+      // delete 対象の段落に fill 対象の ★label★ が含まれていたら、fill を優先して delete を skip。
+      // (AI が同じ段落を delete と fill 両方に入れた事故対策。例: slot① を埋めるべきなのに
+      //  間違って delete にも入れて、段落が消えて fill が無効化される現象を防ぐ)
+      if (fillMarkers.size > 0) {
+        const paraText = getParagraphText(docXml.slice(p.openEnd, p.end - "</w:p>".length));
+        const conflictingMarker = [...fillMarkers].find((label) => paraText.includes(`★${label}★`));
+        if (conflictingMarker) {
+          log.skipped.push({
+            kind: "delete",
+            detail: `段落 ${pa.paragraphIndex}`,
+            reason: `この段落に fill 対象の ★${conflictingMarker}★ があるため、fill 優先で delete を skip`,
+          });
+          continue;
+        }
+      }
       ops.push({ kind: "delete", pos: pa.paragraphIndex, start: p.start, end: p.end, sortKey: p.start });
     } else if (pa.action === "rewrite") {
       if (typeof pa.newText !== "string") {
@@ -482,6 +499,12 @@ export async function applyProduceEditsDocx(
   docXml = flattenHighlights(docXml, labels);
 
   // 2. paragraphActions (delete/rewrite) + inserts を段落番号で一括処理
+  // fillMarkers は fill 対象の ★label★ のラベル名集合。delete との競合検出に使う。
+  const fillMarkers = new Set<string>();
+  for (const k of Object.keys(edits.fills || {})) {
+    const m = k.match(/^★(.+)★$/);
+    if (m) fillMarkers.add(m[1]);
+  }
   if (
     (edits.paragraphActions && edits.paragraphActions.length > 0) ||
     (edits.inserts && edits.inserts.length > 0)
@@ -490,6 +513,7 @@ export async function applyProduceEditsDocx(
       docXml,
       edits.paragraphActions || [],
       edits.inserts || [],
+      fillMarkers,
       log
     );
   }
