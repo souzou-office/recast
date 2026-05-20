@@ -315,9 +315,24 @@ function applyIndexedOps(
 
   const ops: Op[] = [];
 
+  // 同じ paragraphIndex に rewrite がある場合は delete を skip する (rewrite 優先)。
+  // AI が delete と rewrite を同じ段落に重複して指定した場合の混乱対策 (古いコードは
+  // 位置 cache がズレて XML を破壊していた)。
+  const rewrittenIndices = new Set<number>(
+    rewrites.filter((r) => validIdx(r.paragraphIndex)).map((r) => r.paragraphIndex)
+  );
+
   for (const d of deletes) {
     if (!validIdx(d.paragraphIndex)) {
       log.skipped.push({ kind: "delete", detail: `index ${d.paragraphIndex}`, reason: `範囲外 (1〜${total})` });
+      continue;
+    }
+    if (rewrittenIndices.has(d.paragraphIndex)) {
+      log.skipped.push({
+        kind: "delete",
+        detail: `段落 ${d.paragraphIndex}`,
+        reason: "同段落に rewrite が指定されているため rewrite 優先で skip",
+      });
       continue;
     }
     const p = paragraphs[d.paragraphIndex - 1];
@@ -341,6 +356,9 @@ function applyIndexedOps(
     });
   }
 
+  // 同じ位置の delete と insert の干渉:
+  // delete の対象段落に insert.afterParagraphIndex が一致した場合、その位置は消えるので
+  // 「直前の段落の末尾」に挿入位置を変更 (= 段落 N-1 の末尾)。N=1 の場合は skip。
   for (const ins of inserts) {
     if (!validIdx(ins.afterParagraphIndex)) {
       log.skipped.push({ kind: "insert", detail: `afterIndex ${ins.afterParagraphIndex}`, reason: `範囲外 (1〜${total})` });
