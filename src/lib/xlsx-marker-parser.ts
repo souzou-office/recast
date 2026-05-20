@@ -276,10 +276,15 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
       }
     }
 
+    // マージセルの「top-left 以外」を集める。マージ内の装飾セル (例: A4:F8 で B4-F8) は
+    // 塗りつぶし継承で「空の黄色セル」になりがちで、誤検出すると大量の不要 slot が出る。
+    // top-left は通常通り扱い、それ以外は skip する。
+    const mergeSuppressed = findMergeSuppressedRefs(sheetXml);
+
     // セルを「行順 × 列順」で1パス走査。
     // 各セルで以下を順に処理（getXlsxMarkedTextWithSlots と同じ順序）:
-    //   ① 黄色塗り or 赤フォント → セル全体を slot として cells に追加
-    //   ② 赤い rich text run を含むセル → 各赤 run を順に cells に追加
+    //   ① 黄色塗り or 赤フォント → セル全体を slot として cells に追加 (値が空でも OK)
+    //   ② 赤い rich text run を含むセル → 各赤 run を順に cells に追加 (値必須)
     // この順序を 2 関数で揃えないと slot id がズレる。
     const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
     let rm;
@@ -294,37 +299,41 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
         if (!rMatch) continue;
         const ref = rMatch[1];
 
+        // 数式セルはスキップ (元々の挙動)
+        if (/<f\b/.test(inner)) continue;
+
         const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
         const tMatch = attrs.match(/\bt="([^"]*)"/);
         const vMatch = inner.match(/<v>([^<]*)<\/v>/);
-        if (!vMatch) continue;
-
-        // 値抽出（共有文字列 or 数値、日付シリアルは ISO 日付に変換）
-        let value = "";
-        let siIndex = -1;
-        if (tMatch?.[1] === "s") {
-          siIndex = parseInt(vMatch[1]);
-          value = sharedStrings[siIndex] || "";
-        } else {
-          const raw = vMatch[1];
-          if (styleIdx >= 0 && dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
-            const serial = parseFloat(raw);
-            value = (serial > 0 && serial < 2958466) ? excelSerialToDateString(serial) : raw;
-          } else {
-            value = raw;
-          }
-        }
-        if (!value.trim()) continue;
-        if (/<f\b/.test(inner)) continue; // 数式セルはスキップ
 
         const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
         const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
 
+        // 値抽出 (vMatch が無ければ空文字)
+        let value = "";
+        let siIndex = -1;
+        if (vMatch) {
+          if (tMatch?.[1] === "s") {
+            siIndex = parseInt(vMatch[1]);
+            value = sharedStrings[siIndex] || "";
+          } else {
+            const raw = vMatch[1];
+            if (styleIdx >= 0 && dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
+              const serial = parseFloat(raw);
+              value = (serial > 0 && serial < 2958466) ? excelSerialToDateString(serial) : raw;
+            } else {
+              value = raw;
+            }
+          }
+        }
+
         if (isYellow || isRedFont) {
-          // ① セル全体マーカー
+          // マージ内の非 top-left セルは装飾扱いで skip
+          if (mergeSuppressed.has(ref)) continue;
+          // ① セル全体マーカー (空でも slot として登録 → 株主リスト 2-10 位等の空欄行が拾える)
           cells.push({ ref, value, sheetName });
-        } else if (siIndex >= 0 && redSiMap.has(siIndex)) {
-          // ② 赤 run マーカー（赤い部分だけを順に push）
+        } else if (value.trim() && siIndex >= 0 && redSiMap.has(siIndex)) {
+          // ② 赤 run マーカー (値必須、赤い部分だけを順に push)
           const runs = redSiMap.get(siIndex)!;
           for (const run of runs) {
             if (run.isRed && run.text.trim()) {
@@ -337,6 +346,42 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
   }
 
   return cells;
+}
+
+// シートの mergeCells から「top-left 以外」のセル参照を全部集める。
+// 例: mergeCell ref="A4:F8" → B4-F8 の 29 セルが「装飾扱いで slot 化しない」対象
+function findMergeSuppressedRefs(sheetXml: string): Set<string> {
+  const suppressed = new Set<string>();
+  const mergeRe = /<mergeCell\s+ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"/g;
+  let m;
+  while ((m = mergeRe.exec(sheetXml)) !== null) {
+    const [, c1, r1Str, c2, r2Str] = m;
+    const r1 = parseInt(r1Str), r2 = parseInt(r2Str);
+    const col1 = colLetterToIndex(c1), col2 = colLetterToIndex(c2);
+    for (let r = r1; r <= r2; r++) {
+      for (let c = col1; c <= col2; c++) {
+        if (r === r1 && c === col1) continue; // top-left は除外せず slot に出す
+        suppressed.add(`${indexToColLetter(c)}${r}`);
+      }
+    }
+  }
+  return suppressed;
+}
+
+function colLetterToIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n;
+}
+
+function indexToColLetter(idx: number): string {
+  let s = "";
+  while (idx > 0) {
+    const r = (idx - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    idx = Math.floor((idx - 1) / 26);
+  }
+  return s;
 }
 
 /**
@@ -397,6 +442,9 @@ export function replaceXlsxMarkedCellsBySlot(
     if (!sheetXml) continue;
     let sheetChanged = false;
 
+    // マージ内の非 top-left は装飾扱いで skip (extract と同じ)
+    const mergeSuppressed = findMergeSuppressedRefs(sheetXml);
+
     // 行ごとに、その中のセルを順に処理
     sheetXml = sheetXml.replace(/<row\b[^>]*>([\s\S]*?)<\/row>/g, (rowWhole: string, rowInner: string) => {
       const newRowInner = rowInner.replace(
@@ -404,39 +452,28 @@ export function replaceXlsxMarkedCellsBySlot(
         (cellWhole: string, attrs: string, inner: string | undefined) => {
           const sMatch = attrs.match(/\bs="(\d+)"/);
           const tMatch = attrs.match(/\bt="([^"]*)"/);
+          const rMatch = attrs.match(/\br="([A-Z]+\d+)"/);
+          const ref = rMatch?.[1] || "";
           const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
           const vMatch = inner ? inner.match(/<v>([^<]*)<\/v>/) : null;
 
-          if (!vMatch) return cellWhole;
           if (inner && /<f\b/.test(inner)) return cellWhole; // 数式セルは extract と同じくスキップ
 
           const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
           const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
-          const siIndex = tMatch?.[1] === "s" ? parseInt(vMatch[1]) : -1;
+          const siIndex = (vMatch && tMatch?.[1] === "s") ? parseInt(vMatch[1]) : -1;
           const isRedSi = siIndex >= 0 && redSiMap.has(siIndex);
 
           if (!isYellow && !isRedFont && !isRedSi) return cellWhole;
 
-          // extract と同じく空セルは飛ばす
-          let cellValue = "";
-          if (tMatch?.[1] === "s") {
-            cellValue = sharedStrings[siIndex] || "";
-          } else {
-            const raw = vMatch[1];
-            if (styleIdx >= 0 && dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
-              const serial = parseFloat(raw);
-              cellValue = (serial > 0 && serial < 2958466) ? excelSerialToDateString(serial) : raw;
-            } else {
-              cellValue = raw;
-            }
-          }
-          if (!cellValue.trim()) return cellWhole;
+          // マージ内の非 top-left は装飾扱いで slot に出さない
+          if ((isYellow || isRedFont) && mergeSuppressed.has(ref)) return cellWhole;
 
           if (isYellow || isRedFont) {
-            // セル全体マーカー = 1 slot
+            // セル全体マーカー = 1 slot (空セルでも OK = 株主リストの 2-10 位 空欄)
             const currentSlot = slotCounter++;
             const newValue = slotReplacements.get(currentSlot);
-            if (newValue === undefined) return cellWhole;
+            if (newValue === undefined || newValue === "") return cellWhole;
             sheetChanged = true;
             const numeric = isNumericValue(newValue);
             const cleanedAttrs = attrs.replace(/\s*\bt="[^"]*"/, "");
@@ -1007,6 +1044,9 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
     const sheetXml = zip.file(fileName)?.asText();
     if (!sheetXml) continue;
 
+    // マージ内の非 top-left は装飾扱いで skip (extractXlsxMarkedCells と同じ)
+    const mergeSuppressed = findMergeSuppressedRefs(sheetXml);
+
     const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
     let rm;
     while ((rm = rowRe.exec(sheetXml)) !== null) {
@@ -1016,36 +1056,53 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
       while ((cm = cellRe.exec(rm[1])) !== null) {
         const attrs = cm[1];
         const inner = cm[2] || "";
-        const vMatch = inner.match(/<v>([^<]*)<\/v>/);
-        if (!vMatch) continue;
+        const rMatch = attrs.match(/\br="([A-Z]+\d+)"/);
+        const ref = rMatch?.[1] || "";
+
+        // 数式セルは値だけ出して slot 化しない
+        if (/<f\b/.test(inner)) {
+          const vM = inner.match(/<v>([^<]*)<\/v>/);
+          if (vM) rowTexts.push(vM[1]);
+          continue;
+        }
+
         const tMatch = attrs.match(/\bt="([^"]*)"/);
         const sMatch = attrs.match(/\bs="(\d+)"/);
+        const vMatch = inner.match(/<v>([^<]*)<\/v>/);
         const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
+
+        // 値を抽出 (なければ空)
         let val = "";
         let siIndex = -1;
-        if (tMatch?.[1] === "s") {
-          siIndex = parseInt(vMatch[1]);
-          val = sharedStrings[siIndex] || "";
-        } else {
-          const raw = vMatch[1];
-          // 日付セルの数値は ISO 日付に変換
-          if (dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
-            const serial = parseFloat(raw);
-            val = serial > 0 && serial < 2958466 ? excelSerialToDateString(serial) : raw;
+        if (vMatch) {
+          if (tMatch?.[1] === "s") {
+            siIndex = parseInt(vMatch[1]);
+            val = sharedStrings[siIndex] || "";
           } else {
-            val = raw;
+            const raw = vMatch[1];
+            if (dateStyles.has(styleIdx) && /^-?\d+(\.\d+)?$/.test(raw)) {
+              const serial = parseFloat(raw);
+              val = serial > 0 && serial < 2958466 ? excelSerialToDateString(serial) : raw;
+            } else {
+              val = raw;
+            }
           }
         }
+
         const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
         const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
-        if (!val.trim()) continue;
-        if (/<f\b/.test(inner)) { rowTexts.push(val); continue; } // 数式セルは素通し
+
         if (isYellow || isRedFont) {
-          // セル全体が可変（黄色塗り or セル全体赤フォント）
+          // マージ内の非 top-left は装飾セル扱いで skip
+          if (mergeSuppressed.has(ref)) {
+            if (val.trim()) rowTexts.push(val);
+            continue;
+          }
+          // セル全体が可変 (空でも slot として登録 → 株主リスト等の空欄行で重要)
           slots.set(slotId, val);
           rowTexts.push(`［要入力_${slotId}］`);
           slotId++;
-        } else if (siIndex >= 0 && redSiMap.has(siIndex)) {
+        } else if (val.trim() && siIndex >= 0 && redSiMap.has(siIndex)) {
           // 赤 run 含むセル: 赤部分だけ slot 化、他は固定文字として残す
           const runs = redSiMap.get(siIndex)!;
           let cellText = "";
@@ -1059,7 +1116,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
             }
           }
           rowTexts.push(cellText);
-        } else {
+        } else if (val.trim()) {
           rowTexts.push(val);
         }
       }
