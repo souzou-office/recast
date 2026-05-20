@@ -129,6 +129,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "対象テンプレートが見つかりません" }, { status: 400 });
   }
 
+  // 物理ファイル名 → ファイル情報の lookup を作る
+  const physicalByName = new Map<string, (typeof targetFiles)[number]>();
+  for (const f of targetFiles) physicalByName.set(f.name, f);
+  const physicalByBase = new Map<string, (typeof targetFiles)[number]>();
+  for (const f of targetFiles) physicalByBase.set(f.name.replace(/\.[^.]+$/, ""), f);
+
   // テンプレ別に marked text を作る (★label★ 入り)
   const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
   const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
@@ -136,10 +142,30 @@ export async function POST(request: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mammoth = require("mammoth");
 
-  // 書類別に並列で AI 呼び出し → edit 適用
+  // 出力ファイル名のサニタイズ (Windows 等で使えない文字を _ に)
+  const sanitizeFsName = (s: string): string => s.replace(/[\\/:*?"<>|]/g, "_");
+
+  // 書類別に並列で AI 呼び出し → edit 適用 (Phase 2 documents 単位でループ)
   const docOuts = await Promise.all(
-    targetFiles.map(async (f): Promise<DocOut | null> => {
+    phase2Decisions.documents.map(async (decisionDoc): Promise<DocOut | null> => {
       try {
+        // Phase 2 の templateFile から物理ファイルを引く
+        // - 完全一致 → そのファイル
+        // - 拡張子無し base 名で一致 → そのファイル
+        // - 後方互換: templateFile に「（X用）」サフィックスが付いてた場合は剥がしてマッチ
+        let f = physicalByName.get(decisionDoc.templateFile)
+          || physicalByBase.get(decisionDoc.templateFile.replace(/\.[^.]+$/, ""))
+          || null;
+        if (!f) {
+          // legacy suffix 形式 (templateFile が "X.docx（藤崎用）") を救出
+          const cleaned = decisionDoc.templateFile.replace(/[（(].*?[）)]\.?[^.]*$/, "")
+            .replace(/[（(].*$/, "");
+          f = physicalByName.get(cleaned) || physicalByBase.get(cleaned.replace(/\.[^.]+$/, "")) || null;
+        }
+        if (!f) {
+          console.warn(`[produce-v2] 物理テンプレが見つからない: ${decisionDoc.templateFile}`);
+          return null;
+        }
         const buf = await fs.readFile(f.path);
         const ext = f.name.toLowerCase().split(".").pop() || "";
         const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";
@@ -224,17 +250,13 @@ export async function POST(request: NextRequest) {
             .join("\n");
         }
 
-        // 該当書類の Phase 2 決定 (slots / deletes / unconfirmed) を集める
-        const myDecision = phase2Decisions.documents.find(
-          (d) => d.templateFile === f.name || d.templateFile === f.name.replace(/\.[^.]+$/, "")
-        );
+        // 該当 Phase 2 ドキュメント = decisionDoc (ループ変数で渡されている)
+        const myDecision = decisionDoc;
 
         // Phase 2 全決定を AI に渡す (穴埋めデータ全件投げる = 全体齟齬防止)
         const allDecisionsBlock = `\`\`\`json\n${JSON.stringify(phase2Decisions, null, 2)}\n\`\`\``;
 
-        const myDecisionBlock = myDecision
-          ? `\`\`\`json\n${JSON.stringify(myDecision, null, 2)}\n\`\`\``
-          : "(この書類向けの Phase 2 決定なし)";
+        const myDecisionBlock = `\`\`\`json\n${JSON.stringify(myDecision, null, 2)}\n\`\`\``;
 
         // === Phase 2 delete から段落番号を機械的にマッピング (AI に列挙させない) ===
         // 「Phase 2 anchor → ★label★ を含む段落」が一致するスロットレベル削除はサーバが自動処理。
@@ -498,15 +520,22 @@ deletes / inserts を決めた後、**テンプレ本文を頭から最後まで
           }
         }
 
+        // outputLabel があれば出力ファイル名にサフィックスを付ける (例: "X_藤崎用.docx")
+        const baseName = f.name.replace(/\.[^.]+$/, "");
+        const extPart = f.name.slice(baseName.length);   // ".docx" 等 (.含む)
+        const labelSuffix = decisionDoc.outputLabel ? `_${sanitizeFsName(decisionDoc.outputLabel)}` : "";
+        const outName = `${baseName}${labelSuffix}${extPart}`;
+        const displayName = `${baseName}${labelSuffix}`;
+
         return {
-          name: f.name.replace(/\.[^.]+$/, ""),
-          fileName: f.name,
+          name: displayName,
+          fileName: outName,
           docxBase64: result.buf.toString("base64"),
           previewHtml,
           templatePath: f.path,
         };
       } catch (e) {
-        console.error(`[produce-v2] ${f.name} failed:`, e instanceof Error ? e.stack || e.message : e);
+        console.error(`[produce-v2] ${decisionDoc.templateFile} (${decisionDoc.outputLabel || ""}) failed:`, e instanceof Error ? e.stack || e.message : e);
         return null;
       }
     })

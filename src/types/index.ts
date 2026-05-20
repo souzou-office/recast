@@ -318,7 +318,9 @@ export interface SlotDecision {
 }
 
 export interface Phase2DocumentDecision {
-  templateFile: string;
+  templateFile: string;                                    // クリーンな物理テンプレファイル名 (例: "2-1.提案書兼同意書.docx")
+  outputLabel?: string;                                    // 同一テンプレから複数出力する場合の識別 (例: "藤崎用", "先端機構用")
+                                                            // 省略時は同一テンプレに 1 出力。出力ファイル名は {base}_{outputLabel}.{ext}
   slotDecisions: SlotDecision[];                           // 各 slot 1 entry のみ
   blockDeletes: { block: string; reason: string }[];       // 議案ブロック等の複数段落削除
 }

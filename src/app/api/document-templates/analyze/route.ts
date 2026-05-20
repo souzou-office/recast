@@ -220,6 +220,7 @@ ${templateBodyBlock}
   "documents": [
     {
       "templateFile": "議事録.docx",
+      "outputLabel": "藤崎用",
       "slotDecisions": [
         { "slot": "★ の中身そのまま", "action": "fill", "value": "値", "source": "出典" },
         { "slot": "乙の無限責任組合員の名称", "action": "delete-row", "reason": "引受人が法人なのでこの行は不要" },
@@ -278,6 +279,27 @@ produce は value を slot 位置に **そのまま挿入** するので:
 ものは \`blockDeletes\` に書く。
 - \`block\`: 削除対象ブロックのヘッダー文字列 (例: "議案２　取締役の報酬に関する件")
 - \`reason\`: 理由
+
+## outputLabel: 同じテンプレから複数出力する場合 (重要)
+
+「株主毎に 1 通ずつ」のような **同じテンプレから複数の出力ファイルを作る** ケースでは:
+
+- \`templateFile\` は **クリーンな物理ファイル名のまま** (例: "2-1.提案書兼同意書.docx")
+- \`outputLabel\` で **どの出力か** を識別する (例: "藤崎伊久哉用", "株式会社先端技術共創機構用")
+- documents 配列に **N 個のエントリ** を作る (それぞれ outputLabel と slotDecisions が異なる)
+
+例:
+\`\`\`json
+"documents": [
+  { "templateFile": "2-1.提案書兼同意書.docx", "outputLabel": "藤崎伊久哉用", "slotDecisions": [...] },
+  { "templateFile": "2-1.提案書兼同意書.docx", "outputLabel": "株式会社先端技術共創機構用", "slotDecisions": [...] }
+]
+\`\`\`
+
+出力ファイル名は \`{base}_{outputLabel}.{ext}\` (例: "2-1.提案書兼同意書_藤崎伊久哉用.docx") で
+サーバが自動生成する。
+
+複製不要 (1 テンプレ = 1 出力) の場合は outputLabel を省略する。
 
 ## json ブロックは末尾に 1 つだけ`;
 
