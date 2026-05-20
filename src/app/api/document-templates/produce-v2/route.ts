@@ -133,19 +133,64 @@ export async function POST(request: NextRequest) {
           const lbl = labelById.get(id) || `要入力_${id}`;
           return `★${lbl}★`;
         });
-        // 段落番号を 1-indexed で付与する。
-        // docx: 各行 (= getMarkedDocumentTextWithSlots は段落単位で改行している)
-        // xlsx: 各行 (= getXlsxMarkedTextWithSlots は行単位で改行)
-        // 空行 (内容なし) は番号を付けない (= 段落 index には数えない)
-        let lineCounter = 0;
-        const markedText = markedTextRaw
-          .split("\n")
-          .map((line) => {
-            if (line.trim().length === 0) return line; // empty lines kept as-is
-            lineCounter++;
-            return `段落${lineCounter}: ${line}`;
-          })
-          .join("\n");
+
+        // markedText を index 付きで組み立てる。docx は連番、xlsx は Excel 行番号 (r= 値)。
+        // xlsx で連番にしてしまうと「段落 9」が Excel 行 9 と一致しなくなり engine が誤動作する
+        // (実際にあったバグ: 多行セルがあると markedText の行数 ≠ Excel 行数)。
+        let markedText = "";
+        if (isXlsx) {
+          // xlsx: Excel 行番号で labelled する。getXlsxMarkedTextWithSlots は内容のある row 1 つに付き 1 line を出す。
+          // ただし多行セル (\r\n 含む) があると line 内に改行が混ざる。改行を ' / ' に置換して 1 row = 1 line に揃える。
+          const PizZip = (await import("pizzip")).default;
+          const zip = new PizZip(buf);
+          const sheetFiles = Object.keys(zip.files)
+            .filter((fn) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
+            .sort();
+          const xlsxRowNumbers: number[] = [];
+          for (const sf of sheetFiles) {
+            const sheetXml = zip.file(sf)?.asText() || "";
+            const rowRe = /<row\b[^>]*?r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+            let rm2;
+            while ((rm2 = rowRe.exec(sheetXml)) !== null) {
+              const inner = rm2[2];
+              // getXlsxMarkedTextWithSlots と同じ判定: 数式以外で値があるセルがあるか
+              const cellRe = /<c\b[^>]*?(?:\/>|>([\s\S]*?)<\/c>)/g;
+              let hasContent = false;
+              let cm2;
+              while ((cm2 = cellRe.exec(inner)) !== null) {
+                const cellInner = cm2[1] || "";
+                if (/<v>[^<]*<\/v>/.test(cellInner)) {
+                  hasContent = true;
+                  break;
+                }
+              }
+              if (hasContent) xlsxRowNumbers.push(parseInt(rm2[1], 10));
+            }
+          }
+          // 多行セル対策: \r\n を " / " に圧縮して 1 row = 1 line にする
+          const cleaned = markedTextRaw.replace(/\r\n/g, " / ").replace(/\r/g, " / ");
+          const lines = cleaned.split("\n");
+          // 内容ある line を Excel 行番号でラベル
+          let rowIdx = 0;
+          markedText = lines
+            .map((line) => {
+              if (line.trim().length === 0) return line;
+              const rowNum = xlsxRowNumbers[rowIdx++] ?? rowIdx;
+              return `行${rowNum}: ${line}`;
+            })
+            .join("\n");
+        } else {
+          // docx: 段落番号 (1-indexed の連番)
+          let lineCounter = 0;
+          markedText = markedTextRaw
+            .split("\n")
+            .map((line) => {
+              if (line.trim().length === 0) return line;
+              lineCounter++;
+              return `段落${lineCounter}: ${line}`;
+            })
+            .join("\n");
+        }
 
         // 該当書類の Phase 2 決定 (slots / deletes / unconfirmed) を集める
         const myDecision = phase2Decisions.documents.find(
@@ -164,7 +209,8 @@ export async function POST(request: NextRequest) {
         // AI に段落番号を列挙させるとカウントミスで段落抜けが起きるため。
         const numberedLines: { idx: number; text: string }[] = [];
         for (const line of markedText.split("\n")) {
-          const m = line.match(/^段落(\d+):\s(.*)$/);
+          // docx 用 "段落N:" / xlsx 用 "行N:" 両対応
+          const m = line.match(/^(?:段落|行)(\d+):\s(.*)$/);
           if (m) numberedLines.push({ idx: Number(m[1]), text: m[2] });
         }
         const serverAutoDeleteIndices = new Set<number>();
@@ -265,7 +311,9 @@ ${qaBlock}
 
 ## ルール (補助)
 
-- 段落番号 (paragraphIndex / afterParagraphIndex) は **テンプレ本文の \`段落N:\` の数字**。1-indexed
+- 段落番号 (paragraphIndex / afterParagraphIndex) は **テンプレ本文の番号**。
+  - docx: \`段落N:\` の数字 (1-indexed の連番)
+  - xlsx: \`行N:\` の数字 (Excel の行番号そのまま。間が飛ぶことあり 例: 行3, 行5)
 - 不要な操作は省略可 (paragraphActions: [], inserts: [] 等空配列で OK)
 - JSON のみ返す (説明文不要)
 - **「サーバが自動処理する削除」リストにある項目はあなたが paragraphActions に含めなくて良い**
