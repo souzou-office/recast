@@ -222,6 +222,9 @@ export interface ClarificationCard {
   type: "clarification";
   questions: ClarificationQuestion[];
   answered?: boolean;
+  // 実体確認 (Phase 1 clarify) か 書面ルール確認 (Phase 2 = analyze 後の clarify-procedural) か。
+  // 省略時は substantive 扱い（既存スレッドとの互換のため）。
+  kind?: "substantive" | "procedural";
 }
 
 export interface CheckIssue {
@@ -295,6 +298,33 @@ export interface ThreadMessage {
   timestamp: string;
 }
 
+// Phase 2 (analyze) が出力する「テンプレに何を入れるか」の決定。
+// analyze AI がテンプレ本文 + 案件ファイル + Phase 1 整理 + Phase 1 Q&A を読んで決める。
+// Phase 3 (produce) はこの決定をルールベースで適用するだけ。
+export interface Phase2Decisions {
+  documents: Phase2DocumentDecision[];
+}
+
+// 1 slot あたりの決定。各 slot は配列に 1 度だけ登場し、action は必ず 1 つ。
+// (旧設計では slots / deletes / unconfirmed が別配列で、AI が同じ slot に複数指示を
+//  書き込む事故 (value に指示文を埋め込む等) が発生していた → 構造的に防ぐ)
+export interface SlotDecision {
+  slot: string;          // labels.json のラベル名 (例: "乙の無限責任組合員の名称")
+  action: "fill" | "delete-row" | "unconfirmed";
+  value?: string;                                          // fill のとき
+  source?: string;                                         // fill のとき
+  reason?: string;                                         // delete-row / unconfirmed のとき
+  candidates?: { value: string; source: string }[];        // unconfirmed のとき
+}
+
+export interface Phase2DocumentDecision {
+  templateFile: string;                                    // クリーンな物理テンプレファイル名 (例: "2-1.提案書兼同意書.docx")
+  outputLabel?: string;                                    // 同一テンプレから複数出力する場合の識別 (例: "藤崎用", "先端機構用")
+                                                            // 省略時は同一テンプレに 1 出力。出力ファイル名は {base}_{outputLabel}.{ext}
+  slotDecisions: SlotDecision[];                           // 各 slot 1 entry のみ
+  blockDeletes: { block: string; reason: string }[];       // 議案ブロック等の複数段落削除
+}
+
 // チャットスレッド（CaseRoom + chat-history 統合）
 export interface ChatThread {
   id: string;
@@ -307,6 +337,9 @@ export interface ChatThread {
   masterSheet?: MasterSheet;
   generatedDocuments?: GeneratedDocument[];
   checkResult?: string;
+  // Phase 2 で確定した「テンプレに入れる値・削除する議案・残る要確認」。
+  // clarify-procedural と produce の両方が参照する。
+  phase2Decisions?: Phase2Decisions;
   // 1案件=1会話: 案件整理→質問→書類生成→検証 を Claude の同じ会話履歴で進める
   // （別人感をなくし、各ステップが前段の判断・迷いを継承するため）
   aiMessages?: CaseAiMessage[];
@@ -326,10 +359,7 @@ export interface CaseAiMessage {
   role: "user" | "assistant";
   content: string | CaseAiContentBlock[];
   // どのステップが書き込んだか
-  // 新パイプライン:
-  //   organize (案件整理) → clarify (要確認) → fill (入力: 旧 structure-decide+produce 統合) → check (旧 verify+proofread 統合)
-  // 旧 stage 名 (structure / produce / verify) も**互換のため受理する** (既存スレッドの読み込みのため)
-  stage?: "organize" | "clarify" | "fill" | "check" | "structure" | "produce" | "verify";
+  stage?: "organize" | "clarify" | "analyze" | "clarify-procedural" | "produce" | "verify";
 }
 
 // 右パネル

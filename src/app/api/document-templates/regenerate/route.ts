@@ -36,13 +36,17 @@ export async function POST(request: NextRequest) {
     const ext = path.extname(body.templatePath).toLowerCase();
 
     if (ext === ".docx" || ext === ".docm") {
-      // slotId → newValue で渡す (旧 Record<oldValue,newValue> は同値スロット衝突バグあり)
-      const { replaceMarkedFieldsBySlot } = await import("@/lib/docx-marker-parser");
-      const replacementsBySlot = new Map<number, string>();
+      // replaceMarkedFields は { 元の値 → 新しい値 } 形式を期待する。
+      // slotId → 元の値 をテンプレから引いて、ユーザーが編集した値で置換マップを作る。
+      const { replaceMarkedFields, getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
+      const { slots } = getMarkedDocumentTextWithSlots(buffer);
+      const replacements: Record<string, string> = {};
       for (const s of body.filledSlots) {
-        replacementsBySlot.set(s.slotId, s.value);
+        const origValue = slots.get(s.slotId);
+        if (!origValue) continue;
+        replacements[origValue] = s.value;
       }
-      const outBuffer = replaceMarkedFieldsBySlot(buffer, replacementsBySlot);
+      const outBuffer = replaceMarkedFields(buffer, replacements);
 
       // プレビュー用 HTML（best effort）
       let previewHtml = "";

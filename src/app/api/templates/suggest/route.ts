@@ -5,7 +5,6 @@ import path from "path";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { logTokenUsage } from "@/lib/token-logger";
 import type { CheckTemplate } from "@/types";
-import { textFromContent } from "@/lib/anthropic-response";
 
 const client = new Anthropic();
 const TEMPLATES_PATH = path.join(process.cwd(), "data", "templates.json");
@@ -58,7 +57,7 @@ ${templateList}
     });
     logTokenUsage("/api/templates/suggest", "claude-haiku-4-5-20251001", response.usage);
 
-    const text = textFromContent(response.content).trim();
+    const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
     const suggested = text !== "なし" ? templates.find(t => t.id === text) : null;
 
     return NextResponse.json({

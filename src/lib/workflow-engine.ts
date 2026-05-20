@@ -3,7 +3,6 @@ import type { ChatThread, ThreadMessage, ActionCard, FolderSelectCard, FileSelec
 import { listFiles } from "./files";
 import fs from "fs/promises";
 import path from "path";
-import { textFromContent } from "./anthropic-response";
 
 const client = new Anthropic();
 
@@ -148,7 +147,7 @@ export async function onFilesConfirmed(templateBasePath: string, folderName?: st
         max_tokens: 200,
         messages: [{ role: "user", content: `案件フォルダ名「${folderName}」に最適なテンプレートのパスを1つ選んでください。\n\nテンプレート一覧:\n${templateList}\n\nパスのみ返してください。` }],
       });
-      const text = textFromContent(res.content).trim();
+      const text = res.content[0].type === "text" ? res.content[0].text.trim() : "";
       const found = templates.find(t => text.includes(t.path) || text.includes(t.name));
       if (found) suggestedPath = found.path;
     } catch { /* ignore */ }

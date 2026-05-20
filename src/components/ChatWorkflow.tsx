@@ -15,54 +15,6 @@ interface Props {
   onThreadUpdate: () => void;
 }
 
-/**
- * clarification 質問の source テキスト (例: "📄投資契約書_…docx 第2条" や "登記簿") から
- * 対応するファイルを案件 + 共通フォルダのファイル一覧から見つけて返す。
- *
- * 優先順位:
- *   1. ファイル名 (拡張子付き) が source に含まれていれば一致 (最も精度高い)
- *   2. 拡張子なしのベース名が含まれていれば一致
- *   3. キーワード (登記/投資契約/株主名簿/スケジュール/定款 等) で曖昧マッチ
- *
- * 📇 (基本情報) や ⚠ (verify指摘) は実ファイルじゃないのでスキップ。
- */
-function findFileForSources(
-  sources: string[],
-  files: { path: string; name: string }[]
-): { path: string; name: string } | null {
-  const KEYWORD_MAP: Array<{ kw: RegExp; fileKw: RegExp }> = [
-    { kw: /登記簿|履歴事項/, fileKw: /登記|履歴事項/ },
-    { kw: /投資契約/, fileKw: /投資契約|株式引受|株式譲渡/ },
-    { kw: /株主名簿/, fileKw: /株主名簿/ },
-    { kw: /スケジュール|案件スケジュール/, fileKw: /スケジュール/ },
-    { kw: /定款/, fileKw: /定款/ },
-    { kw: /印鑑証明/, fileKw: /印鑑証明/ },
-    { kw: /総数引受/, fileKw: /総数引受/ },
-  ];
-
-  for (const source of sources) {
-    if (!source) continue;
-    if (/^[📇⚠]/.test(source.trim())) continue; // ファイルじゃないやつは飛ばす
-
-    // 1. ファイル名 (拡張子付き) を source から抽出して直接照合
-    const fileMatch = source.match(/([^\s　📄📁\[\]\(\)（）]+\.(docx|xlsx|xls|xlsm|pdf|doc))/i);
-    if (fileMatch) {
-      const target = fileMatch[1];
-      const hit = files.find(f => f.name === target || f.name.includes(target) || target.includes(f.name));
-      if (hit) return hit;
-    }
-
-    // 2. キーワード一致
-    for (const { kw, fileKw } of KEYWORD_MAP) {
-      if (kw.test(source)) {
-        const hit = files.find(f => fileKw.test(f.name));
-        if (hit) return hit;
-      }
-    }
-  }
-  return null;
-}
-
 export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Props) {
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [input, setInput] = useState("");
@@ -82,11 +34,6 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingTemplatePath = useRef<string | null>(null);
-  // 案件フォルダ + 共通フォルダの file path 一覧。auto-preview で source テキストから
-  // ファイルを fuzzy match する用。
-  const [caseFiles, setCaseFiles] = useState<{ path: string; name: string }[]>([]);
-  // どの clarification card に対してすでに auto-preview したか記憶（再表示で重複しない）
-  const autoPreviewedRef = useRef<Set<string>>(new Set());
 
   // スレッド読み込み
   useEffect(() => {
@@ -156,100 +103,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   // （前のセッションの書類が右ペインに残ったままだと混乱の元）
   useEffect(() => {
     setPreviewFile(null);
-    autoPreviewedRef.current = new Set();
-    setCaseFiles([]);
   }, [threadId, company?.id]);
-
-  // 案件フォルダ + 共通フォルダのファイル一覧を取得 (auto-preview 用)。
-  // 案件フォルダが変わったら再取得する。
-  // /api/workspace/list-files は 1 階層のみ返すので、案件フォルダのサブフォルダも軽く展開する。
-  useEffect(() => {
-    if (!company || !thread?.folderPath) return;
-    let cancelled = false;
-    const listOne = async (p: string): Promise<{ files: { name: string; path: string }[]; subfolders: { name: string; path: string }[] }> => {
-      try {
-        const r = await fetch("/api/workspace/list-files", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ path: p }),
-        });
-        return r.ok ? await r.json() : { files: [], subfolders: [] };
-      } catch {
-        return { files: [], subfolders: [] };
-      }
-    };
-    (async () => {
-      try {
-        type FileEntry = { path: string; name: string };
-        const all: FileEntry[] = [];
-
-        // 案件フォルダ (現フォルダ + 1 階層下のサブフォルダ。司法書士作成書類等を catch)
-        const fp = thread.folderPath as string;
-        const caseRoot = await listOne(fp);
-        for (const f of (caseRoot.files || []) as FileEntry[]) {
-          if (f.path && f.name) all.push({ path: f.path, name: f.name });
-        }
-        const caseSubLists = await Promise.all((caseRoot.subfolders || []).map(s => listOne(s.path)));
-        for (const sub of caseSubLists) {
-          for (const f of (sub.files || []) as FileEntry[]) {
-            if (f.path && f.name) all.push({ path: f.path, name: f.name });
-          }
-        }
-
-        // 共通フォルダ (会社の subfolders で role === "common")
-        const commonPaths: string[] = [];
-        for (const sf of company.subfolders || []) {
-          if (sf.role === "common" && sf.active !== false) commonPaths.push(sf.id);
-        }
-        const commonResults = await Promise.all(commonPaths.map(p => listOne(p)));
-        for (const res of commonResults) {
-          for (const f of (res.files || []) as FileEntry[]) {
-            if (f.path && f.name) all.push({ path: f.path, name: f.name });
-          }
-        }
-
-        if (cancelled) return;
-        setCaseFiles(all);
-      } catch { /* ignore */ }
-    })();
-    return () => { cancelled = true; };
-  }, [thread?.folderPath, company?.id, company?.subfolders]);
-
-  // clarification card が出たら、その質問の source から関連ファイルを fuzzy match して
-  // 自動で右ペインプレビューに表示する。 user の確認作業をワンクリック減らす。
-  useEffect(() => {
-    if (!thread || caseFiles.length === 0) return;
-    if (previewFile) return; // user が既に何か開いてたら触らない
-
-    // 最後の未回答 clarification card を探す
-    let targetMsgId: string | null = null;
-    let targetSources: string[] = [];
-    for (let i = thread.messages.length - 1; i >= 0; i--) {
-      const m = thread.messages[i];
-      for (const c of m.cards || []) {
-        if (c.type !== "clarification") continue;
-        if (c.answered) continue;
-        targetMsgId = m.id;
-        // 全質問の全 option の source を集めて、優先度高い順 (先頭から)
-        for (const q of c.questions) {
-          for (const opt of q.options || []) {
-            if (opt.source) targetSources.push(opt.source);
-          }
-        }
-        break;
-      }
-      if (targetMsgId) break;
-    }
-    if (!targetMsgId || targetSources.length === 0) return;
-    if (autoPreviewedRef.current.has(targetMsgId)) return;
-
-    // source テキスト → ファイル名を抽出して fuzzy match
-    const matched = findFileForSources(targetSources, caseFiles);
-    if (!matched) return;
-
-    autoPreviewedRef.current.add(targetMsgId);
-    setPreviewFile({ filePath: matched.path, fileName: matched.name });
-  }, [thread, caseFiles, previewFile]);
 
   // 空スレッドに初期カード（フォルダ選択）を遅延生成して追加する。
   // POST /api/chat-threads が軽量化されて messages が空で返ってくるので、ここで補完。
@@ -397,8 +251,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       return;
     }
     else if (card?.type === "clarification") {
-      // 確認質問に回答 → 回答を反映してもう一度 clarify を呼ぶ
-      // 新たな確認事項があれば次のカードを出す、無ければ書類生成に進む
+      // 確認質問に回答 → 回答を反映。
+      // - kind="procedural" (Phase 2 = analyze 後) → clarify-procedural を再呼び出し
+      // - 省略 or "substantive" (Phase 1) → clarify を再呼び出し → 終わったら analyze + procedural へ
+      const isProcedural = card.kind === "procedural";
       const updatedCard = { ...card, ...cardData, answered: true } as ClarificationCard;
       // スレッド状態を明示的に組み立てる（setStateコールバックに依存しない）
       const updatedMessages = thread.messages.map(m => {
@@ -454,19 +310,26 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
       }
 
-      // もう一度 clarify を呼ぶ。会話履歴から AI が自分で「⚠ 要確認」項目を覚えているので
-      // knownMissing の安全網は不要。
-      const clarifyRes = await fetch("/api/document-templates/clarify", {
+      // 呼び出すルート: procedural なら clarify-procedural、それ以外は通常 clarify
+      const clarifyRoute = isProcedural
+        ? "/api/document-templates/clarify-procedural"
+        : "/api/document-templates/clarify";
+
+      const clarifyBody = isProcedural
+        ? { companyId: company.id, threadId: thread.id, previousQA }
+        : {
+            companyId: company.id,
+            threadId: thread.id,
+            templateFolderPath: templatePath,
+            previousQA,
+            folderPath: updatedThread.folderPath,
+            disabledFiles: updatedThread.disabledFiles,
+          };
+
+      const clarifyRes = await fetch(clarifyRoute, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyId: company.id,
-          threadId: thread.id,
-          templateFolderPath: templatePath,
-          previousQA,
-          folderPath: updatedThread.folderPath,
-          disabledFiles: updatedThread.disabledFiles,
-        }),
+        body: JSON.stringify(clarifyBody),
       });
       const clarifyData = await clarifyRes.json();
 
@@ -475,8 +338,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         const nextMsg: ThreadMessage = {
           id: `msg_${Date.now()}`,
           role: "assistant",
-          content: `さらに${clarifyData.questions.length}点確認があります`,
-          cards: [{ type: "clarification", questions: clarifyData.questions }],
+          content: isProcedural
+            ? `書面ルール上の確認がさらに${clarifyData.questions.length}点あります`
+            : `さらに${clarifyData.questions.length}点確認があります`,
+          cards: [{
+            type: "clarification",
+            questions: clarifyData.questions,
+            ...(isProcedural ? { kind: "procedural" as const } : {}),
+          }],
           timestamp: new Date().toISOString(),
         };
         setThread(prev => prev ? { ...prev, messages: [...prev.messages, nextMsg] } : prev);
@@ -490,8 +359,23 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 確認事項なし → 書類生成へ
-      await generateDocuments(updatedThread, templatePath, cardData as Partial<ActionCard>);
+      // 確認事項なし
+      if (isProcedural) {
+        // Phase 2 clarify が完了 → そのまま書類生成へ (analyze は既に終わっている)
+        await generateDocuments(updatedThread, templatePath, cardData as Partial<ActionCard>);
+        pendingTemplatePath.current = null;
+        return;
+      }
+
+      // Phase 1 clarify が完了 → Phase 2 (analyze) → Phase 2 clarify (procedural) → 書類生成
+      const afterAnalyze = await runAnalyze(updatedThread, templatePath);
+      const proceduralResult = await runClarifyProcedural(afterAnalyze, templatePath);
+      if (proceduralResult.hasQuestions) {
+        // procedural の質問カードを出したので一旦停止 (回答後の continueWorkflow でここに戻ってくる)
+        setLoading(false);
+        return;
+      }
+      await generateDocuments(proceduralResult.thread, templatePath, cardData as Partial<ActionCard>);
       pendingTemplatePath.current = null;
       return;
     }
@@ -561,10 +445,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             await runWorkflow(result.thread, templatePath);
           }
         }
-        // チェック実行 (ユーザーが check-accepted を選んだとき)
+        // チェック実行
         if (action === "check-accepted") {
-          const tpPath = pendingTemplatePath.current;
-          if (tpPath) await runCheck(result.thread, tpPath);
+          await runCheck(result.thread);
         }
       } else {
         setLoading(false);
@@ -734,27 +617,235 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 3. 質問なし→直接書類生成（organizeMsg を含む freshThread を渡す）
-      await generateDocuments(freshThread, templatePath);
+      // 3. 質問なし → Phase 2 (テンプレ突き合わせ分析) → Phase 2 clarify → 書類生成
+      const afterAnalyze = await runAnalyze(freshThread, templatePath);
+      const proceduralResult = await runClarifyProcedural(afterAnalyze, templatePath);
+      if (proceduralResult.hasQuestions) {
+        setLoading(false);
+        return;
+      }
+      await generateDocuments(proceduralResult.thread, templatePath);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
   };
 
-  // 書類生成 (新パイプラインの入力ステージ = /api/document-templates/fill 呼び出し)。
-  // fill ステージは旧 structure-decide + produce を統合した 1 段。AI が ★ラベル★ 正規化された
-  // テンプレ本文を見て delete / modify / insert の 3 op の edit list を返し、サーバーが
-  // edit-engine で各テンプレ buffer に適用する。
-  // 完了後、自動で check ループ (最大 3 回) を回して書類の整合性を整える。
-  const generateDocuments = async (currentThread: ChatThread, templatePath: string, _clarificationData?: Partial<ActionCard>) => {
-    void _clarificationData;
+  // Phase 2: テンプレ突き合わせ分析 (書類生成の前に挟む)
+  // 既に Phase 1 (案件整理) と clarify が完了している状態で呼ぶ。
+  // 結果は assistant メッセージとして md でストリーミング表示し、終わったら次の generateDocuments に進む。
+  const runAnalyze = async (currentThread: ChatThread, templatePath: string): Promise<ChatThread> => {
+    if (!company) return currentThread;
+    const analyzeMsg: ThreadMessage = {
+      id: `msg_${Date.now()}_analyze`,
+      role: "assistant",
+      content: "",
+      timestamp: new Date().toISOString(),
+    };
+    setThread(prev => prev ? { ...prev, messages: [...prev.messages, analyzeMsg] } : prev);
+
+    // Phase 1 clarify の Q&A を集めて analyze に渡す。
+    // 会話履歴 (aiMessages) には AI 側の質問しか残らないので、ユーザーの回答は明示的に渡す必要がある。
+    const previousQA: { question: string; answer: string }[] = [];
+    for (const m of currentThread.messages) {
+      for (const c of m.cards || []) {
+        if (c.type !== "clarification") continue;
+        for (const q of c.questions) {
+          let ans = "";
+          if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+          else if (q.selectedOptionId) {
+            const opt = q.options.find(o => o.id === q.selectedOptionId);
+            ans = opt?.label || "";
+          }
+          if (ans) {
+            previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+          }
+        }
+      }
+    }
+
+    let fullText = "";
+    // analyze ルートが SSE で送ってくる構造化決定 (phase2Decisions) とテンプレ構造。
+    // ストリーミング完了後、人間向けの md の下に <details> で折り畳んで両方表示する。
+    let receivedDecisions: import("@/types").Phase2Decisions | null = null;
+    let receivedStructures: { templateFile: string; markedText: string }[] = [];
+    try {
+      const res = await fetch("/api/document-templates/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: currentThread.id,
+          templateFolderPath: templatePath,
+          previousQA,
+        }),
+      });
+      const reader = res.body?.getReader();
+      // analyze は末尾に ```json ... ``` の構造化決定ブロックを出す。これは機械が読むだけで
+      // ユーザーには見せない。表示用テキストは json ブロックの直前で切る。
+      const stripJsonBlock = (s: string): string => {
+        const idx = s.search(/```json/);
+        if (idx >= 0) return s.slice(0, idx).trimEnd();
+        return s;
+      };
+      if (reader) {
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const match = line.match(/^data: (.+)$/m);
+            if (!match) continue;
+            const data = JSON.parse(match[1]);
+            if (data.type === "text") {
+              fullText += data.text;
+              const displayText = stripJsonBlock(fullText);
+              setThread(prev => {
+                if (!prev) return prev;
+                const msgs = [...prev.messages];
+                const last = msgs[msgs.length - 1];
+                if (last.role === "assistant" && last.id === analyzeMsg.id) {
+                  msgs[msgs.length - 1] = { ...last, content: displayText };
+                }
+                return { ...prev, messages: msgs };
+              });
+            } else if (data.type === "decisions") {
+              receivedDecisions = data.decisions || null;
+            } else if (data.type === "structures") {
+              receivedStructures = data.structures || [];
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[ChatWorkflow] analyze failed:", e instanceof Error ? e.message : e);
+    }
+
+    // 保存も JSON ブロックを除いた表示用テキストで行う (リロード時に JSON が見えないように)
+    // 機械可読な決定は thread.phase2Decisions にバックエンドが保存済み
+    const stripped = (() => {
+      const idx = fullText.search(/```json/);
+      return idx >= 0 ? fullText.slice(0, idx).trimEnd() : fullText;
+    })();
+    // 折り畳みで「最終データ」と「テンプレ構造」を見せる
+    const decisionsBlock = receivedDecisions
+      ? `\n\n<details>\n<summary>📋 書類作成に使う最終データ (Phase 2 決定 — クリックで展開)</summary>\n\n\`\`\`json\n${JSON.stringify(receivedDecisions, null, 2)}\n\`\`\`\n\n</details>`
+      : "";
+    const structuresBlock = receivedStructures.length > 0
+      ? `\n\n<details>\n<summary>🗂️ テンプレ構造 (★label★ = 穴埋め位置 — クリックで展開)</summary>\n\n${receivedStructures.map(s => `#### ${s.templateFile}\n\n\`\`\`\n${s.markedText}\n\`\`\``).join("\n\n")}\n\n</details>`
+      : "";
+    const displayText = stripped + decisionsBlock + structuresBlock;
+    // 折り畳みも含めて状態に反映
+    setThread(prev => {
+      if (!prev) return prev;
+      const msgs = [...prev.messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "assistant" && last.id === analyzeMsg.id) {
+        msgs[msgs.length - 1] = { ...last, content: displayText };
+      }
+      return { ...prev, messages: msgs };
+    });
+    const savedMsg = { ...analyzeMsg, content: displayText };
+    await fetch(`/api/chat-threads/${currentThread.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: company.id, message: savedMsg }),
+    });
+
+    return { ...currentThread, messages: [...currentThread.messages, savedMsg] };
+  };
+
+  // Phase 2 clarify (書面ルール上の確認質問)
+  // runAnalyze の直後に呼ぶ。analyze の末尾「## ⚠ Phase 2 要確認事項」を質問カードに変換。
+  //
+  // 戻り値:
+  //   - { thread: 更新済みスレッド, hasQuestions: true } → 質問カードを出して停止。
+  //     カード回答後の continueWorkflow で procedural 分岐に入る
+  //   - { thread, hasQuestions: false } → 質問なし。呼び出し側がそのまま produce に進む
+  const runClarifyProcedural = async (
+    currentThread: ChatThread,
+    templatePath: string
+  ): Promise<{ thread: ChatThread; hasQuestions: boolean }> => {
+    if (!company) return { thread: currentThread, hasQuestions: false };
+
+    // 既存の clarification カードから previousQA を集める (Phase 1 + 過去の Phase 2 両方)
+    const previousQA: { question: string; answer: string }[] = [];
+    for (const m of currentThread.messages) {
+      for (const c of m.cards || []) {
+        if (c.type !== "clarification") continue;
+        for (const q of c.questions) {
+          let ans = "";
+          if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+          else if (q.selectedOptionId) {
+            const opt = q.options.find(o => o.id === q.selectedOptionId);
+            ans = opt?.label || "";
+          }
+          const isGeneralNote = q.id === "general_note" || q.placeholder === "案件全体の注意点";
+          if (ans) {
+            previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+          } else if (isGeneralNote && c.answered) {
+            previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: "（特になし）" });
+          }
+        }
+      }
+    }
+
+    try {
+      const res = await fetch("/api/document-templates/clarify-procedural", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: currentThread.id,
+          previousQA,
+        }),
+      });
+      const data = await res.json();
+      if (data.questions && data.questions.length > 0) {
+        const proceduralMsg: ThreadMessage = {
+          id: `msg_${Date.now()}_clarify_proc`,
+          role: "assistant",
+          content: `書面ルール上の確認が${data.questions.length}点あります`,
+          cards: [{
+            type: "clarification",
+            questions: data.questions,
+            kind: "procedural",
+          }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, proceduralMsg] } : prev);
+        await fetch(`/api/chat-threads/${currentThread.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id, message: proceduralMsg }),
+        });
+        pendingTemplatePath.current = templatePath;
+        return {
+          thread: { ...currentThread, messages: [...currentThread.messages, proceduralMsg] },
+          hasQuestions: true,
+        };
+      }
+    } catch (e) {
+      console.warn("[ChatWorkflow] clarify-procedural failed:", e instanceof Error ? e.message : e);
+    }
+
+    return { thread: currentThread, hasQuestions: false };
+  };
+
+  // 書類生成
+  const generateDocuments = async (currentThread: ChatThread, templatePath: string, clarificationData?: Partial<ActionCard>) => {
     if (!company) return;
     setLoading(true);
     console.log("[ChatWorkflow] generateDocuments called, templatePath:", templatePath);
 
-    // 案件整理の本文 (最新版を produce 側に再渡し)
+    // スレッド内の案件整理結果を探す
     const organizeContent = currentThread.messages.find(m => m.role === "assistant" && m.content.length > 200)?.content || "";
 
-    // Q&A 回答
+    // 確認質問の回答を収集（placeholder名→確定値のマップ）
+    // confirmedAnswers: { placeholder, question, answer, options } で完全な文脈を produce に渡す。
+    // 旧 Record<placeholder, answer> だと AI が「何を聞いた質問か」を見られなかった。
     const confirmedAnswers: { placeholder: string; question: string; answer: string; options: { label: string; source?: string }[] }[] = [];
     for (const m of currentThread.messages) {
       for (const c of m.cards || []) {
@@ -778,26 +869,27 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       }
     }
 
-    const fillRes = await fetch("/api/document-templates/fill", {
+    // 新パイプライン: per-doc Haiku + edit engine。
+    // Phase 2 で確定した phase2Decisions は thread に保存済みなので、サーバ側でそれを読む。
+    // confirmedAnswers / masterContent / organizeContent は新ルートでは未使用 (Phase 2 経由で見える)。
+    const produceRes = await fetch("/api/document-templates/produce-v2", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         companyId: company.id,
         threadId: currentThread.id,
         templateFolderPath: templatePath,
-        masterContent: organizeContent,
-        confirmedAnswers,
       }),
     });
-    const fillData = await fillRes.json();
-    console.log(`[ChatWorkflow] fill response:`, fillData.error || `${fillData.documents?.length || 0} docs`);
+    const produceData = await produceRes.json();
+    console.log(`[ChatWorkflow] produce response:`, produceData.error || `${produceData.documents?.length || 0} docs`);
 
-    if (fillData.error || !fillData.documents || fillData.documents.length === 0) {
-      if (fillData.error) {
+    if (produceData.error || !produceData.documents || produceData.documents.length === 0) {
+      if (produceData.error) {
         const errorMsg: ThreadMessage = {
           id: `msg_${Date.now()}_err`,
           role: "assistant",
-          content: `書類生成エラー: ${fillData.error}`,
+          content: `書類生成エラー: ${produceData.error}`,
           timestamp: new Date().toISOString(),
         };
         setThread(prev => prev ? { ...prev, messages: [...prev.messages, errorMsg] } : prev);
@@ -807,63 +899,34 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       return;
     }
 
-    // fill 出力を document-result カードに整形 (旧 produce の出力スキーマと合わせる)
-    type FillDoc = { fileName: string; docxBase64: string; previewHtml?: string; appliedCount?: number; skipped?: { reason: string }[]; edits?: unknown[] };
-    const fillDocs = fillData.documents as FillDoc[];
-    const now = new Date().toISOString();
-    // 表示用 (DocumentResultItem)
-    const cardItems = fillDocs.map(d => ({
-      name: d.fileName.replace(/\.[^.]+$/, ""),
-      fileName: d.fileName,
-      docxBase64: d.docxBase64,
-      previewHtml: d.previewHtml || "",
-      issues: (d.skipped || []).map(s => ({
-        severity: "warn" as const,
-        aspect: "適用失敗",
-        problem: s.reason,
-        acknowledged: false,
-      })),
-      checkStatus: (d.skipped && d.skipped.length > 0 ? "warn" : undefined) as "ok" | "warn" | "error" | undefined,
-    }));
-    // 永続化用 (GeneratedDocument)
-    const genDocs = fillDocs.map(d => ({
-      templateName: d.fileName,
-      fileName: d.fileName,
-      docxBase64: d.docxBase64,
-      previewHtml: d.previewHtml || "",
-      createdAt: now,
-    }));
-
     const resultMsg: ThreadMessage = {
       id: `msg_${Date.now() + 2}`,
       role: "assistant",
       content: "書類を生成しました",
-      cards: [{ type: "document-result", documents: cardItems }],
+      cards: [{
+        type: "document-result",
+        documents: produceData.documents,
+      }],
       timestamp: new Date().toISOString(),
     };
+    // ⚠️ state にも generatedDocuments を同期保存すること。
+    // しないと後で handleProofread が thread.generatedDocuments を読んだとき空配列になり、
+    // PATCH で server 側の generatedDocuments が wipe され、次の verify が「生成済み書類なし」で
+    // 400 を返す。
     setThread(prev => prev ? {
       ...prev,
       messages: [...prev.messages, resultMsg],
-      generatedDocuments: genDocs,
+      generatedDocuments: produceData.documents,
     } : prev);
     await fetch(`/api/chat-threads/${currentThread.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: genDocs }),
+      body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: produceData.documents }),
     });
 
-    // チェックループ (最大 3 ラウンド、converged になるか追加 edit が出なくなったら停止)
-    let workingThread: ChatThread = {
-      ...currentThread,
-      messages: [...currentThread.messages, resultMsg],
-      generatedDocuments: genDocs,
-    };
-    const MAX_CHECK_ROUNDS = 3;
-    for (let round = 1; round <= MAX_CHECK_ROUNDS; round++) {
-      const result = await runCheck(workingThread, templatePath);
-      if (!result || result.converged) break;
-      workingThread = result.thread;
-    }
+    // 自動でチェック実行 (verify) は今は無効化中。
+    // produce-v2 の挙動をユーザーが確認している段階なので、まず生成だけ走らせて見せる。
+    // await runCheck(currentThread);
 
     setLoading(false);
     onThreadUpdate();
@@ -982,132 +1045,240 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   // 校正モードで「全文編集」する 2 段アプローチ。
   // - 議案ブロック削除みたいな構造変更も edit list で表現できる
   // - 法的文言が AI に「いい感じに改変」されるリスクを抑える (edit は replace / delete のみ)
-  // handleProofread (新): 「○件 まとめて修正」ボタン押下時の手動チェックループ起動。
-  // 旧 proofread は単発の校正パスだったが、新パイプラインでは check ループに統合されたので、
-  // ここは単に「check を 1 ラウンド回す」だけ (collapsed なら停止、indeterminate なら一度だけ)。
-  // 自動チェックループが完走した後にユーザーがまだ気になる時に押す再実行ボタン。
-  const handleProofread = async (messageId: string, _cardIndex: number) => {
-    void _cardIndex;
+  const handleProofread = async (messageId: string, cardIndex: number) => {
     if (!thread || !company) return;
-    const templatePath = pendingTemplatePath.current;
-    if (!templatePath) {
-      console.warn("[ChatWorkflow] handleProofread: templatePath が不明 (pendingTemplatePath が空)");
-      return;
+    const msg = thread.messages.find(m => m.id === messageId);
+    const card = msg?.cards?.[cardIndex];
+    if (!card || card.type !== "document-result") return;
+
+    // 校正対象書類を構築 (未確認の issues がある書類だけ送る)
+    type TargetIssue = { severity?: "error" | "warn" | "info"; aspect?: string; problem: string; expected?: string; slotId?: number };
+    type TargetDoc = { fileName: string; docxBase64: string; issues: TargetIssue[] };
+    const targetDocs: TargetDoc[] = [];
+    for (const d of card.documents) {
+      const activeIssues: TargetIssue[] = (d.issues || [])
+        .filter(iss => !iss.acknowledged)
+        .map(iss => ({
+          severity: iss.severity,
+          aspect: iss.aspect,
+          problem: iss.problem,
+          expected: iss.expected,
+          slotId: iss.slotId,
+        }));
+      if (activeIssues.length > 0) {
+        targetDocs.push({ fileName: d.fileName, docxBase64: d.docxBase64, issues: activeIssues });
+      }
     }
+
+    if (targetDocs.length === 0) return;
+
     setProofreading(messageId);
     try {
-      await runCheck(thread, templatePath);
+      const res = await fetch("/api/document-templates/proofread", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId: company.id, documents: targetDocs }),
+      });
+      if (!res.ok) {
+        console.warn("[ChatWorkflow] proofread failed:", res.status);
+        return;
+      }
+      const data = await res.json() as {
+        documents: Array<{
+          fileName: string;
+          docxBase64?: string;
+          applied: number;
+          skipped: { reason: string }[];
+        }>;
+      };
+
+      // 修正版 docx で書き換え。issues はクリアして再 verify を促す。
+      const updatedDocs = card.documents.map(d => {
+        const found = data.documents.find(u => u.fileName === d.fileName);
+        if (!found || !found.docxBase64 || found.applied === 0) return d;
+        return {
+          ...d,
+          docxBase64: found.docxBase64,
+          checkStatus: undefined,
+          issues: [],
+        };
+      });
+
+      const updatedMessages = thread.messages.map(m => {
+        if (m.id !== messageId) return m;
+        const newCards = (m.cards || []).map((c, i) => i === cardIndex ? { ...c, documents: updatedDocs } as ActionCard : c);
+        return { ...m, cards: newCards };
+      });
+      const updatedGenDocs = (thread.generatedDocuments || []).map(gd => {
+        const u = updatedDocs.find(d => d.fileName === gd.fileName);
+        return u ? { ...gd, docxBase64: u.docxBase64 } : gd;
+      });
+      const updatedThread: ChatThread = { ...thread, messages: updatedMessages, generatedDocuments: updatedGenDocs };
+      setThread(updatedThread);
+      if (previewFile) {
+        const u = updatedDocs.find(d => d.fileName === previewFile.fileName);
+        if (u) setPreviewFile(prev => prev ? { ...prev, docxBase64: u.docxBase64 } : prev);
+      }
+      await fetch(`/api/chat-threads/${thread.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          messages: updatedMessages,
+          generatedDocuments: updatedGenDocs,
+        }),
+      });
+
+      // 修正完了後の自動再 verify は今は無効化中
+      // await runCheck(updatedThread);
     } finally {
       setProofreading(null);
     }
   };
 
-  // runCheck (新): /api/document-templates/check を呼ぶ。
-  // check は AI に生成書類本文を読ませて、追加の delete/modify/insert edit を返してもらい、
-  // サーバー側で適用して新しい docxBase64 を返す。converged=true なら追加 edit がなく収束。
-  // 呼び出し側は converged まで最大 3 回ループする (generateDocuments 側で実施)。
-  type CheckResultDoc = {
-    fileName: string;
-    docxBase64: string;
-    previewHtml: string;
-    appliedCount: number;
-    skipped: { reason: string }[];
-    proposedEdits: unknown[];
-    hasIssues: boolean;
+  // runCheck: verify を呼び、その結果（parsed JSON）を返す。
+  // 戻り値は auto-feedback loop (generateDocuments) で使う。
+  type VerifyDoc = {
+    docName: string;
+    status?: string;
+    issues?: Array<{
+      severity?: string;
+      aspect?: string;
+      problem?: string;
+      expected?: string;
+      slotId?: number;
+      candidates?: { value: string; source: string }[];
+    }>;
   };
-  type CheckResult = { thread: ChatThread; converged: boolean } | null;
-  const runCheck = async (currentThread: ChatThread, templatePath: string): Promise<CheckResult> => {
+  type VerifyResult = { summary?: string; documents?: VerifyDoc[] } | null;
+  const runCheck = async (currentThread: ChatThread): Promise<VerifyResult> => {
     if (!company) return null;
     setLoading(true);
 
+    // verify は SSE で AI の出力をストリームする。最後に JSON を取り出す。
     try {
-      // 現在の生成書類を送る (docxBase64 + templatePath。templatePath は edit 適用のための ★ 正規化に必要)
-      const sendDocs = (currentThread.generatedDocuments || []).map(d => ({
-        fileName: d.fileName,
-        docxBase64: d.docxBase64,
-        // templatePath は推定: templateFolderPath + fileName (.doc/.docm の場合は .docx に置換)
-        templatePath: `${templatePath}/${d.fileName.replace(/\.(doc|docm)$/i, ".docx")}`,
-      }));
-      if (sendDocs.length === 0) {
-        return { thread: currentThread, converged: true };
-      }
-
-      const res = await fetch("/api/document-templates/check", {
+      const res = await fetch("/api/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyId: company.id,
           threadId: currentThread.id,
-          documents: sendDocs,
+          folderPath: currentThread.folderPath,
+          disabledFiles: currentThread.disabledFiles,
         }),
       });
-      if (!res.ok) {
-        console.warn("[ChatWorkflow] check failed:", res.status);
-        return { thread: currentThread, converged: true };
+      const reader = res.body?.getReader();
+      if (!reader) return null;
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const m = line.match(/^data: (.+)$/m);
+          if (!m) continue;
+          const data = JSON.parse(m[1]);
+          if (data.type === "text") fullText += data.text;
+        }
       }
-      const data = await res.json() as { documents: CheckResultDoc[]; converged: boolean };
 
-      // 生成書類の docxBase64 を check 適用後の物に置き換える (永続化用は issues/checkStatus 含めない)
-      const updatedGenDocs = (currentThread.generatedDocuments || []).map(gd => {
-        const found = data.documents.find(d => d.fileName === gd.fileName);
-        if (!found) return gd;
-        return {
-          ...gd,
-          docxBase64: found.docxBase64,
-          previewHtml: found.previewHtml,
-        };
-      });
+      // JSON 抽出
+      const jsonMatch = fullText.match(/```json\s*([\s\S]*?)```/) || fullText.match(/(\{[\s\S]*\})/);
+      let parsed: VerifyResult = null;
+      if (jsonMatch) {
+        try { parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]); } catch { parsed = null; }
+      }
 
-      // 表示用カードに issues/checkStatus を載せる (DocumentResultItem 用)
-      const newMessages = currentThread.messages.map(m => {
-        const cards = m.cards;
-        if (!cards) return m;
-        const idx = cards.findIndex(c => c.type === "document-result");
-        if (idx < 0) return m;
-        const card = cards[idx];
-        if (card.type !== "document-result") return m;
-        const updatedDocs = card.documents.map(d => {
-          const u = data.documents.find(x => x.fileName === d.fileName);
-          if (!u) return d;
-          const issues = u.skipped.map(s => ({
-            severity: "warn" as const,
-            aspect: "未適用",
-            problem: s.reason,
-            acknowledged: false,
-          }));
-          return {
-            ...d,
-            docxBase64: u.docxBase64,
-            previewHtml: u.previewHtml,
-            issues,
-            checkStatus: (u.hasIssues ? "warn" : "ok") as "ok" | "warn" | "error",
-          };
+      // 最新の document-result カードに check 結果を差し込む
+      if (parsed?.documents) {
+        setThread(prev => {
+          if (!prev) return prev;
+          const msgs = [...prev.messages];
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const cards = msgs[i].cards;
+            if (!cards) continue;
+            const docCardIdx = cards.findIndex(c => c.type === "document-result");
+            if (docCardIdx < 0) continue;
+            const docCard = cards[docCardIdx];
+            if (docCard.type !== "document-result") break;
+            const updatedDocs = docCard.documents.map(doc => {
+              // AI 返答の docName はファイル名／基本名／任意のいずれか。柔軟にマッチ。
+              const baseFromFile = doc.fileName.replace(/\.[^.]+$/, "");
+              const match = parsed!.documents!.find(d => {
+                if (!d.docName) return false;
+                const dn = d.docName.replace(/\.[^.]+$/, "");
+                return (
+                  d.docName === doc.name ||
+                  d.docName === doc.fileName ||
+                  dn === doc.name ||
+                  dn === baseFromFile ||
+                  dn.endsWith(doc.name) ||            // prefix（会社名_）を無視して一致
+                  doc.name.endsWith(dn) ||
+                  baseFromFile.endsWith(dn)
+                );
+              });
+              if (!match) return doc;
+              const issues = (match.issues || []).map(iss => ({
+                severity: (iss.severity === "error" || iss.severity === "warn" || iss.severity === "info" ? iss.severity : "warn") as "error" | "warn" | "info",
+                aspect: iss.aspect || "",
+                problem: iss.problem || "",
+                expected: iss.expected,
+                slotId: typeof iss.slotId === "number" ? iss.slotId : undefined,
+                candidates: Array.isArray(iss.candidates) ? iss.candidates.filter(c => c && typeof c.value === "string") : undefined,
+              }));
+              const status: "ok" | "warn" | "error" =
+                match.status === "error" || issues.some(i => i.severity === "error") ? "error" :
+                match.status === "warn" || issues.length > 0 ? "warn" : "ok";
+              return { ...doc, checkStatus: status, issues };
+            });
+            const updatedCard = { ...docCard, documents: updatedDocs, checkSummary: parsed.summary || "", checkedAt: new Date().toISOString() };
+            msgs[i] = { ...msgs[i], cards: cards.map((c, idx) => idx === docCardIdx ? updatedCard : c) };
+            break;
+          }
+          return { ...prev, messages: msgs };
         });
-        return { ...m, cards: cards.map((c, i) => i === idx ? { ...card, documents: updatedDocs, checkedAt: new Date().toISOString() } : c) };
-      });
 
-      const updatedThread: ChatThread = { ...currentThread, messages: newMessages, generatedDocuments: updatedGenDocs };
-      setThread(updatedThread);
-      // 永続化
-      await fetch(`/api/chat-threads/${currentThread.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, messages: newMessages, generatedDocuments: updatedGenDocs }),
-      });
-      // プレビュー中の書類があれば最新 base64 に置き換え
-      if (previewFile) {
-        const u = updatedGenDocs.find(d => d.fileName === previewFile.fileName);
-        if (u) setPreviewFile(prev => prev ? { ...prev, docxBase64: u.docxBase64 } : prev);
+        // 永続化: 最新の document-result を更新したスレッドメッセージ全体を保存
+        // （永続層のインタフェースが message 1 件単位なので、ここでは verify 終了時の
+        //   スレッド再ロードで同期される）
       }
 
-      return { thread: updatedThread, converged: !!data.converged };
-    } catch (e) {
-      console.warn("[ChatWorkflow] check error:", e);
-      return { thread: currentThread, converged: true };
-    } finally {
-      setLoading(false);
-      onThreadUpdate();
-    }
+      // フォールバック: JSON が取れなかった時だけ旧 check-result カード表示
+      if (!parsed?.documents) {
+        const checkMsg: ThreadMessage = {
+          id: `msg_${Date.now()}`,
+          role: "assistant",
+          content: fullText,
+          cards: [{ type: "check-result", content: fullText }],
+          timestamp: new Date().toISOString(),
+        };
+        setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
+        await fetch(`/api/chat-threads/${currentThread.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyId: company.id, message: checkMsg, checkResult: fullText }),
+        });
+      } else {
+        // スレッド全体を PATCH で上書き（document-result が更新されてるので）
+        setThread(prev => {
+          if (!prev) return prev;
+          fetch(`/api/chat-threads/${currentThread.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ companyId: company.id, messages: prev.messages, checkResult: fullText }),
+          });
+          return prev;
+        });
+      }
+      return parsed;
+    } catch { /* ignore */ }
+    finally { setLoading(false); onThreadUpdate(); }
+    return null;
   };
 
   if (!company) {

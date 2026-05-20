@@ -1,0 +1,547 @@
+// /api/document-templates/produce-v2
+// 新 produce パイプライン (per-doc Haiku + edit engine)。
+//
+// 旧 produce との違い:
+//   - 書類1つずつに Haiku を呼ぶ (並列)
+//   - 各呼び出しに「そのテンプレの marked text + Phase 2 全決定 + Phase 1 Q&A」を渡す
+//   - AI は { deletes, adds, fills } を返す
+//   - サーバはこれを edit engine (produce-edits.ts) で適用するだけ
+//   - 判断はすべて AI 側。サーバはルール判断ゼロ
+//
+// 出力: produce 旧ルートと同じ { documents: DocOut[] } シェイプ。ChatWorkflow は変更不要に近い。
+
+import { NextRequest, NextResponse } from "next/server";
+import Anthropic from "@anthropic-ai/sdk";
+import fs from "fs/promises";
+import path from "path";
+import crypto from "crypto";
+import { getWorkspaceConfig } from "@/lib/folders";
+import { readAllFilesInFolder } from "@/lib/files";
+import { logTokenUsage } from "@/lib/token-logger";
+import { applyProduceEditsDocx, applyProduceEditsXlsx } from "@/lib/produce-edits";
+import type { ChatThread, Phase2Decisions } from "@/types";
+
+const client = new Anthropic();
+const MODEL = "claude-haiku-4-5-20251001";
+
+// 1書類あたりの AI 応答 (JSON) — 段落番号方式 + 段落ごと 1 op
+interface DocResponse {
+  paragraphActions?: { paragraphIndex: number; action: "delete" | "rewrite"; newText?: string }[];
+  inserts?: { afterParagraphIndex: number; contents: string[] }[];
+  replaces?: { anchor: string; replacement: string }[];
+  fills?: Record<string, string>;
+}
+
+// 旧 produce 互換の出力シェイプ
+interface DocOut {
+  name: string;
+  fileName: string;
+  docxBase64: string;
+  previewHtml: string;
+  templatePath?: string;
+}
+
+export async function POST(request: NextRequest) {
+  const { companyId, threadId, templateFolderPath } = (await request.json()) as {
+    companyId: string;
+    threadId: string;
+    templateFolderPath: string;
+  };
+
+  const config = await getWorkspaceConfig();
+  const company = config.companies.find((c) => c.id === companyId);
+  if (!company) {
+    return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
+  }
+
+  // thread から phase2Decisions と Phase 1 Q&A を読む
+  let thread: ChatThread | null = null;
+  try {
+    const hash = crypto.createHash("md5").update(company.id).digest("hex");
+    const tpath = path.join(process.cwd(), "data", "chat-threads", hash, `${threadId}.json`);
+    const raw = await fs.readFile(tpath, "utf-8");
+    thread = JSON.parse(raw) as ChatThread;
+  } catch (e) {
+    return NextResponse.json({ error: "スレッドが読めません: " + (e instanceof Error ? e.message : e) }, { status: 500 });
+  }
+
+  const phase2Decisions = thread.phase2Decisions;
+  if (!phase2Decisions || !Array.isArray(phase2Decisions.documents)) {
+    return NextResponse.json({ error: "Phase 2 決定がありません。analyze を先に走らせてください" }, { status: 400 });
+  }
+
+  // Phase 1 Q&A: messages 配下の clarification カードから集める
+  const previousQA: { question: string; answer: string }[] = [];
+  for (const m of thread.messages) {
+    for (const c of m.cards || []) {
+      if (c.type !== "clarification") continue;
+      for (const q of c.questions) {
+        let ans = "";
+        if (q.selectedOptionId === "_manual") ans = q.manualInput || "";
+        else if (q.selectedOptionId) {
+          const opt = q.options.find((o) => o.id === q.selectedOptionId);
+          ans = opt?.label || "";
+        }
+        if (ans) previousQA.push({ question: `【${q.placeholder}】${q.question}`, answer: ans });
+      }
+    }
+  }
+
+  // 共通ルール (templateBasePath 直下や「共通」フォルダ配下のメモ等) を読む。
+  // 総数引受契約書の【法人引受人のため本行削除】等の条件付き処理ルールはここに書かれている。
+  let globalRulesBlock = "";
+  if (config.templateBasePath) {
+    try {
+      const { loadGlobalRules } = await import("@/lib/global-rules");
+      const rules = await loadGlobalRules(config.templateBasePath, templateFolderPath);
+      if (rules && rules.trim()) {
+        globalRulesBlock = `\n## 共通ルール (最優先で従うこと)\n${rules}\n`;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // テンプレフォルダ内のメモ (.txt/.md) もテンプレ固有のルールとして渡す
+  let templateMemoBlock = "";
+  if (templateFolderPath) {
+    try {
+      const tpFilesAll = await readAllFilesInFolder(templateFolderPath);
+      const memoText = tpFilesAll
+        .filter((f) => !f.base64 && (f.name.endsWith(".txt") || f.name.endsWith(".md")))
+        .map((f) => `【${f.name}】\n${f.content}`)
+        .join("\n\n");
+      if (memoText.trim()) {
+        templateMemoBlock = `\n## テンプレート注意事項 (このテンプレ固有のルール)\n${memoText}\n`;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // テンプレファイル一覧 (docx + xlsx)
+  const tpFiles = await readAllFilesInFolder(templateFolderPath);
+  const targetFiles = tpFiles.filter(
+    (f) => /\.(docx|docm|xlsx|xlsm|xls)$/i.test(f.name) && !f.name.endsWith(".labels.json")
+  );
+
+  if (targetFiles.length === 0) {
+    return NextResponse.json({ error: "対象テンプレートが見つかりません" }, { status: 400 });
+  }
+
+  // 物理ファイル名 → ファイル情報の lookup を作る
+  const physicalByName = new Map<string, (typeof targetFiles)[number]>();
+  for (const f of targetFiles) physicalByName.set(f.name, f);
+  const physicalByBase = new Map<string, (typeof targetFiles)[number]>();
+  for (const f of targetFiles) physicalByBase.set(f.name.replace(/\.[^.]+$/, ""), f);
+
+  // テンプレ別に marked text を作る (★label★ 入り)
+  const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
+  const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
+  const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mammoth = require("mammoth");
+
+  // 出力ファイル名のサニタイズ (Windows 等で使えない文字を _ に)
+  const sanitizeFsName = (s: string): string => s.replace(/[\\/:*?"<>|]/g, "_");
+
+  // 書類別に並列で AI 呼び出し → edit 適用 (Phase 2 documents 単位でループ)
+  const docOuts = await Promise.all(
+    phase2Decisions.documents.map(async (decisionDoc): Promise<DocOut | null> => {
+      try {
+        // Phase 2 の templateFile から物理ファイルを引く
+        // - 完全一致 → そのファイル
+        // - 拡張子無し base 名で一致 → そのファイル
+        // - 後方互換: templateFile に「（X用）」サフィックスが付いてた場合は剥がしてマッチ
+        let f = physicalByName.get(decisionDoc.templateFile)
+          || physicalByBase.get(decisionDoc.templateFile.replace(/\.[^.]+$/, ""))
+          || null;
+        if (!f) {
+          // legacy suffix 形式 (templateFile が "X.docx（藤崎用）") を救出
+          const cleaned = decisionDoc.templateFile.replace(/[（(].*?[）)]\.?[^.]*$/, "")
+            .replace(/[（(].*$/, "");
+          f = physicalByName.get(cleaned) || physicalByBase.get(cleaned.replace(/\.[^.]+$/, "")) || null;
+        }
+        if (!f) {
+          console.warn(`[produce-v2] 物理テンプレが見つからない: ${decisionDoc.templateFile}`);
+          return null;
+        }
+        const buf = await fs.readFile(f.path);
+        const ext = f.name.toLowerCase().split(".").pop() || "";
+        const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";
+
+        // marked text + labels を取得
+        let rawText = "";
+        let labels = null as Awaited<ReturnType<typeof ensureDocxLabels>> | null;
+        if (isXlsx) {
+          const r = getXlsxMarkedTextWithSlots(buf);
+          rawText = r.text;
+          labels = await ensureXlsxLabels(f.path);
+        } else {
+          const r = getMarkedDocumentTextWithSlots(buf);
+          rawText = r.text;
+          labels = await ensureDocxLabels(f.path);
+        }
+        const labelById = new Map<number, string>();
+        for (const s of labels?.slots || []) {
+          if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
+        }
+        const markedTextRaw = rawText.replace(/［要入力_(\d+)］/g, (_, idStr) => {
+          const id = Number(idStr);
+          const lbl = labelById.get(id) || `要入力_${id}`;
+          return `★${lbl}★`;
+        });
+
+        // markedText を index 付きで組み立てる。docx は連番、xlsx は Excel 行番号 (r= 値)。
+        // xlsx で連番にしてしまうと「段落 9」が Excel 行 9 と一致しなくなり engine が誤動作する
+        // (実際にあったバグ: 多行セルがあると markedText の行数 ≠ Excel 行数)。
+        let markedText = "";
+        if (isXlsx) {
+          // xlsx: Excel 行番号で labelled する。getXlsxMarkedTextWithSlots は内容のある row 1 つに付き 1 line を出す。
+          // ただし多行セル (\r\n 含む) があると line 内に改行が混ざる。改行を ' / ' に置換して 1 row = 1 line に揃える。
+          const PizZip = (await import("pizzip")).default;
+          const zip = new PizZip(buf);
+          const sheetFiles = Object.keys(zip.files)
+            .filter((fn) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
+            .sort();
+          const xlsxRowNumbers: number[] = [];
+          for (const sf of sheetFiles) {
+            const sheetXml = zip.file(sf)?.asText() || "";
+            const rowRe = /<row\b[^>]*?r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+            let rm2;
+            while ((rm2 = rowRe.exec(sheetXml)) !== null) {
+              const inner = rm2[2];
+              // getXlsxMarkedTextWithSlots と同じ判定: 数式以外で値があるセルがあるか
+              const cellRe = /<c\b[^>]*?(?:\/>|>([\s\S]*?)<\/c>)/g;
+              let hasContent = false;
+              let cm2;
+              while ((cm2 = cellRe.exec(inner)) !== null) {
+                const cellInner = cm2[1] || "";
+                if (/<v>[^<]*<\/v>/.test(cellInner)) {
+                  hasContent = true;
+                  break;
+                }
+              }
+              if (hasContent) xlsxRowNumbers.push(parseInt(rm2[1], 10));
+            }
+          }
+          // 多行セル対策: \r\n を " / " に圧縮して 1 row = 1 line にする
+          const cleaned = markedTextRaw.replace(/\r\n/g, " / ").replace(/\r/g, " / ");
+          const lines = cleaned.split("\n");
+          // 内容ある line を Excel 行番号でラベル
+          let rowIdx = 0;
+          markedText = lines
+            .map((line) => {
+              if (line.trim().length === 0) return line;
+              const rowNum = xlsxRowNumbers[rowIdx++] ?? rowIdx;
+              return `行${rowNum}: ${line}`;
+            })
+            .join("\n");
+        } else {
+          // docx: 段落番号 (1-indexed の連番)
+          let lineCounter = 0;
+          markedText = markedTextRaw
+            .split("\n")
+            .map((line) => {
+              if (line.trim().length === 0) return line;
+              lineCounter++;
+              return `段落${lineCounter}: ${line}`;
+            })
+            .join("\n");
+        }
+
+        // 該当 Phase 2 ドキュメント = decisionDoc (ループ変数で渡されている)
+        const myDecision = decisionDoc;
+
+        // Phase 2 全決定を AI に渡す (穴埋めデータ全件投げる = 全体齟齬防止)
+        const allDecisionsBlock = `\`\`\`json\n${JSON.stringify(phase2Decisions, null, 2)}\n\`\`\``;
+
+        const myDecisionBlock = `\`\`\`json\n${JSON.stringify(myDecision, null, 2)}\n\`\`\``;
+
+        // === Phase 2 delete から段落番号を機械的にマッピング (AI に列挙させない) ===
+        // 「Phase 2 anchor → ★label★ を含む段落」が一致するスロットレベル削除はサーバが自動処理。
+        // AI に段落番号を列挙させるとカウントミスで段落抜けが起きるため。
+        const numberedLines: { idx: number; text: string }[] = [];
+        for (const line of markedText.split("\n")) {
+          // docx 用 "段落N:" / xlsx 用 "行N:" 両対応
+          const m = line.match(/^(?:段落|行)(\d+):\s(.*)$/);
+          if (m) numberedLines.push({ idx: Number(m[1]), text: m[2] });
+        }
+        const serverAutoDeleteIndices = new Set<number>();
+        const serverAutoHandledAnchors: { anchor: string; paragraphIndex: number }[] = [];
+        const aiHandledAnchors: string[] = [];
+        if (myDecision) {
+          // 「Phase 2 の action="delete-row" の slot」と「blockDeletes の block」を集めて
+          // 各 anchor について markedText から該当段落を探す
+          const allDeleteAnchors: string[] = [
+            ...(myDecision.slotDecisions || [])
+              .filter((sd) => sd.action === "delete-row")
+              .map((sd) => sd.slot),
+            ...(myDecision.blockDeletes || []).map((bd) => bd.block),
+          ];
+          for (const anchor of allDeleteAnchors) {
+            const anchorNorm = anchor.replace(/\s/g, "");
+            let matchedIdx: number | null = null;
+            for (const nl of numberedLines) {
+              const markers = [...nl.text.matchAll(/★([^★]+)★/g)];
+              for (const [, label] of markers) {
+                const labelNorm = label.replace(/\s/g, "");
+                // 双方向 substring (Phase 2 anchor とラベルが表記揺れしても拾えるように)
+                if (anchorNorm.includes(labelNorm) || labelNorm.includes(anchorNorm)) {
+                  matchedIdx = nl.idx;
+                  break;
+                }
+              }
+              if (matchedIdx !== null) break;
+            }
+            if (matchedIdx !== null) {
+              serverAutoDeleteIndices.add(matchedIdx);
+              serverAutoHandledAnchors.push({ anchor, paragraphIndex: matchedIdx });
+            } else {
+              // ★label★ で対応する slot が無い (= ブロック削除や section header 系) → AI が判断
+              aiHandledAnchors.push(anchor);
+            }
+          }
+        }
+        const serverDeleteBlock = serverAutoHandledAnchors.length > 0
+          ? `\n## サーバが自動処理する削除 (paragraphActions に含めなくて良い)\n${serverAutoHandledAnchors.map((a) => `- 「${a.anchor}」→ 段落 ${a.paragraphIndex}`).join("\n")}\n`
+          : "";
+        const aiDeleteBlock = aiHandledAnchors.length > 0
+          ? `\n## AI が判断して paragraphActions に追加する削除 (ブロック / 範囲削除)\n${aiHandledAnchors.map((a) => `- 「${a}」(ブロック全体の段落番号を全部 paragraphActions に列挙)`).join("\n")}\n`
+          : "";
+
+        const qaBlock =
+          previousQA.length > 0
+            ? `\n## Phase 1 確認質問と回答\n${previousQA.map((qa, i) => `${i + 1}. Q: ${qa.question}\n   A: ${qa.answer}`).join("\n")}\n`
+            : "";
+
+        const prompt = `## あなたが今やること
+
+書類「${f.name}」に対する編集オペレーションを JSON で返す。
+あなたは Phase 2 で全書類の決定を済ませている。このターンはそれを **この書類1つに適用する** だけ。
+
+## テンプレ本文 (★label★ = 穴埋め位置)
+\`\`\`
+${markedText}
+\`\`\`
+
+## この書類向けの Phase 2 決定
+${myDecisionBlock}
+${serverDeleteBlock}${aiDeleteBlock}
+
+## 全書類の Phase 2 決定 (整合性確認用、参考)
+${allDecisionsBlock}
+${qaBlock}
+${globalRulesBlock}${templateMemoBlock}
+
+## 出力形式
+
+\`\`\`json
+{
+  "paragraphActions": [
+    { "paragraphIndex": 11, "action": "delete" },
+    { "paragraphIndex": 12, "action": "delete" },
+    { "paragraphIndex": 23, "action": "rewrite", "newText": "議案２　代表取締役選任の件" }
+  ],
+  "inserts": [
+    { "afterParagraphIndex": 10, "contents": ["新しい段落の本文 (★label★ 含めて OK)"] }
+  ],
+  "replaces": [
+    { "anchor": "議案３", "replacement": "議案２" }
+  ],
+  "fills": {
+    "★label★": "値"
+  }
+}
+\`\`\`
+
+## ルール
+
+**paragraphActions** (段落単位の操作。同じ段落番号は配列に **1 度だけ** しか入れられない):
+- \`{ paragraphIndex: N, action: "delete" }\` → 段落 N を削除
+- \`{ paragraphIndex: N, action: "rewrite", newText: "..." }\` → 段落 N の本文を newText に書き換え (フォント等は保持)
+- 議案ブロック等の複数段落を消す場合は **各段落ごとに entry を作る** (例: 議案2 ブロックが 段落 14〜19 なら 6 件並べる)
+
+**inserts**: 指定段落の直後に新規段落を挿入。
+- \`afterParagraphIndex: 10\` で段落 10 の直後に。contents は段落単位の配列。各要素に ★label★ 含めて OK
+
+**replaces**: 全文書から anchor 文字列を一括置換 (議案番号繰り上げ等)。
+- 例: \`{ anchor: "議案３", replacement: "議案２" }\` で本文中の「議案３」を全部「議案２」に
+
+**fills**: ★label★ マーカーを値で置換。
+- キーは \`★label★\` の形式そのまま (★ で囲む)。値は最終形式 (令和8年5月29日 等)
+
+## ルール (補助)
+
+- 段落番号 (paragraphIndex / afterParagraphIndex) は **テンプレ本文の番号**。
+  - docx: \`段落N:\` の数字 (1-indexed の連番)
+  - xlsx: \`行N:\` の数字 (Excel の行番号そのまま。間が飛ぶことあり 例: 行3, 行5)
+- 不要な操作は省略可 (paragraphActions: [], inserts: [] 等空配列で OK)
+- JSON のみ返す (説明文不要)
+- **「サーバが自動処理する削除」リストにある項目はあなたが paragraphActions に含めなくて良い**
+  (slot レベルの単純削除はサーバが機械的に処理する)
+- **「AI が判断して paragraphActions に追加する削除」リストは、あなたがブロック範囲を特定して
+  全段落番号を paragraphActions に列挙する** (議案1ブロック全体の各段落など)
+
+## xlsx に対する追加ルール (重要)
+
+- **「株主リスト」等の行構造が固定 (上位10名分の行 1-10 が事前に用意) されているテンプレでは
+  inserts (行追加) を絶対に使わない**。fills で空欄の slot に値を入れるだけ。余ったスロットは
+  そのまま空欄のままで OK (要確認 や空文字を入れない)
+- 数値が入る slot (議決権数 / 株式数 等) は数値文字列で渡す (例: "49000")。
+  サーバが自動で数値セルに変換するので Excel で計算できる
+
+## 「議案2 を削除して 議案3 を 議案2 に繰り上げる」場合の例
+
+議案2 ブロックが 段落 14〜18、議案3 ヘッダーが 段落 21 だとすると:
+
+\`\`\`json
+"paragraphActions": [
+  { "paragraphIndex": 14, "action": "delete" },
+  { "paragraphIndex": 15, "action": "delete" },
+  { "paragraphIndex": 16, "action": "delete" },
+  { "paragraphIndex": 17, "action": "delete" },
+  { "paragraphIndex": 18, "action": "delete" },
+  { "paragraphIndex": 21, "action": "rewrite", "newText": "議案２　代表取締役選任の件" }
+]
+\`\`\`
+
+- 段落 14〜18 は議案2 関係 → delete に並べる
+- 段落 21 (議案3 ヘッダー) は残して内容を繰り上げ → rewrite
+- 各段落は配列に **1 度だけ** 出現 (同段落が delete と rewrite 両方に出るのは禁止、構造的に書けないので OK)
+
+## Phase 2 決定との対応 (必須)
+
+「この書類向けの Phase 2 決定」の \`deletes\` に書かれている項目は **全件もれなく**
+deletes に反映すること。件数を数えて一致を確認。
+- Phase 2 deletes が「選任される取締役2の氏名」「選任される取締役3の氏名」「議案２...」の 3 項目
+  → テンプレ本文から ★選任される取締役2の氏名★ / ★選任される取締役3の氏名★ / 議案2 ブロック
+  が含まれる段落番号を全部見つけて deletes に積む
+
+## 削除/追加の波及効果 (必須・自分でチェック)
+
+delete / insert で構造を変えたら、テンプレ本文の他の場所も辻褄を合わせる:
+
+1. **議案番号の繰り上げ**: 議案2 を削除 → 「議案３」「議案４」は「議案２」「議案３」に繰り上げ
+   → \`replaces\` か \`rewrites\` で対応 (見出し丸ごとなら rewrites、本文中の参照なら replaces)
+2. **項番の繰り上げ**: (1)(2)(3) や ア．イ．ウ． 等
+3. **件数の修正**: 「取締役3名」→「取締役2名」等
+4. **参照の整合**: 「上記○○」「下記○○」が指す先が削除されたら直す
+
+deletes / inserts を決めた後、**テンプレ本文を頭から最後まで読み返して**、書き換える箇所を
+全部 replaces / rewrites に積む。サーバは AI の指示通り動くだけ。AI が見落としたら書類が壊れる。`;
+
+        const response = await client.messages.create({
+          model: MODEL,
+          max_tokens: 4096,
+          temperature: 0,
+          messages: [{ role: "user", content: prompt }],
+        });
+        logTokenUsage(`/api/document-templates/produce-v2 (${f.name})`, MODEL, response.usage);
+
+        const aiText = response.content[0].type === "text" ? response.content[0].text : "";
+
+        // JSON 抽出
+        let edits: DocResponse = {};
+        const jsonMatch = aiText.match(/```json\s*([\s\S]*?)```/) || aiText.match(/\{[\s\S]*\}/);
+        const jsonText = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : "";
+        try {
+          edits = JSON.parse(jsonText);
+        } catch (e) {
+          console.warn(`[produce-v2] JSON parse failed for ${f.name}:`, e instanceof Error ? e.message : e);
+          return null;
+        }
+
+        // AI が返した編集 JSON をログに残す (デバッグ用)
+        console.log(
+          `[produce-v2] ${f.name} edits summary:`,
+          JSON.stringify({
+            paragraphActions: edits.paragraphActions?.length ?? 0,
+            inserts: edits.inserts?.length ?? 0,
+            replaces: edits.replaces?.length ?? 0,
+            fills: Object.keys(edits.fills || {}).length,
+          })
+        );
+        console.log(`[produce-v2] ${f.name} parsed edits FULL:`, JSON.stringify(edits, null, 2));
+        console.log(`[produce-v2] ${f.name} AI raw response (first 2000 chars):`, aiText.slice(0, 2000));
+        // デバッグ用に AI の生応答と edits を /tmp に保存 (後で内容を inspect できるように)
+        try {
+          const debugDir = path.join(process.cwd(), "data", "produce-v2-debug");
+          await fs.mkdir(debugDir, { recursive: true });
+          const slug = f.name.replace(/[^\w.\-]/g, "_");
+          await fs.writeFile(
+            path.join(debugDir, `${threadId}_${slug}.json`),
+            JSON.stringify({ markedText, aiResponseText: aiText, parsedEdits: edits }, null, 2),
+            "utf-8"
+          );
+        } catch (e) {
+          console.warn("[produce-v2] debug write failed:", e instanceof Error ? e.message : e);
+        }
+        // サーバ pre-compute した auto-delete を AI の paragraphActions にマージ
+        // (AI のカウントミスで slot 削除が抜けても、ここで補完される)
+        if (serverAutoDeleteIndices.size > 0) {
+          edits.paragraphActions = edits.paragraphActions || [];
+          const existing = new Set(edits.paragraphActions.map((a) => a.paragraphIndex));
+          for (const idx of serverAutoDeleteIndices) {
+            if (!existing.has(idx)) {
+              edits.paragraphActions.push({ paragraphIndex: idx, action: "delete" });
+            }
+          }
+          console.log(
+            `[produce-v2] ${f.name} server auto-deletes merged:`,
+            [...serverAutoDeleteIndices]
+          );
+        }
+
+        const deletes = (edits.paragraphActions || []).filter((a) => a.action === "delete");
+        if (deletes.length > 0) {
+          console.log(`[produce-v2] ${f.name} delete indices (after merge):`, deletes.map((d) => d.paragraphIndex));
+        }
+
+        // edit engine で適用 (xlsx / docx の振り分け)
+        let result = isXlsx
+          ? await applyProduceEditsXlsx(buf, edits, labels)
+          : await applyProduceEditsDocx(buf, edits, labels);
+        if (result.skipped.length > 0) {
+          console.warn(`[produce-v2] ${f.name} skipped:`, result.skipped);
+        }
+        console.log(`[produce-v2] ${f.name} applied: ${result.applied.length}, skipped: ${result.skipped.length}`);
+
+        // (safety net は pre-compute によって不要になったため削除)
+
+        // previewHtml: docx は mammoth で、xlsx は簡易な空表示 (フロントの FilePreview が xlsx も扱える前提)
+        let previewHtml = "";
+        if (!isXlsx) {
+          try {
+            const { value } = await mammoth.convertToHtml({ buffer: result.buf });
+            previewHtml = value;
+          } catch (e) {
+            console.warn(`[produce-v2] mammoth failed for ${f.name}:`, e instanceof Error ? e.message : e);
+          }
+        }
+
+        // outputLabel があれば出力ファイル名にサフィックスを付ける (例: "X_藤崎用.docx")
+        const baseName = f.name.replace(/\.[^.]+$/, "");
+        const extPart = f.name.slice(baseName.length);   // ".docx" 等 (.含む)
+        const labelSuffix = decisionDoc.outputLabel ? `_${sanitizeFsName(decisionDoc.outputLabel)}` : "";
+        const outName = `${baseName}${labelSuffix}${extPart}`;
+        const displayName = `${baseName}${labelSuffix}`;
+
+        return {
+          name: displayName,
+          fileName: outName,
+          docxBase64: result.buf.toString("base64"),
+          previewHtml,
+          templatePath: f.path,
+        };
+      } catch (e) {
+        console.error(`[produce-v2] ${decisionDoc.templateFile} (${decisionDoc.outputLabel || ""}) failed:`, e instanceof Error ? e.stack || e.message : e);
+        return null;
+      }
+    })
+  );
+
+  const documents = docOuts.filter((d): d is DocOut => d !== null);
+
+  return NextResponse.json({ documents });
+}

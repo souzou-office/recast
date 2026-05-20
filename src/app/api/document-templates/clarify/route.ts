@@ -12,7 +12,6 @@ import {
   hasStage,
 } from "@/lib/case-conversation";
 import type { ClarificationQuestion } from "@/types";
-import { textFromContent } from "@/lib/anthropic-response";
 
 const client = new Anthropic();
 const MODEL = "claude-sonnet-4-6";
@@ -68,72 +67,37 @@ export async function POST(request: NextRequest) {
     ? `\n## これまでの確認結果（既に確定済み。再質問しないこと）\n${previousQA.map(qa => `- Q: ${qa.question}\n  A: ${qa.answer}`).join("\n")}\n`
     : "";
 
-  // 旧設計では clarify を多段で呼び、毎ラウンド AI が新規 Q を追加していたため
-  // 「24 問を 4 ラウンド」みたいな分散が起きていた（AI が「重要なものから」と保守的に出すクセ）。
-  // 新設計: 初回呼び出しで**全ての不確かな項目を一度に出させる**。
-  // 再呼び出し時 (previousQA あり) は「前回 exhaustive だった前提」で原則ゼロ件を返させる。
-  const exhaustiveInstruction = isReCall
-    ? `## あなたが今やること（ターン2 再実行: 取りこぼし確認）
+  const reCallNote = isReCall
+    ? `\n再実行: 「これまでの確認結果」にあるものは原則 \`[]\` を返す。回答から新たな矛盾が見えた時だけ追加質問する。\n`
+    : "";
 
-前回の clarify で既にユーザーが回答済みの項目が「これまでの確認結果」に入ってます。
+  const userTurnText = `## あなたが今やること
 
-**原則: ここでは新規質問を追加しないでください。空配列 \`[]\` を返してください。**
-
-例外として、新規質問を追加してよいのは以下の場合のみ:
-- ユーザーの回答内容から**新たな矛盾や不整合**が見えた（例: 株主3名と言ったが回答では2名分しか出てない）
-- 回答が**曖昧で**そのまま書類生成に進むと致命的な誤りになる
-- 前回の質問では**触れられなかった重要事項**で、書類生成に絶対必要
-
-上記に当てはまらない限り、必ず \`[]\` を返すこと。AI 側で「念のため」を増やさないこと。`
-    : `## あなたが今やること（ターン2: 不足項目の確認質問を作る）
-
-ターン1で整理してくれた内容と、テンプレ本体の各スロットを照らし合わせて、
-**まだ値が確定していない項目を「この1回で全て」** 確認質問として作ってください。
-
-**最重要ルール**:
-- これはユーザーに質問できる**唯一の機会**です。後から「もう一個聞きたい」「次のターンで追加で聞く」は禁止。
-- 不確かな項目は**全部この回で列挙**してください。「重要なものから出して、残りは次回」のような分割はしないこと。
-- ユーザーは多少多くても1回で全部答える方が楽です。逆に小出しに何度も聞かれる方が遥かに負担。
-- 迷ったら「聞く」側に倒す。漏れて後から訂正が入るより、最初に確認した方が結果として早い。
-
-判断基準:
-- ターン1の整理結果で値が \`*要確認*\` になっているもの → 必ず質問
-- ターン1で「⚠ 要確認事項」セクションに書いた項目 → 必ず質問（ただし1つの懸念に対して質問1個。重複させない）
-- ターン1で値を出せたが、自信がない・複数解釈ができる → 質問
-- ターン1で確実に出せた値 → 質問しない
-
-**重要**: 同じ topic を別の表現で 2 回質問しないこと。たとえば「会社商号の表記ゆれ」と
-「会社名（商号）」は同じ topic なので、1 つの質問にまとめる。`;
-
-  const userTurnText = `${exhaustiveInstruction}
-
-各質問には可能な限り候補を 1〜3 件 options に含める:
-- 案件整理で挙げた候補・基本情報の値などを options に入れる
-- それぞれ source に出典（どの資料か）を書く
-- 手動入力ができる（フロントエンドが自動で追加）ので、分からなければ空の options でも可
-
+ターン1 で出した整理結果と ⚠ 要確認事項を踏まえて、ユーザーに聞くべき質問を JSON 配列で出す。
+**この1回で全部** 聞く (後出し追加禁止)。
+${reCallNote}
 ${previousQABlock}
-## 出力形式（JSONのみ）
+
+## ルール
+
+- ⚠ 要確認事項に書いた項目は全部この回で出す (重要度で絞らない)
+- 同じ topic は1つにまとめる
+- ターン1 で確定した値・基本情報の過去履歴は質問しない
+- 候補が分かれば 1〜3 件 options に積む (source に出典)
+- 質問文は普通の業務日本語。内部用語 (システムエラー / パース失敗 等) は使わない
+- **質問本文と options の数字表記を揃える**。混在させない (例: 質問で「7番13号」と書いて
+  options で「七番十三号」は NG。同じ住所が違って見えてユーザーが混乱する)
+- **住所・氏名・日付などは options に出す形をそのまま質問文にも使う**
+  (登記書類の正式表記が漢数字なら、質問文も漢数字に。半角なら半角に統一)
+
+## 出力 (JSON 配列のみ、説明文なし)
+
 \`\`\`json
 [
-  {
-    "id": "q1",
-    "placeholder": "プレースホルダー名（テンプレで使われているラベル名）",
-    "question": "質問文",
-    "options": [
-      { "id": "a1", "label": "選択肢の値", "source": "出典（登記簿 2024/03等）" }
-    ]
-  }
+  { "id": "q1", "placeholder": "ラベル名", "question": "質問文",
+    "options": [{ "id": "a1", "label": "値", "source": "出典" }] }
 ]
-\`\`\`
-
-## 質問してはいけないもの（厳守）
-- ターン1の整理結果で確定した値の確認（既に確定済み）
-- 基本情報内の変更履歴・過去の辞任・過去の住所移転等、今回の手続きと関係ない過去の事実
-- 「これまでの確認結果」に含まれる項目
-- 同じ topic の別表現での重複質問
-
-JSON配列のみ返してください。説明文・前置き不要。`;
+\`\`\``;
 
   const messagesWithUserTurn = appendUserTurn(aiMessages, userTurnText, "clarify");
 
@@ -141,11 +105,12 @@ JSON配列のみ返してください。説明文・前置き不要。`;
     const response = await client.messages.create({
       model: MODEL,
       max_tokens: 4096,
+      temperature: 0,
       messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
     });
     logTokenUsage("/api/document-templates/clarify", MODEL, response.usage);
 
-    const text = textFromContent(response.content);
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
 
     // assistant ターンを保存（produce/verify が読む）
     const finalMessages = appendAssistantTurn(messagesWithUserTurn, text, "clarify");
