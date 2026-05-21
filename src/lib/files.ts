@@ -82,10 +82,17 @@ export async function readAllFilesInFolder(dirPath: string): Promise<FileContent
       const ext = path.extname(entry.name).toLowerCase();
       const mime = mimeFromExtension(ext);
 
-      if (TEXT_MIME_TYPES.has(mime) && entry.size > MAX_TEXT_SIZE) continue;
+      if (TEXT_MIME_TYPES.has(mime) && entry.size > MAX_TEXT_SIZE) {
+        console.warn(`[readAllFiles] skip ${entry.name}: テキストファイルサイズ上限超過 (${(entry.size / 1024).toFixed(0)} KB > ${MAX_TEXT_SIZE / 1024} KB)`);
+        continue;
+      }
       if (BINARY_MIME_TYPES.has(mime)) {
-        if (entry.size > MAX_BINARY_SIZE) continue;
+        if (entry.size > MAX_BINARY_SIZE) {
+          console.warn(`[readAllFiles] skip ${entry.name}: バイナリファイルサイズ上限超過 (${(entry.size / 1024 / 1024).toFixed(1)} MB > ${MAX_BINARY_SIZE / 1024 / 1024} MB)`);
+          continue;
+        }
         if (totalBinarySize + entry.size > MAX_TOTAL_BINARY_SIZE) {
+          console.warn(`[readAllFiles] skip ${entry.name}: 合計サイズ上限到達 (${((totalBinarySize + entry.size) / 1024 / 1024).toFixed(1)} MB > ${MAX_TOTAL_BINARY_SIZE / 1024 / 1024} MB)`);
           contents.push({ name: entry.name, path: entry.path, content: `[スキップ: 合計サイズ上限に達しました]` });
           continue;
         }
