@@ -686,6 +686,15 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         if (idx >= 0) return s.slice(0, idx).trimEnd();
         return s;
       };
+      // AI の中間推論 md を <details> で「最初から折り畳み」表示する (Claude Extended Thinking 風)。
+      // ユーザーは結果 (clarify-procedural の質問 / 生成書類) を見るだけで十分なケースが多く、
+      // 推論文は読みたい人だけ展開すれば良い。
+      const wrapReasoning = (text: string, isStreaming: boolean): string => {
+        const summary = isStreaming
+          ? `🤔 Phase 2 分析中... (${text.length} 文字)`
+          : `🤔 Phase 2 分析完了 (クリックで推論を展開)`;
+        return `<details>\n<summary>${summary}</summary>\n\n${text}\n\n</details>`;
+      };
       if (reader) {
         const decoder = new TextDecoder();
         let buffer = "";
@@ -701,7 +710,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const data = JSON.parse(match[1]);
             if (data.type === "text") {
               fullText += data.text;
-              const displayText = stripJsonBlock(fullText);
+              const displayText = wrapReasoning(stripJsonBlock(fullText), true);
               setThread(prev => {
                 if (!prev) return prev;
                 const msgs = [...prev.messages];
@@ -729,6 +738,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const idx = fullText.search(/```json/);
       return idx >= 0 ? fullText.slice(0, idx).trimEnd() : fullText;
     })();
+    // 完了時は推論文を「折り畳み」状態で保存 (リロードしてもデフォルト closed)
+    const reasoningBlock = `<details>\n<summary>🤔 Phase 2 分析完了 (クリックで推論を展開)</summary>\n\n${stripped}\n\n</details>`;
     // 折り畳みで「最終データ」と「テンプレ構造」を見せる
     const decisionsBlock = receivedDecisions
       ? `\n\n<details>\n<summary>📋 書類作成に使う最終データ (Phase 2 決定 — クリックで展開)</summary>\n\n\`\`\`json\n${JSON.stringify(receivedDecisions, null, 2)}\n\`\`\`\n\n</details>`
@@ -736,7 +747,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     const structuresBlock = receivedStructures.length > 0
       ? `\n\n<details>\n<summary>🗂️ テンプレ構造 (★label★ = 穴埋め位置 — クリックで展開)</summary>\n\n${receivedStructures.map(s => `#### ${s.templateFile}\n\n\`\`\`\n${s.markedText}\n\`\`\``).join("\n\n")}\n\n</details>`
       : "";
-    const displayText = stripped + decisionsBlock + structuresBlock;
+    const displayText = reasoningBlock + decisionsBlock + structuresBlock;
     // 折り畳みも含めて状態に反映
     setThread(prev => {
       if (!prev) return prev;
