@@ -36,7 +36,12 @@ import type { Phase2Decisions, Phase2DocumentDecision } from "@/types";
 
 const client = new Anthropic();
 const REASONING_MODEL = "claude-sonnet-4-6";
-const JSON_MODEL = "claude-haiku-4-5-20251001";
+// Call 2 も Sonnet を使う。Haiku は schema の semantic (blockDeletes anchor の意味、
+// rowInsertions の 1 行 1 entry ルール、afterSlot に slot 名のみ可、等) を誤解する傾向が
+// あり、推論メモを正しく構造化できないケースが頻発した (総数引受で blockDelete の endAnchor を
+// 同じ slot にしたり、rowInsertions に複数行を \n 詰めしたり)。
+// Sonnet なら schema 理解が確実。コスト差は Phase 2 で +数円程度 (1 案件 1 回呼び出し)。
+const JSON_MODEL = "claude-sonnet-4-6";
 
 // Phase 2 の出力 schema (Tool Use 用)。types/index.ts の Phase2DocumentDecision と整合させる。
 // AI はこの schema に従って構造化データを返す。schema 違反は API レベルで弾かれる。
@@ -98,12 +103,26 @@ const PHASE2_DECISIONS_TOOL: Anthropic.Tool = {
             },
             blockDeletes: {
               type: "array",
-              description: "議案ブロック等の複数段落削除。startAnchor〜endAnchor の直前まで削除",
+              description:
+                "議案ブロック等の複数段落削除。" +
+                "**個別の slot 削除には使わない (それは slotDecisions[delete-row] でやる)**。" +
+                "議案 2 全体を消す等、複数段落にまたがる範囲削除でのみ使用",
               items: {
                 type: "object",
                 properties: {
-                  startAnchor: { type: "string", description: "削除開始段落に含まれる文字列" },
-                  endAnchor: { type: "string", description: "削除終了の次の段落に含まれる文字列。省略時は文書末尾まで" },
+                  startAnchor: {
+                    type: "string",
+                    description:
+                      "削除開始 (= 削除する最初の段落) に含まれる文字列。例: '議案２　取締役の報酬に関する件'",
+                  },
+                  endAnchor: {
+                    type: "string",
+                    description:
+                      "**削除しない次の段落** (= 残す段落) に含まれる文字列。" +
+                      "例: 議案2 を消すなら '議案３' (次の議案ヘッダ)。" +
+                      "重要: endAnchor の段落自体は **削除されない**。startAnchor の段落から endAnchor 段落の直前までを削除。" +
+                      "省略時は文書末尾まで削除",
+                  },
                   reason: { type: "string" },
                 },
                 required: ["startAnchor", "reason"],
@@ -111,12 +130,26 @@ const PHASE2_DECISIONS_TOOL: Anthropic.Tool = {
             },
             rowInsertions: {
               type: "array",
-              description: "新規行挿入 (ラベル変換等)。docx のみ、xlsx には使わない",
+              description:
+                "新規行挿入 (ラベル変換等)。docx のみ、xlsx には使わない。" +
+                "**1 行 = 1 entry**。3 行挿入したいなら entry を 3 個作る (1 entry に複数行を \\n で詰め込まない)",
               items: {
                 type: "object",
                 properties: {
-                  afterSlot: { type: "string", description: "この slot を含む行の直後に挿入" },
-                  template: { type: "string", description: "行のテンプレ文字列 (★新ラベル★ 含む)" },
+                  afterSlot: {
+                    type: "string",
+                    description:
+                      "この slot を含む行の直後に挿入。" +
+                      "**必ずテンプレに存在する slot 名** (★label★ の中身)。" +
+                      "「同意欄」「（乙）」みたいな固定テキストは指定不可、必ず既存 slot を指定すること。" +
+                      "rowInsertions の前の entry で作った新ラベルも指定可 (連鎖挿入)",
+                  },
+                  template: {
+                    type: "string",
+                    description:
+                      "行のテンプレ文字列 (★新ラベル★ 含む)。" +
+                      "**1 段落のテキストのみ**。改行 (\\n) を含めない。複数段落挿入したい場合は entry を分ける",
+                  },
                   fills: {
                     type: "array",
                     description: "template 内の ★新ラベル★ ごとの値",
@@ -411,7 +444,7 @@ ${templateBodyBlock}
             logTokenUsage(`/api/document-templates/analyze (Call 1 reasoning)`, REASONING_MODEL, final.usage);
           } catch { /* ignore */ }
 
-          // ============== Call 2: Haiku 4.5 で JSON 化 (Tool Use) ==============
+          // ============== Call 2: Sonnet 4.6 で JSON 化 (Tool Use) ==============
           send(controller, { type: "text", text: "\n\n_(構造化データに変換中...)_\n" });
 
           const jsonPrompt = `## あなたの仕事
@@ -419,8 +452,8 @@ ${templateBodyBlock}
 下の「推論メモ」と「テンプレ本文」を読んで、submit_phase2_decisions ツールを呼び出して
 Phase 2 の構造化決定を提出してください。
 
-**推論を改変するな**。推論メモに書かれた判断 (slot → action → value/reason) を **そのまま** ツールの
-引数に転記してください。あなたは形式変換だけする立場。新しい判断はしない。
+**推論を改変するな**。推論メモに書かれた判断を **正確に** ツールの引数に転記する。あなたは形式変換だけ。
+新しい判断はしない。
 
 ${templateBodyBlock}
 
@@ -432,13 +465,48 @@ ${reasoningText}
 
 ---
 
-## ツール呼び出しのルール
+## ツール呼び出しの正しい使い方 (重要)
+
+### slotDecisions (★label★ への指示)
 
 - 推論メモに書かれた slot 1 つ 1 つを slotDecisions の entry にする
-- 「delete-row」と書いてあれば action: "delete-row"、「fill: "X"」と書いてあれば action: "fill", value: "X"
+- 「delete-row」と書いてあれば \`action: "delete-row"\`
+- 「fill: "X"」と書いてあれば \`action: "fill", value: "X"\`
 - 推論メモに書かれてない slot は documents[].slotDecisions に含めない (空欄 fill しない)
-- 株主毎複製等は outputLabel で区別して documents 配列に複数 entry を作る
-- templateFile はクリーンな物理ファイル名 (★ラベル★ 系の名前ではない)`;
+- **個別の slot 行を消す** のは slotDecisions[delete-row] でやる (blockDeletes ではない)
+
+### blockDeletes (複数段落の範囲削除)
+
+**individual slot の delete-row には使わない**。議案2 ブロック全体みたいに、**複数段落** を範囲削除するときだけ。
+
+\`startAnchor\` = 削除する **最初の段落** に含まれる文字列
+\`endAnchor\` = 削除した **直後に残す段落** に含まれる文字列 (この段落は削除されない)
+
+❌ 悪い例: \`startAnchor="主たる事務所", endAnchor="★主たる事務所所在地★"\`
+   → 同じ行を指してる。これは個別 slot 削除なので **slotDecisions[delete-row]** でやる
+
+✅ 良い例: \`startAnchor="議案２　取締役の報酬", endAnchor="議案３"\`
+   → 議案2 から議案3 の手前までを範囲削除
+
+### rowInsertions (新規行挿入)
+
+**1 行 = 1 entry**。3 行挿入したいなら entry を 3 個作る。
+
+❌ 悪い例: \`template="本店 ★...★\\n商号 ★...★\\n代表取締役 ★...★"\` (\\n で詰め込み)
+   → これは「1 段落の中に改行入りテキスト」になり、3 行として展開されない
+
+✅ 良い例: rowInsertions に 3 entry:
+   1. \`{afterSlot: "甲の代表取締役", template: "本店 ★乙の本店所在地★", fills: [...]}\`
+   2. \`{afterSlot: "乙の本店所在地", template: "商号 ★乙の商号★", fills: [...]}\` (連鎖)
+   3. \`{afterSlot: "乙の商号", template: "代表取締役 ★乙の代表取締役★", fills: [...]}\` (連鎖)
+
+\`afterSlot\` は **必ずテンプレに存在する slot 名** (★label★ の中身) または **前の entry で作った新ラベル名**。
+固定テキスト ("（乙）" "同意欄" 等) は指定不可。
+
+### templateFile / outputLabel
+
+- \`templateFile\` はクリーンな物理ファイル名 (例: "2-1.提案書兼同意書.docx")
+- 株主毎複製等は \`outputLabel\` で区別。documents 配列に N 個の entry を作る (templateFile は同じまま)`;
 
           const decisionsResponse = await client.messages.create({
             model: JSON_MODEL,
