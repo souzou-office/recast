@@ -408,7 +408,12 @@ ${templateBodyBlock}
 - ...
 \`\`\`
 
-**JSON は出さない。後段の AI が推論を読んで JSON 化する。**`;
+**JSON は出さない。後段の AI が推論を読んで JSON 化する。**
+
+## 出力フォーマット注意
+
+- **「ターン1:」「ターン2:」みたいな番号ラベルは出さない**。書類別の見出し (### 1.取締役決定書.docx 等) だけ書く
+- 推論の中身に集中する。会話番号付けは不要`;
 
   const messagesWithUserTurn = appendUserTurn(aiMessages, reasoningPrompt, "analyze");
 
@@ -420,6 +425,7 @@ ${templateBodyBlock}
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          send(controller, { type: "stage", stage: "reading-templates" });
           if (templateStructures.length > 0) {
             send(controller, { type: "structures", structures: templateStructures });
           }
@@ -529,6 +535,7 @@ ${reasoningText}
           }
 
           if (decisions && Array.isArray(decisions.documents)) {
+            send(controller, { type: "stage", stage: "validating" });
             validateRowInsertions(decisions);
             await savePhase2Decisions(company.id, threadId, decisions);
             const summary = decisions.documents.map((d: Phase2DocumentDecision) => {

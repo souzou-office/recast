@@ -501,9 +501,10 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       // stage 情報で「今何してるか」を summary に出す (文字数より意味的)。
       const wrapOrganizeReasoning = (text: string, stage: string): string => {
         const summary = {
-          starting: `📋 案件整理を開始中...`,
-          organizing: `📋 案件整理中... (資料を読んで内容理解中)`,
-          complete: `📋 案件整理完了 (クリックで展開)`,
+          starting: `🚀 案件整理を開始中...`,
+          organizing: `📋 案件整理中... (案件資料を読んで内容理解中)`,
+          "linking-sources": `🔗 出典リンク生成中...`,
+          complete: `✓ 案件整理完了 (クリックで展開)`,
         }[stage] || `📋 案件整理中...`;
         return `<details>\n<summary>${summary}</summary>\n\n${text}\n\n</details>`;
       };
@@ -550,8 +551,15 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           }
         }
 
-        // 出典リンクを生成
+        // 出典リンクを生成 (この間 summary を "linking-sources" に切り替え)
         if (metaSourceFiles.length > 0 && fullText) {
+          setThread(prev => {
+            if (!prev) return prev;
+            const msgs = [...prev.messages];
+            const last = msgs[msgs.length - 1];
+            if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: wrapOrganizeReasoning(fullText, "linking-sources") };
+            return { ...prev, messages: msgs };
+          });
           try {
             const linkRes = await fetch("/api/templates/link-sources", {
               method: "POST",
@@ -711,13 +719,15 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return s;
       };
       // AI の中間推論 md を <details> で「最初から折り畳み」表示する (Claude Extended Thinking 風)。
-      // stage 情報で「今何してるか」を summary に出す (推論中 → 構造化中 → 完了)。
+      // stage 情報で「今何してるか」を細かく summary に出す。
       const wrapReasoning = (text: string, stage: string): string => {
         const summary = {
-          starting: `🤔 Phase 2 分析を開始中...`,
-          reasoning: `🤔 推論中... (slot 判断・行操作を検討中)`,
+          starting: `🚀 Phase 2 分析を開始中...`,
+          "reading-templates": `📂 テンプレート読み込み中...`,
+          reasoning: `🤔 推論中... (各書類の slot をどう埋めるか検討中)`,
           structuring: `🔧 構造化中... (Tool Use で JSON 化)`,
-          complete: `🤔 Phase 2 分析完了 (クリックで推論を展開)`,
+          validating: `✅ 検証中... (整合性チェック)`,
+          complete: `✓ Phase 2 分析完了 (クリックで推論を展開)`,
         }[stage] || `🤔 Phase 2 分析中...`;
         return `<details>\n<summary>${summary}</summary>\n\n${text}\n\n</details>`;
       };
