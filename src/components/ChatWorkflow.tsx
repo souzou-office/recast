@@ -497,18 +497,21 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
       const reader = res.body?.getReader();
-      // Phase 1 (案件整理) の AI 推論文も Phase 2 と同じく <details> で「最初から折り畳み」表示。
-      // チャット欄をスクロールしたとき過去の長い推論が邪魔にならないように。
-      const wrapOrganizeReasoning = (text: string, isStreaming: boolean): string => {
-        const summary = isStreaming
-          ? `📋 案件整理中... (${text.length} 文字)`
-          : `📋 案件整理完了 (クリックで展開)`;
+      // Phase 1 (案件整理) の AI 推論文を <details> で「最初から折り畳み」表示。
+      // stage 情報で「今何してるか」を summary に出す (文字数より意味的)。
+      const wrapOrganizeReasoning = (text: string, stage: string): string => {
+        const summary = {
+          starting: `📋 案件整理を開始中...`,
+          organizing: `📋 案件整理中... (資料を読んで内容理解中)`,
+          complete: `📋 案件整理完了 (クリックで展開)`,
+        }[stage] || `📋 案件整理中...`;
         return `<details>\n<summary>${summary}</summary>\n\n${text}\n\n</details>`;
       };
       if (reader) {
         const decoder = new TextDecoder();
         let buffer = "";
         let fullText = "";
+        let currentStage = "starting";
         let metaSourceFiles: { id: string; name: string; mimeType: string }[] = [];
 
         while (true) {
@@ -523,9 +526,19 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const data = JSON.parse(match[1]);
             if (data.type === "meta" && data.sourceFiles) {
               metaSourceFiles = data.sourceFiles;
+            } else if (data.type === "stage") {
+              currentStage = data.stage;
+              const wrapped = wrapOrganizeReasoning(fullText, currentStage);
+              setThread(prev => {
+                if (!prev) return prev;
+                const msgs = [...prev.messages];
+                const last = msgs[msgs.length - 1];
+                if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: wrapped };
+                return { ...prev, messages: msgs };
+              });
             } else if (data.type === "text") {
               fullText += data.text;
-              const wrapped = wrapOrganizeReasoning(fullText, true);
+              const wrapped = wrapOrganizeReasoning(fullText, currentStage);
               setThread(prev => {
                 if (!prev) return prev;
                 const msgs = [...prev.messages];
@@ -567,7 +580,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         // - 画面表示用 (message.content): <details> 折り畳み付きで保存 (リロードしても折り畳み維持)
         // - clarify / chat API 用 (masterSheet.content): 折り畳みタグ無しの素 md
         //   (LLM が details タグを読まないようにするため)
-        const wrappedFinal = wrapOrganizeReasoning(fullText, false);
+        const wrappedFinal = wrapOrganizeReasoning(fullText, "complete");
         organizeMsg.content = wrappedFinal;
         await fetch(`/api/chat-threads/${currentThread.id}`, {
           method: "PATCH",
@@ -698,17 +711,20 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return s;
       };
       // AI の中間推論 md を <details> で「最初から折り畳み」表示する (Claude Extended Thinking 風)。
-      // ユーザーは結果 (clarify-procedural の質問 / 生成書類) を見るだけで十分なケースが多く、
-      // 推論文は読みたい人だけ展開すれば良い。
-      const wrapReasoning = (text: string, isStreaming: boolean): string => {
-        const summary = isStreaming
-          ? `🤔 Phase 2 分析中... (${text.length} 文字)`
-          : `🤔 Phase 2 分析完了 (クリックで推論を展開)`;
+      // stage 情報で「今何してるか」を summary に出す (推論中 → 構造化中 → 完了)。
+      const wrapReasoning = (text: string, stage: string): string => {
+        const summary = {
+          starting: `🤔 Phase 2 分析を開始中...`,
+          reasoning: `🤔 推論中... (slot 判断・行操作を検討中)`,
+          structuring: `🔧 構造化中... (Tool Use で JSON 化)`,
+          complete: `🤔 Phase 2 分析完了 (クリックで推論を展開)`,
+        }[stage] || `🤔 Phase 2 分析中...`;
         return `<details>\n<summary>${summary}</summary>\n\n${text}\n\n</details>`;
       };
       if (reader) {
         const decoder = new TextDecoder();
         let buffer = "";
+        let currentStage = "starting";
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -719,9 +735,21 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             const match = line.match(/^data: (.+)$/m);
             if (!match) continue;
             const data = JSON.parse(match[1]);
-            if (data.type === "text") {
+            if (data.type === "stage") {
+              currentStage = data.stage;
+              const displayText = wrapReasoning(stripJsonBlock(fullText), currentStage);
+              setThread(prev => {
+                if (!prev) return prev;
+                const msgs = [...prev.messages];
+                const last = msgs[msgs.length - 1];
+                if (last.role === "assistant" && last.id === analyzeMsg.id) {
+                  msgs[msgs.length - 1] = { ...last, content: displayText };
+                }
+                return { ...prev, messages: msgs };
+              });
+            } else if (data.type === "text") {
               fullText += data.text;
-              const displayText = wrapReasoning(stripJsonBlock(fullText), true);
+              const displayText = wrapReasoning(stripJsonBlock(fullText), currentStage);
               setThread(prev => {
                 if (!prev) return prev;
                 const msgs = [...prev.messages];
