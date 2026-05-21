@@ -368,6 +368,33 @@ export async function POST(request: NextRequest) {
           }
         }
 
+        // 7. Phase 2 が触らなかった ★label★ マーカーを空文字 fill で自動クリア
+        //
+        // 背景: xlsx (株主リスト等) では 1-10 位 の slot が事前に用意されているが、Phase 2 が
+        // データを持っている上位 N 位だけ fill 指示を出す。残りの slot は触らないため、
+        // applyProduceEdits の flatten 工程で書き込まれた ★label★ がそのまま残ってしまう
+        // (例: ★議決権上位株主3位の氏名★ が書類本文に出る)。
+        //
+        // 対策: labels.json から全 slot を見て、Phase 2 が触らなかったマーカーは空文字で fill。
+        // これで「Phase 2 が使わない slot は空セルに」というユーザー期待動作になる。
+        //
+        // 注意: rowInsertions で作った新ラベル (labels.json には無い) は ri.fills 経由で
+        // 既に処理済みなので、ここでは labels.json の slot だけ扱えば十分。
+        let autoClearedCount = 0;
+        if (labels?.slots) {
+          for (const s of labels.slots) {
+            const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
+            const marker = `★${labelStr}★`;
+            if (!(marker in fills)) {
+              fills[marker] = "";
+              autoClearedCount++;
+            }
+          }
+        }
+        if (autoClearedCount > 0) {
+          console.log(`[produce-v2] ${f.name} auto-cleared ${autoClearedCount} unaddressed markers`);
+        }
+
         // 全 delete indices をマージして paragraphActions に
         const allDeleteIndices = new Set([...blockDeleteIndices, ...slotDeleteIndices]);
         for (const idx of allDeleteIndices) {
