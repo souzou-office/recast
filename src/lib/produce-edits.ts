@@ -250,12 +250,37 @@ function makeParagraph(text: string): string {
 
 // 参照段落 (の XML) から <w:pPr> と <w:rPr> を取り出して、それを用いた段落を作る。
 // これで挿入段落のフォント・サイズ・インデント等がテンプレ本文と揃う。
+//
+// 注意: 元段落の <w:rPr> には run 固有の表示効果が含まれることがある:
+//   - <w:fitText w:val="1540" .../>: 指定幅にテキストを押し込む (例: "代表取締役" を
+//     一定幅で「代　表　取　締　役」と広く見せるために使われる)
+//   - <w:spacing w:val="..."/>: 文字間隔 (上記 fitText とセットでよく出る)
+// これらを継承すると、挿入する長文が固定幅に押し込まれて極小表示になる事故が起きる。
+// 新規挿入段落では run 固有の押し込み効果を **必ず除去** する。
 function makeStyledParagraphFromReference(text: string, referenceParaXml: string): string {
   const pPrMatch = referenceParaXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
   const pPr = pPrMatch ? pPrMatch[0] : "";
-  // 最初の <w:rPr> を取得 (run の書式)
-  const rPrMatch = referenceParaXml.match(/<w:r\b[^>]*>[\s\S]*?(<w:rPr>[\s\S]*?<\/w:rPr>)/);
-  const rPr = rPrMatch ? rPrMatch[1] : "";
+
+  // rPr 取得: 優先順位
+  //   1. <w:pPr> 内の <w:rPr> (段落デフォルトの run 書式。fitText 等の run 固有効果が無いはず)
+  //   2. 最初の <w:r> 内の <w:rPr>
+  let rPr = "";
+  if (pPr) {
+    const pPrRPr = pPr.match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
+    if (pPrRPr) rPr = pPrRPr[0];
+  }
+  if (!rPr) {
+    const rPrMatch = referenceParaXml.match(/<w:r\b[^>]*>[\s\S]*?(<w:rPr>[\s\S]*?<\/w:rPr>)/);
+    if (rPrMatch) rPr = rPrMatch[1];
+  }
+
+  // run 固有の押し込み効果を除去 (fitText / character-level spacing)。
+  // 段落単位の line spacing 等は pPr 側にあるのでこのストリップは安全。
+  rPr = rPr
+    .replace(/<w:fitText\b[^>]*\/>/g, "")
+    .replace(/<w:fitText\b[^>]*>[\s\S]*?<\/w:fitText>/g, "")
+    .replace(/<w:spacing\b[^>]*\/>/g, "");
+
   return `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
 }
 
