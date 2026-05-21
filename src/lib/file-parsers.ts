@@ -9,15 +9,16 @@ import type { FileContent } from "@/types";
 // パーサーは parseBuffer の中で初回呼び出し時にだけロードする（lazy）。
 // これらが top-level require だと、listFiles だけ使う API（例: /api/workspace の GET）
 // にも 3000 モジュール以上が引きずられて、dev のコールドスタートで 15 秒以上かかる。
+// pdf-parse 2.x はクラスベース API なので PDFParse コンストラクタを格納する。
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let pdfParse: any = null;
+let PDFParseClass: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mammoth: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let XLSX: any = null;
 function ensureParsers(): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  if (!pdfParse) pdfParse = require("pdf-parse");
+  if (!PDFParseClass) PDFParseClass = require("pdf-parse").PDFParse;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   if (!mammoth) mammoth = require("mammoth");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -118,14 +119,23 @@ export async function parsePdf(buffer: Buffer, name: string, filePath: string): 
     return { name, path: filePath, content: `[ファイルサイズが大きすぎます: ${(buffer.length / 1024 / 1024).toFixed(1)}MB]` };
   }
 
+  // pdf-parse 2.x: new PDFParse({data: buffer}).getText() → {text, pages, total}
+  // Buffer → Uint8Array はコンストラクタが内部で変換する
+  let parser: { destroy: () => Promise<void> } | null = null;
   try {
-    const parsed = await pdfParse(buffer);
-    const text = parsed.text?.trim();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = new PDFParseClass({ data: buffer }) as any;
+    parser = p;
+    const result = await p.getText();
+    const text = (result?.text || "").trim();
     if (text && text.length > 50) {
       return { name, path: filePath, content: text };
     }
-  } catch {
+  } catch (e) {
+    console.warn(`[parsePdf] failed for ${name}:`, e instanceof Error ? e.message : e);
     // パース失敗 → base64にフォールバック
+  } finally {
+    try { await parser?.destroy(); } catch { /* ignore */ }
   }
 
   // テキストが取れない（スキャンPDF等）→ base64
