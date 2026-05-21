@@ -106,14 +106,10 @@ export async function POST(
     }
 
     case "template-selected": {
-      // テンプレート選択後→案件整理+書類生成をストリーミングで実行
-      // ここではメッセージだけ返して、実際の処理はクライアント側でSSE呼び出し
-      nextMessage = {
-        id: `msg_${Date.now()}`,
-        role: "assistant",
-        content: "案件を整理して書類を生成しています...",
-        timestamp: new Date().toISOString(),
-      };
+      // テンプレート選択後 → クライアントが SSE で runWorkflow を起動して
+      // 案件整理メッセージ (stage 付き <details>) を追加する。
+      // ここで placeholder メッセージを追加しない (クライアント側のステージ表示と二重になる)。
+      nextMessage = null;
       break;
     }
 
