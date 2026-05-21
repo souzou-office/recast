@@ -20,6 +20,7 @@ interface Props {
   selectedThreadId: string | null;
   onSelectThread: (threadId: string) => void;
   onNewThread: () => void;
+  onRescanCompany?: () => void; // 親に config 再取得を促す
   refreshKey?: number;
 }
 
@@ -37,15 +38,36 @@ function timeGroup(dateStr: string): string {
 
 export default function ChatSidebar({
   companies, selectedCompanyId, onSelectCompany,
-  selectedThreadId, onSelectThread, onNewThread, refreshKey,
+  selectedThreadId, onSelectThread, onNewThread, onRescanCompany, refreshKey,
 }: Props) {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [companySearchOpen, setCompanySearchOpen] = useState(false);
   const [companySearch, setCompanySearch] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [rescanning, setRescanning] = useState(false);
 
   const company = companies.find(c => c.id === selectedCompanyId) || null;
+
+  // 選択中の会社のフォルダ構造を再スキャンする (subfolders を最新化)。
+  // ファイルエクスプローラーで会社フォルダ内のサブフォルダ追加/削除をした後、
+  // recast の状態を最新に揃えるために手動で呼ぶ。
+  const handleRescanCompany = async () => {
+    if (!selectedCompanyId || rescanning) return;
+    setRescanning(true);
+    try {
+      await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "rescanCompany", companyId: selectedCompanyId }),
+      });
+      onRescanCompany?.();
+    } catch (e) {
+      console.warn("[ChatSidebar] rescan failed:", e);
+    } finally {
+      setRescanning(false);
+    }
+  };
 
   // スレッド一覧を取得
   const loadThreads = useCallback(async () => {
@@ -99,15 +121,27 @@ export default function ChatSidebar({
     <aside className="flex-1 min-w-0 border-r border-[var(--color-border)] bg-[var(--color-sidebar)] flex flex-col overflow-hidden">
       {/* 会社セレクター */}
       <div className="border-b border-[var(--color-border)] p-2">
-        <button
-          onClick={() => setCompanySearchOpen(!companySearchOpen)}
-          className="w-full flex items-center gap-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] px-2.5 py-1.5 text-xs hover:border-[var(--color-fg-subtle)] transition-colors"
-        >
-          <span className="flex-1 truncate text-left text-[var(--color-fg)]">
-            {company ? company.name : "会社を選択"}
-          </span>
-          <Icon name={companySearchOpen ? "ChevronUp" : "ChevronDown"} size={13} className="text-[var(--color-fg-subtle)]" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setCompanySearchOpen(!companySearchOpen)}
+            className="flex-1 min-w-0 flex items-center gap-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] px-2.5 py-1.5 text-xs hover:border-[var(--color-fg-subtle)] transition-colors"
+          >
+            <span className="flex-1 truncate text-left text-[var(--color-fg)]">
+              {company ? company.name : "会社を選択"}
+            </span>
+            <Icon name={companySearchOpen ? "ChevronUp" : "ChevronDown"} size={13} className="text-[var(--color-fg-subtle)]" />
+          </button>
+          {company && (
+            <button
+              onClick={handleRescanCompany}
+              disabled={rescanning}
+              title="フォルダ構造を再スキャン"
+              className="shrink-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-1.5 hover:border-[var(--color-fg-subtle)] hover:text-[var(--color-accent)] transition-colors disabled:opacity-50 disabled:cursor-wait"
+            >
+              <Icon name="RefreshCw" size={13} className={rescanning ? "animate-spin text-[var(--color-fg-subtle)]" : "text-[var(--color-fg-subtle)]"} />
+            </button>
+          )}
+        </div>
         {companySearchOpen && (
           <div className="mt-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg overflow-hidden">
             <input
