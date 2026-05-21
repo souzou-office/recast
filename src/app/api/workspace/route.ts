@@ -111,6 +111,22 @@ export async function PATCH(request: NextRequest) {
   switch (body.action) {
     case "selectCompany": {
       config.selectedCompanyId = body.companyId;
+      // 選択と同時に subfolders を再スキャンする (ファイルシステムの最新状態に揃える)。
+      // 既存のロール設定 (共通/案件/除外) は保持され、新規フォルダだけ追加 / 削除済みは除外。
+      // 旧実装ではユーザーが「再スキャン」ボタンを押さないと最新化されず、選択直後に
+      // ファイルツリーが古いままになる事故があった。
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        const patterns = config.defaultCommonPatterns || [];
+        const newSubs = await detectSubfolders(company.id, patterns);
+        for (const ns of newSubs) {
+          if (!company.subfolders.find(s => s.id === ns.id)) {
+            company.subfolders.push(ns);
+          }
+        }
+        const { existsSync } = await import("fs");
+        company.subfolders = company.subfolders.filter(s => existsSync(s.id));
+      }
       break;
     }
 
