@@ -402,6 +402,35 @@ function applyIndexedOps(
     }
   }
 
+  // 挿入位置の調整: 指定段落の直後に空段落 (セクション区切り) があれば、その後ろに挿入する。
+  //
+  // 背景: AI (Phase 2) が「(甲) 最終行 = 段落 5 の直後に (乙) 新ブロック挿入」を指示するとき、
+  // テンプレに「段落 5 / 空段落 / (乙) 旧ブロック」という構造があると、素直に段落 5 末尾に
+  // 挿入すると「段落 5 / NEW (乙) / 空段落 / 段落 11 (生き残り)」となり、空段落が (乙) 新
+  // ブロック内の真ん中に取り残される。
+  //
+  // 解決: 挿入直後の空段落を「セクション区切り」と解釈し、空段落をスキップした位置に
+  // 挿入する。結果は「段落 5 / 空段落 / NEW (乙) / 段落 11」となり、区切りが (甲)/(乙) 間に
+  // 正しく残る。
+  //
+  // 連続する空段落も全部スキップする (多重区切りも吸収)。
+  const allParagraphs = findTopLevelParagraphs(docXml);
+  const findInsertPos = (afterContentP: ParaRange): number => {
+    const allIdx = allParagraphs.findIndex((ap) => ap.start === afterContentP.start);
+    if (allIdx < 0) return afterContentP.end;
+    let pos = afterContentP.end;
+    for (let i = allIdx + 1; i < allParagraphs.length; i++) {
+      const nextP = allParagraphs[i];
+      const nextInner = docXml.slice(nextP.openEnd, nextP.end - "</w:p>".length);
+      if (getParagraphText(nextInner).trim().length === 0) {
+        pos = nextP.end;
+      } else {
+        break;
+      }
+    }
+    return pos;
+  };
+
   for (const ins of inserts) {
     if (!validIdx(ins.afterParagraphIndex)) {
       log.skipped.push({ kind: "insert", detail: `afterIndex ${ins.afterParagraphIndex}`, reason: `範囲外 (1〜${total})` });
@@ -409,10 +438,12 @@ function applyIndexedOps(
     }
     const p = paragraphs[ins.afterParagraphIndex - 1];
     // 同位置の delete/rewrite との干渉を避けるため、insert は p.end (= 段落末尾の直後) を sortKey にする
+    // 加えて直後の空段落 (セクション区切り) はスキップする
+    const insertSortKey = findInsertPos(p);
     ops.push({
       kind: "insert",
       pos: ins.afterParagraphIndex,
-      sortKey: p.end,
+      sortKey: insertSortKey,
       contents: ins.contents,
       referenceXml: docXml.slice(p.start, p.end),
     });
