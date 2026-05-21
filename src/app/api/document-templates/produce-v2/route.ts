@@ -257,12 +257,15 @@ export async function POST(request: NextRequest) {
             })
             .join("\n");
         } else {
-          // docx: 1-indexed 連番
+          // docx: 1-indexed 連番 (空段落 "(空)" マーカー行は除外して連番つけない)
+          // (空) 行は AI 向けに構造を見せる目的のみ。engine の paragraph index は
+          // 非空段落のみで連番つけて contentParagraphs と一致させる。
           let lineCounter = 0;
           markedText = markedTextRaw
             .split("\n")
             .map((line) => {
-              if (line.trim().length === 0) return line;
+              const trimmed = line.trim();
+              if (trimmed.length === 0 || trimmed === "(空)") return line;
               lineCounter++;
               return `段落${lineCounter}: ${line}`;
             })
