@@ -268,6 +268,19 @@ ${templateBodyBlock}
 ラベル名が違うフォーマットに変えたいとき (例: 主たる事務所 → 本店) は
 **「delete-row + rowInsertions」** で対応。**書換 (rewrite) アクションは存在しない**。
 
+## 重要: xlsx ファイルは fills (slotDecisions の fill) のみ
+
+\`.xlsx\` / \`.xlsm\` の書類は **構造が固定** (株主リスト・株主名簿・集計表など、行数や行配置が予め決まってる)。
+行操作は数式参照崩れや表破壊を起こすので、以下は **絶対に出さない**:
+
+- ❌ \`slotDecisions[delete-row]\` (xlsx で行削除しない)
+- ❌ \`rowInsertions\` (xlsx で行追加しない)
+- ❌ \`blockDeletes\` (xlsx でブロック削除しない)
+- ❌ \`textReplaces\` (xlsx でテキスト一括置換しない)
+
+xlsx で出していいのは **\`slotDecisions[fill]\`** だけ。データが無い slot (例: 株主リストの 3-10 位で
+該当者なし) は **slotDecisions に含めず放置** すれば OK (Phase 3 が自動的に空セルにする)。
+
 ---
 
 ## 1. slotDecisions のルール

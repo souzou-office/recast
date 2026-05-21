@@ -277,35 +277,67 @@ export async function POST(request: NextRequest) {
         const inserts: InsertOp[] = [];
         const replaces: ReplaceOp[] = [];
 
-        // 1. textReplaces → replaces
-        for (const tr of decisionDoc.textReplaces || []) {
-          if (!tr.anchor) continue;
-          replaces.push({ anchor: tr.anchor, replacement: tr.replacement || "" });
+        // === 設計原則: xlsx は構造変更禁止、fills のみ ===
+        // xlsx テンプレ (株主リスト・株主名簿・集計表等) は行構造が固定。
+        // 行追加・行削除・ブロック削除をやると数式参照崩れや表構造破壊が起きるので
+        // Phase 3 で defensive に skip する。Phase 2 が出しても無視。
+        // ユーザーが触る価値があるのは「セルの中身 (fills)」だけ。
+        //
+        // 構造的に貫くために、xlsx の場合は textReplaces / blockDeletes / rowInsertions /
+        // slotDecisions[delete-row] を全部 skip し、警告ログを出すだけにする。
+
+        if (isXlsx) {
+          const skipCounts = {
+            textReplaces: decisionDoc.textReplaces?.length ?? 0,
+            blockDeletes: decisionDoc.blockDeletes?.length ?? 0,
+            rowInsertions: decisionDoc.rowInsertions?.length ?? 0,
+            deleteRows: (decisionDoc.slotDecisions || []).filter((sd) => sd.action === "delete-row").length,
+          };
+          const totalSkipped = skipCounts.textReplaces + skipCounts.blockDeletes + skipCounts.rowInsertions + skipCounts.deleteRows;
+          if (totalSkipped > 0) {
+            console.warn(
+              `[produce-v2] ${f.name} (xlsx): 構造変更指示を skip (` +
+              `textReplaces: ${skipCounts.textReplaces}, blockDeletes: ${skipCounts.blockDeletes}, ` +
+              `rowInsertions: ${skipCounts.rowInsertions}, deleteRows: ${skipCounts.deleteRows})`
+            );
+          }
         }
 
-        // 2. blockDeletes → paragraphActions[delete] を範囲展開
+        // 1. textReplaces → replaces (docx のみ)
+        if (!isXlsx) {
+          for (const tr of decisionDoc.textReplaces || []) {
+            if (!tr.anchor) continue;
+            replaces.push({ anchor: tr.anchor, replacement: tr.replacement || "" });
+          }
+        }
+
+        // 2. blockDeletes → paragraphActions[delete] を範囲展開 (docx のみ)
         const blockDeleteIndices = new Set<number>();
-        for (const bd of decisionDoc.blockDeletes || []) {
-          const indices = expandBlockDelete(numberedLines, bd.startAnchor, bd.endAnchor);
-          if (indices.length === 0) {
-            console.warn(`[produce-v2] ${f.name} blockDelete startAnchor not found: ${bd.startAnchor}`);
+        if (!isXlsx) {
+          for (const bd of decisionDoc.blockDeletes || []) {
+            const indices = expandBlockDelete(numberedLines, bd.startAnchor, bd.endAnchor);
+            if (indices.length === 0) {
+              console.warn(`[produce-v2] ${f.name} blockDelete startAnchor not found: ${bd.startAnchor}`);
+            }
+            for (const i of indices) blockDeleteIndices.add(i);
           }
-          for (const i of indices) blockDeleteIndices.add(i);
         }
 
-        // 3. slotDecisions[delete-row] → paragraphActions[delete]
+        // 3. slotDecisions[delete-row] → paragraphActions[delete] (docx のみ)
         const slotDeleteIndices = new Set<number>();
-        for (const sd of decisionDoc.slotDecisions || []) {
-          if (sd.action !== "delete-row") continue;
-          const idx = findParagraphIndex(numberedLines, sd.slot);
-          if (idx === null) {
-            console.warn(`[produce-v2] ${f.name} delete-row slot not found: ${sd.slot}`);
-            continue;
+        if (!isXlsx) {
+          for (const sd of decisionDoc.slotDecisions || []) {
+            if (sd.action !== "delete-row") continue;
+            const idx = findParagraphIndex(numberedLines, sd.slot);
+            if (idx === null) {
+              console.warn(`[produce-v2] ${f.name} delete-row slot not found: ${sd.slot}`);
+              continue;
+            }
+            slotDeleteIndices.add(idx);
           }
-          slotDeleteIndices.add(idx);
         }
 
-        // 4. rowInsertions → inserts + fills
+        // 4. rowInsertions → inserts + fills (docx のみ。xlsx は構造変更禁止)
         //
         // 連鎖挿入対応 (重要):
         //   AI は「★前の挿入で作った新ラベル★ の直後にさらに新しい行を挿入」というパターンを
@@ -319,7 +351,7 @@ export async function POST(request: NextRequest) {
         //     をスキャンして「親 ri」を見つけ、その afterParagraphIndex を継承
         //   - 最終的に afterParagraphIndex 単位で contents をまとめて 1 InsertOp にする
         //     (engine の制約: 同位置への複数 inserts はマージ順が逆転するため)
-        const riList = decisionDoc.rowInsertions || [];
+        const riList = isXlsx ? [] : (decisionDoc.rowInsertions || []);
         const riToIdx = new Map<number, number>(); // ri 配列の index → afterParagraphIndex
         const insertsByPos = new Map<number, string[]>(); // afterParagraphIndex → contents (順序保持)
         for (let i = 0; i < riList.length; i++) {
@@ -378,12 +410,26 @@ export async function POST(request: NextRequest) {
         // 対策: labels.json から全 slot を見て、Phase 2 が触らなかったマーカーは空文字で fill。
         // これで「Phase 2 が使わない slot は空セルに」というユーザー期待動作になる。
         //
+        // ただし docx で delete-row 対象の slot は除外する:
+        //   - 同段落の delete と fill が同居すると edit-engine の保険機構が
+        //     「fill 優先で delete を skip」する仕様 → 行が削除されずラベル文字列が残る事故
+        //   - delete-row は行ごと消えるので auto-clear の必要がない
+        //   - xlsx では delete-row 自体が無視されるので除外不要 (全 slot に対して auto-clear)
+        //
         // 注意: rowInsertions で作った新ラベル (labels.json には無い) は ri.fills 経由で
         // 既に処理済みなので、ここでは labels.json の slot だけ扱えば十分。
+        const deleteRowSlots = isXlsx
+          ? new Set<string>()
+          : new Set(
+              (decisionDoc.slotDecisions || [])
+                .filter((sd) => sd.action === "delete-row")
+                .map((sd) => sd.slot)
+            );
         let autoClearedCount = 0;
         if (labels?.slots) {
           for (const s of labels.slots) {
             const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
+            if (deleteRowSlots.has(labelStr)) continue; // delete-row 対象は auto-clear から除外 (docx のみ)
             const marker = `★${labelStr}★`;
             if (!(marker in fills)) {
               fills[marker] = "";
