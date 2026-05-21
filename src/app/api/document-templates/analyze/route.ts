@@ -136,6 +136,9 @@ export async function POST(request: NextRequest) {
       for (const f of tpFiles) {
         // テンプレフォルダ内のメモ (.txt/.md) はテンプレ注意事項として既に Phase 1 で渡し済みなのでスキップ
         if (f.name.endsWith(".txt") || f.name.endsWith(".md")) continue;
+        // .labels.json は recast 内部のラベルメタデータ。AI に渡すと「テンプレ本文」と
+        // 誤認して response を混乱させ、Phase 2 JSON 出力に至らない事故になる。スキップ。
+        if (f.name.endsWith(".labels.json")) continue;
         // base64 (PDF/画像) はテンプレとしては想定外なのでスキップ
         if (f.base64) continue;
 
