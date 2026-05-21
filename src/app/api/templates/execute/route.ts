@@ -282,6 +282,7 @@ ${allTexts.join("\n\n")}`;
       async start(controller) {
         try {
           send(controller, { type: "meta", sourceFiles });
+          send(controller, { type: "stage", stage: "organizing" });
 
           const aiStream = client.messages.stream({
             model: MODEL,

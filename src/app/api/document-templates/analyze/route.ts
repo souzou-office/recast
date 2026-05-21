@@ -425,6 +425,7 @@ ${templateBodyBlock}
           }
 
           // ============== Call 1: Sonnet 4.6 で推論 ==============
+          send(controller, { type: "stage", stage: "reasoning" });
           const reasoningStream = client.messages.stream({
             model: REASONING_MODEL,
             max_tokens: 16384,
@@ -445,7 +446,7 @@ ${templateBodyBlock}
           } catch { /* ignore */ }
 
           // ============== Call 2: Sonnet 4.6 で JSON 化 (Tool Use) ==============
-          send(controller, { type: "text", text: "\n\n_(構造化データに変換中...)_\n" });
+          send(controller, { type: "stage", stage: "structuring" });
 
           const jsonPrompt = `## あなたの仕事
 
