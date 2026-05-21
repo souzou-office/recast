@@ -282,7 +282,10 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; 
       }
     }
     flushGroup();
-    if (lineText.trim()) lines.push(lineText);
+    // 空段落も "(空)" マーカーとして出力する。AI に構造 (セクション区切り) を見せるため。
+    // 例: 「(甲) ブロック / (空) / (乙) ブロック」と AI が認識できる。
+    // (空) 行は produce-v2 の段落番号付けで skip され、engine の段落 index 計算には影響しない。
+    lines.push(lineText.trim() ? lineText : "(空)");
   }
   return { text: lines.join("\n"), slots };
 }

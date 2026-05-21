@@ -192,7 +192,13 @@ export async function POST(request: NextRequest) {
   }
   const templateBodyBlock =
     templateBlocks.length > 0
-      ? `\n## テンプレート本文 (各書類の中身。★ラベル★ が埋めるべき穴。slot 直前直後の文字を必ず確認)\n\n${templateBlocks.join("\n\n")}\n`
+      ? `\n## テンプレート本文 (各書類の中身。★ラベル★ が埋めるべき穴。slot 直前直後の文字を必ず確認)\n
+**\`(空)\` 行の意味**: テンプレ内に **空段落** (Word での Enter による空行) があると \`(空)\` と表示される。
+これは通常 **セクション区切り** として意味があるので、削除対象に含めない限り保持する。
+rowInsertions の \`afterSlot\` を選ぶときは「(空) を挟んで次のブロックに入れたい」みたいな
+位置関係を考慮すること。
+
+${templateBlocks.join("\n\n")}\n`
       : "\n## テンプレート本文\n(読めませんでした)\n";
 
   // Phase 1 Q&A を明示的に渡す (会話履歴には AI 側の質問しか残らないので)
