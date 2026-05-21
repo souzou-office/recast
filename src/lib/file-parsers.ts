@@ -58,8 +58,11 @@ export const GOOGLE_EXPORT_TYPES: Record<string, string> = {
 };
 
 export const MAX_TEXT_SIZE = 100 * 1024; // 100KB
-export const MAX_BINARY_SIZE = 3 * 1024 * 1024; // 3MB per file
-export const MAX_TOTAL_BINARY_SIZE = 8 * 1024 * 1024; // 全PDFの合計上限 8MB
+// PDF など。法務局の履歴事項全部証明書スキャン版 (3-10 MB) を取り込めるよう余裕を持たせる。
+// Claude API の document attachment は 1 ファイル最大 32 MB なので 10 MB に設定。
+export const MAX_BINARY_SIZE = 10 * 1024 * 1024; // 10MB per file
+// 複数 PDF の合計上限。基本情報生成では 3-5 ファイル程度想定で 30 MB。
+export const MAX_TOTAL_BINARY_SIZE = 30 * 1024 * 1024;
 
 // 拡張子→MIMEタイプ
 const EXT_TO_MIME: Record<string, string> = {
