@@ -224,6 +224,7 @@ export default function Home() {
               selectedThreadId={selectedThreadId}
               onSelectThread={(id) => { setSelectedThreadId(id); setView("chat"); }}
               onNewThread={handleNewThread}
+              onRescanCompany={fetchConfig}
               refreshKey={threadsRefreshKey}
             />
             <div
