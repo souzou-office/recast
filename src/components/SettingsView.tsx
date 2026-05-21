@@ -147,12 +147,22 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
   };
 
   // 共通パターン
+  // パターン保存は「次に検出する会社の自動分類用」に保存するだけ。
+  // 既存会社の subfolder ロールには触らない (手動設定を破壊しないため)。
+  // パターンを既存会社に「適用」したい場合は、ユーザーが明示的に
+  // "共通パターン適用" ボタンを押す or 個別に再スキャンする。
   const handleSavePatterns = async (patterns: string[]) => {
     await fetch("/api/workspace", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "setDefaultCommonPatterns", patterns }),
     });
+    onUpdateConfig();
+  };
+
+  // ユーザーが明示的に「既存会社にも適用」ボタンを押したときだけ applyDefaultCommon を呼ぶ
+  const handleApplyDefaultCommon = async () => {
+    if (!confirm("既存の会社の subfolder にもパターンを適用します。\n(common にマッチしたフォルダを common にします。マッチしないフォルダは現状維持です)\nよろしいですか?")) return;
     await fetch("/api/workspace", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

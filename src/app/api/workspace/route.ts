@@ -270,6 +270,12 @@ export async function PATCH(request: NextRequest) {
     }
 
     case "applyDefaultCommon": {
+      // 共通パターンにマッチしたフォルダを common に設定する。
+      // 重要: マッチしないからといって job にリセットはしない (ユーザーの手動設定を破壊しない)。
+      // これは追加的 (additive) な操作で、「パターンを使って common 候補をまとめて適用する」用途。
+      //
+      // 旧実装は「マッチしないものを問答無用で job にリセット」していたため、
+      // パターンを空にして実行すると全会社の common 設定が消える事故を起こしていた。
       const patterns = config.defaultCommonPatterns || [];
       for (const company of config.companies) {
         for (const sub of company.subfolders) {
@@ -277,9 +283,8 @@ export async function PATCH(request: NextRequest) {
           if (matchesCommonPattern(sub.name, patterns)) {
             sub.role = "common";
             sub.active = true;
-          } else {
-            sub.role = "job";
           }
+          // マッチしない場合は何もしない (既存の role を保持)
         }
       }
       break;
