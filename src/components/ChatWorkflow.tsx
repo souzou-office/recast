@@ -497,6 +497,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
       const reader = res.body?.getReader();
+      // Phase 1 (案件整理) の AI 推論文も Phase 2 と同じく <details> で「最初から折り畳み」表示。
+      // チャット欄をスクロールしたとき過去の長い推論が邪魔にならないように。
+      const wrapOrganizeReasoning = (text: string, isStreaming: boolean): string => {
+        const summary = isStreaming
+          ? `📋 案件整理中... (${text.length} 文字)`
+          : `📋 案件整理完了 (クリックで展開)`;
+        return `<details>\n<summary>${summary}</summary>\n\n${text}\n\n</details>`;
+      };
       if (reader) {
         const decoder = new TextDecoder();
         let buffer = "";
@@ -517,11 +525,12 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               metaSourceFiles = data.sourceFiles;
             } else if (data.type === "text") {
               fullText += data.text;
+              const wrapped = wrapOrganizeReasoning(fullText, true);
               setThread(prev => {
                 if (!prev) return prev;
                 const msgs = [...prev.messages];
                 const last = msgs[msgs.length - 1];
-                if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: fullText };
+                if (last.role === "assistant") msgs[msgs.length - 1] = { ...last, content: wrapped };
                 return { ...prev, messages: msgs };
               });
             }
@@ -555,9 +564,11 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
 
         // 案件整理結果を保存
-        // message（画面表示用のテキスト）だけでなく masterSheet.content にも入れる。
-        // clarify / chat API が thread.masterSheet を参照するので、これが無いと案件整理を知らない状態で動いてしまう。
-        organizeMsg.content = fullText;
+        // - 画面表示用 (message.content): <details> 折り畳み付きで保存 (リロードしても折り畳み維持)
+        // - clarify / chat API 用 (masterSheet.content): 折り畳みタグ無しの素 md
+        //   (LLM が details タグを読まないようにするため)
+        const wrappedFinal = wrapOrganizeReasoning(fullText, false);
+        organizeMsg.content = wrappedFinal;
         await fetch(`/api/chat-threads/${currentThread.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
