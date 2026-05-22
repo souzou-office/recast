@@ -397,11 +397,16 @@ export async function POST(request: NextRequest) {
         // fill / auto-clear どちらも blockDelete 範囲内の slot は対象外にすることで、
         // 「議案2 ブロック削除なのに中の slot に空 fill が積まれ、edit engine が
         //  『fill 優先で delete を skip』して議案ブロックが残る」事故を構造的に防ぐ。
+        // findParagraphIndex は部分一致まで許すため、別 slot の段落を誤検出してしまう
+        // (例: 「記名押印する代表取締役の氏名」を検索すると「代表取締役の氏名」と部分一致して
+        //  そちらの段落番号が返り、blockDelete 範囲内と誤判定されて fill が drop される)。
+        // ここでは ★label★ の完全一致で探す。
         const blockDeleteSlotLabels = new Set<string>();
         if (!isXlsx && labels?.slots) {
           for (const s of labels.slots) {
             const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
-            const paraIdx = findParagraphIndex(numberedLines, labelStr);
+            // 完全一致で段落探索 (numberedLines の labels 配列に厳密一致)
+            const paraIdx = numberedLines.find(nl => nl.labels.includes(labelStr))?.idx ?? null;
             if (paraIdx !== null && blockDeleteIndices.has(paraIdx)) {
               blockDeleteSlotLabels.add(labelStr);
             }
