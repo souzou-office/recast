@@ -984,12 +984,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       body: JSON.stringify({ companyId: company.id, message: resultMsg, generatedDocuments: produceData.documents }),
     });
 
-    // 自動でチェック実行 (verify) は今は無効化中。
-    // produce-v2 の挙動をユーザーが確認している段階なので、まず生成だけ走らせて見せる。
-    // await runCheck(currentThread);
-
-    setLoading(false);
-    onThreadUpdate();
+    // 自動でチェック実行 (verify) — 指摘内容を書類カードにバッジ + issue 一覧で表示するだけで、
+    // 修正は人間が手元で行う想定。runCheck 内で setLoading の出し入れと onThreadUpdate を行う。
+    await runCheck(currentThread);
   };
 
   // 個別の指摘を「確認済み」にする/戻す（slotId に紐付かない指摘でも使える）
@@ -1189,8 +1186,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }),
       });
 
-      // 修正完了後の自動再 verify は今は無効化中
-      // await runCheck(updatedThread);
+      // 修正完了後も再度 verify を走らせて、書類カードの指摘表示を最新化する
+      await runCheck(updatedThread);
     } finally {
       setProofreading(null);
     }
