@@ -87,12 +87,10 @@ export async function onFolderSelected(folderPath: string): Promise<ThreadMessag
   }
   await collect(folderPath, "");
 
-  const fileCount = files.filter(f => !f.name.startsWith("📁")).length;
-
   return {
     id: `msg_${Date.now()}`,
     role: "assistant",
-    content: `${fileCount}件のファイルが見つかりました。外すものがあればチェックを外してください`,
+    content: `外すものがあればチェックを外してください`,
     cards: [{
       type: "file-select",
       folderPath,

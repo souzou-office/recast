@@ -46,9 +46,6 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
                 <div className={`text-[13px] truncate ${selected ? "font-medium text-[var(--color-accent-fg)]" : "text-[var(--color-fg)]"}`}>
                   {f.name}
                 </div>
-                <div className="text-[10.5px] mt-0.5 text-[var(--color-fg-subtle)]">
-                  {f.fileCount}ファイル
-                </div>
               </div>
               {selected && (
                 <div className="w-5 h-5 rounded-full bg-[var(--color-accent)] flex items-center justify-center shrink-0">

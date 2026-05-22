@@ -62,27 +62,15 @@ export default function FileSidebar({
 
   const company = companies.find(c => c.id === selectedCompanyId) || null;
 
-  // 会社変更時のみリセット（selectedCompanyIdだけ監視）
+  // 会社変更時のみリセット（selectedCompanyIdだけ監視）。
+  // 自動展開はしない（ユーザーが「登記フォルダだけ勝手に展開されてる」と指摘）。
+  // 手動で ▶ を押した時にだけ展開される。
   const [prevCompanyId, setPrevCompanyId] = useState<string | null>(null);
   useEffect(() => {
     if (selectedCompanyId === prevCompanyId) return;
     setPrevCompanyId(selectedCompanyId);
     setFolderData({});
-    const comp = companies.find(c => c.id === selectedCompanyId);
-    if (comp && comp.subfolders.length > 0) {
-      const parentPaths = new Set<string>();
-      for (const sub of comp.subfolders) {
-        const rel = sub.id.slice(comp.id.length).replace(/^[\\/]+/, "");
-        const segments = rel.split(/[\\/]/);
-        if (segments.length > 1) {
-          const parentPath = comp.id + (comp.id.endsWith("\\") ? "" : "\\") + segments[0];
-          parentPaths.add(parentPath);
-        }
-      }
-      setExpandedFolders(parentPaths);
-    } else {
-      setExpandedFolders(new Set());
-    }
+    setExpandedFolders(new Set());
   }, [selectedCompanyId]);
 
   const loadFolder = useCallback(async (folderPath: string) => {
