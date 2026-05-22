@@ -360,21 +360,22 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
 
       // 確認事項なし
       if (isProcedural) {
-        // Phase 2 clarify が完了 → そのまま書類生成へ (analyze は既に終わっている)
-        await generateDocuments(updatedThread, templatePath, cardData as Partial<ActionCard>);
+        // Phase 2-A 質問 (analyze-questions) の回答が完了 → analyze で穴埋め決定 → 書類生成
+        const afterAnalyze = await runAnalyze(updatedThread, templatePath);
+        await generateDocuments(afterAnalyze, templatePath, cardData as Partial<ActionCard>);
         pendingTemplatePath.current = null;
         return;
       }
 
-      // Phase 1 clarify が完了 → Phase 2 (analyze) → Phase 2 clarify (procedural) → 書類生成
-      const afterAnalyze = await runAnalyze(updatedThread, templatePath);
-      const proceduralResult = await runClarifyProcedural(afterAnalyze, templatePath);
-      if (proceduralResult.hasQuestions) {
-        // procedural の質問カードを出したので一旦停止 (回答後の continueWorkflow でここに戻ってくる)
+      // Phase 1 clarify (substantive) が完了 → Phase 2-A 質問抽出 → 質問あれば停止、
+      // 無ければ analyze → produce へ続行
+      const questionsResult = await runAnalyzeQuestions(updatedThread, templatePath);
+      if (questionsResult.hasQuestions) {
         setLoading(false);
         return;
       }
-      await generateDocuments(proceduralResult.thread, templatePath, cardData as Partial<ActionCard>);
+      const afterAnalyze = await runAnalyze(questionsResult.thread, templatePath);
+      await generateDocuments(afterAnalyze, templatePath, cardData as Partial<ActionCard>);
       pendingTemplatePath.current = null;
       return;
     }
@@ -648,14 +649,14 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         return;
       }
 
-      // 3. 質問なし → Phase 2 (テンプレ突き合わせ分析) → Phase 2 clarify → 書類生成
-      const afterAnalyze = await runAnalyze(freshThread, templatePath);
-      const proceduralResult = await runClarifyProcedural(afterAnalyze, templatePath);
-      if (proceduralResult.hasQuestions) {
+      // 3. 質問なし → Phase 2-A (テンプレ見て質問抽出) → 質問あれば停止、無ければ analyze → 書類生成
+      const questionsResult = await runAnalyzeQuestions(freshThread, templatePath);
+      if (questionsResult.hasQuestions) {
         setLoading(false);
         return;
       }
-      await generateDocuments(proceduralResult.thread, templatePath);
+      const afterAnalyze = await runAnalyze(questionsResult.thread, templatePath);
+      await generateDocuments(afterAnalyze, templatePath);
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
   };
@@ -817,19 +818,20 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   };
 
   // Phase 2 clarify (書面ルール上の確認質問)
-  // runAnalyze の直後に呼ぶ。analyze の末尾「## ⚠ Phase 2 要確認事項」を質問カードに変換。
+  // Phase 2-A: テンプレを見て「穴埋めで迷うポイント」を抽出 → 質問化。
+  // analyze (Phase 2-C 穴埋め決定) の **前** に呼ぶ。質問抽出 = 業務判断や表記揺れの確認を、
+  // AI が独自ルールで推測 fill する前にユーザーに聞く。
   //
   // 戻り値:
-  //   - { thread: 更新済みスレッド, hasQuestions: true } → 質問カードを出して停止。
-  //     カード回答後の continueWorkflow で procedural 分岐に入る
-  //   - { thread, hasQuestions: false } → 質問なし。呼び出し側がそのまま produce に進む
-  const runClarifyProcedural = async (
+  //   - { thread, hasQuestions: true } → 質問カードを出して停止。回答後の continueWorkflow で analyze 実行
+  //   - { thread, hasQuestions: false } → 質問なし。呼び出し側がそのまま analyze → produce に進む
+  const runAnalyzeQuestions = async (
     currentThread: ChatThread,
     templatePath: string
   ): Promise<{ thread: ChatThread; hasQuestions: boolean }> => {
     if (!company) return { thread: currentThread, hasQuestions: false };
 
-    // 既存の clarification カードから previousQA を集める (Phase 1 + 過去の Phase 2 両方)
+    // 既存の clarification カードから previousQA を集める (Phase 1 substantive の回答)
     const previousQA: { question: string; answer: string }[] = [];
     for (const m of currentThread.messages) {
       for (const c of m.cards || []) {
@@ -852,21 +854,22 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     }
 
     try {
-      const res = await fetch("/api/document-templates/clarify-procedural", {
+      const res = await fetch("/api/document-templates/analyze-questions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           companyId: company.id,
           threadId: currentThread.id,
+          templateFolderPath: templatePath,
           previousQA,
         }),
       });
       const data = await res.json();
       if (data.questions && data.questions.length > 0) {
         const proceduralMsg: ThreadMessage = {
-          id: `msg_${Date.now()}_clarify_proc`,
+          id: `msg_${Date.now()}_analyze_q`,
           role: "assistant",
-          content: `書面ルール上の確認が${data.questions.length}点あります`,
+          content: `穴埋め前に確認したい点が${data.questions.length}点あります`,
           cards: [{
             type: "clarification",
             questions: data.questions,
@@ -887,7 +890,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         };
       }
     } catch (e) {
-      console.warn("[ChatWorkflow] clarify-procedural failed:", e instanceof Error ? e.message : e);
+      console.warn("[ChatWorkflow] analyze-questions failed:", e instanceof Error ? e.message : e);
     }
 
     return { thread: currentThread, hasQuestions: false };

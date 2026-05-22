@@ -394,12 +394,11 @@ export async function POST(request: NextRequest) {
         }
 
         // 5. slotDecisions[fill] → fills
-        // 6. slotDecisions[unconfirmed] → fills 空文字 (マーカー残骸防止)
+        // 旧設計の unconfirmed action は Phase 2-A 質問フェーズに分離されたので
+        // ここには到達しない (action は fill / delete-row の2択)。
         for (const sd of decisionDoc.slotDecisions || []) {
           if (sd.action === "fill") {
             fills[`★${sd.slot}★`] = sd.value ?? "";
-          } else if (sd.action === "unconfirmed") {
-            fills[`★${sd.slot}★`] = "";
           }
         }
 

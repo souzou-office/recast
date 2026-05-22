@@ -312,13 +312,14 @@ export interface Phase2Decisions {
 // 1 slot あたりの決定。各 slot は配列に 1 度だけ登場し、action は必ず 1 つ。
 // (旧設計では slots / deletes / unconfirmed が別配列で、AI が同じ slot に複数指示を
 //  書き込む事故 (value に指示文を埋め込む等) が発生していた → 構造的に防ぐ)
+// さらに新設計 (Phase 2-A 質問フェーズ導入後) では「迷う」は事前に質問で解決済み
+// なので unconfirmed / candidates も削除し、fill / delete-row の2択のみに簡素化。
 export interface SlotDecision {
   slot: string;          // labels.json のラベル名 (例: "乙の無限責任組合員の名称")
-  action: "fill" | "delete-row" | "unconfirmed";
+  action: "fill" | "delete-row";
   value?: string;                                          // fill のとき
   source?: string;                                         // fill のとき
-  reason?: string;                                         // delete-row / unconfirmed のとき
-  candidates?: { value: string; source: string }[];        // unconfirmed のとき
+  reason?: string;                                         // delete-row のとき
 }
 
 // 行挿入: 既存 slot の行の直後に「新ラベル付き行」を追加する。

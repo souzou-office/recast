@@ -79,24 +79,12 @@ const PHASE2_DECISIONS_TOOL: Anthropic.Tool = {
                   },
                   action: {
                     type: "string",
-                    enum: ["fill", "delete-row", "unconfirmed"],
-                    description: "fill=値を入れる / delete-row=行ごと削除 / unconfirmed=ユーザーに確認",
+                    enum: ["fill", "delete-row"],
+                    description: "fill=値を入れる / delete-row=行ごと削除。「迷う」は Phase 2-A の質問で既に解決済みなので、ここでは2択のみ",
                   },
                   value: { type: "string", description: "fill のときの値 (最終形式)" },
                   source: { type: "string", description: "fill のときの出典" },
-                  reason: { type: "string", description: "delete-row / unconfirmed の理由" },
-                  candidates: {
-                    type: "array",
-                    description: "unconfirmed のときの候補値",
-                    items: {
-                      type: "object",
-                      properties: {
-                        value: { type: "string" },
-                        source: { type: "string" },
-                      },
-                      required: ["value", "source"],
-                    },
-                  },
+                  reason: { type: "string", description: "delete-row の理由" },
                 },
                 required: ["slot", "action"],
               },
@@ -351,9 +339,11 @@ ${templateBodyBlock}
 各書類について、必要なものだけ:
 
 1. **slotDecisions** (テンプレ既存の★label★ への指示)
-   - 各 slot に action を 1 つ: \`fill\` (値を入れる) / \`delete-row\` (行ごと削除) / \`unconfirmed\` (確認質問)
+   - 各 slot に action を 1 つ: \`fill\` (値を入れる) / \`delete-row\` (行ごと削除)
    - \`fill\` のとき value (最終形式) と source (出典) を書く
    - 「テンプレに slot はあるが該当しない」(例: 引受人が法人なのに「乙の無限責任組合員」slot がある) は delete-row
+   - **「迷う」「確認したい」slot はもう存在しない前提**。Phase 2-A の質問で既に確定済み。
+     previousQA に答えがあるはずなので、それを反映して fill する
 2. **blockDeletes** (議案ブロック等の複数段落削除)
    - startAnchor + endAnchor で範囲指定
    - 議案を削除したら textReplaces で繰り上げも指示
@@ -553,10 +543,9 @@ ${reasoningText}
             const summary = decisions.documents.map((d: Phase2DocumentDecision) => {
               const fills = d.slotDecisions.filter((s) => s.action === "fill").length;
               const dels = d.slotDecisions.filter((s) => s.action === "delete-row").length;
-              const uncs = d.slotDecisions.filter((s) => s.action === "unconfirmed").length;
               const ins = d.rowInsertions?.length ?? 0;
               const repl = d.textReplaces?.length ?? 0;
-              return `${d.templateFile}: fill ${fills} / delete-row ${dels} / unconfirmed ${uncs} / blockDeletes ${d.blockDeletes.length} / rowInsertions ${ins} / textReplaces ${repl}`;
+              return `${d.templateFile}: fill ${fills} / delete-row ${dels} / blockDeletes ${d.blockDeletes.length} / rowInsertions ${ins} / textReplaces ${repl}`;
             }).join("; ");
             console.log(`[analyze] decisions saved: ${summary}`);
             send(controller, { type: "decisions", decisions });
