@@ -124,6 +124,7 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
     const data = openMap[folderPath];
     if (!data) return;
     const state = folderCheckState(folderPath);
+    const turningOn = state !== "all";
     setChecked(prev => {
       const next = new Set(prev);
       if (state === "all") {
@@ -133,10 +134,27 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
       }
       return next;
     });
+    // ON にした時、案件フォルダ未指定なら自動でトップレベルフォルダを active に。
+    // サブフォルダのチェックボックスを ON にしただけで「進む」ボタンが押せるようにする。
+    if (turningOn && !activeFolder) {
+      const top = card.folders.find(f => folderPath === f.path || folderPath.startsWith(f.path + "\\") || folderPath.startsWith(f.path + "/"));
+      if (top) setActiveFolder(top.path);
+    }
+  };
+
+  // checked に入ってるファイルから所属トップレベルフォルダを推定するヘルパー
+  const inferActiveFromChecked = (): string | null => {
+    for (const filePath of checked) {
+      const top = card.folders.find(f => filePath.startsWith(f.path + "\\") || filePath.startsWith(f.path + "/"));
+      if (top) return top.path;
+    }
+    return null;
   };
 
   const handleConfirm = () => {
-    if (!activeFolder) return;
+    // activeFolder が無くても checked に1個でも入ってれば、所属トップフォルダから推定して進む
+    const finalActive = activeFolder || inferActiveFromChecked();
+    if (!finalActive) return;
     // disabledFiles = 「使わない」もの。
     // 展開済みフォルダ配下のファイルで checked じゃないもの + 展開してないサブフォルダ全部。
     const disabled: string[] = [];
@@ -151,7 +169,7 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
         }
       }
     }
-    onAction({ selectedPath: activeFolder, disabledFiles: disabled } as unknown as Partial<ActionCard>);
+    onAction({ selectedPath: finalActive, disabledFiles: disabled } as unknown as Partial<ActionCard>);
   };
 
   const activeFolderName = activeFolder
@@ -231,23 +249,27 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
         })}
       </div>
 
-      {/* カード下部の決定ボタン。案件フォルダを1つだけ「アクティブ」にして進める */}
-      {!isLocked && (
-        <div className="border-t border-[var(--color-border-soft)] mt-1 pt-2 pb-1 px-2 flex items-center justify-between gap-3">
-          <span className="text-[11px] text-[var(--color-fg-subtle)]">
-            {activeFolder
-              ? `案件フォルダ: ${activeFolderName}（${checked.size}ファイル選択中）`
-              : "案件フォルダを開いて選んでください"}
-          </span>
-          <button
-            onClick={handleConfirm}
-            disabled={!activeFolder}
-            className="shrink-0 rounded-full bg-[var(--color-fg)] px-4 py-1.5 text-[11px] font-medium text-white hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed"
-          >
-            この内容で進む
-          </button>
-        </div>
-      )}
+      {/* カード下部の決定ボタン。activeFolder か checked が1個でもあれば押せる。 */}
+      {!isLocked && (() => {
+        const canProceed = !!activeFolder || checked.size > 0;
+        const displayFolder = activeFolderName || (activeFolder ? activeFolder.split(/[\\/]/).pop() : "");
+        return (
+          <div className="border-t border-[var(--color-border-soft)] mt-1 pt-2 pb-1 px-2 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-[var(--color-fg-subtle)]">
+              {canProceed
+                ? `${displayFolder ? `案件フォルダ: ${displayFolder} / ` : ""}${checked.size}ファイル選択中`
+                : "フォルダを開いて、使うファイルにチェックを入れてください"}
+            </span>
+            <button
+              onClick={handleConfirm}
+              disabled={!canProceed}
+              className="shrink-0 rounded-full bg-[var(--color-fg)] px-4 py-1.5 text-[11px] font-medium text-white hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+              この内容で進む
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }
