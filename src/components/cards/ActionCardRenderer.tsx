@@ -17,12 +17,9 @@ interface Props {
   onPreview?: (file: { filePath?: string; docxBase64?: string; fileName: string }) => void;
   onGoBackToFolder?: () => void;
   onBulkRegenerate?: () => void;
-  onIssueAck?: (fileName: string, issueIndex: number, ack: boolean) => void;
-  onProofread?: () => void;
-  proofreading?: boolean;
 }
 
-export default function ActionCardRenderer({ card, onAction, company, thread, onPreview, onGoBackToFolder, onBulkRegenerate, onIssueAck, onProofread, proofreading }: Props) {
+export default function ActionCardRenderer({ card, onAction, company, thread, onPreview, onGoBackToFolder, onBulkRegenerate }: Props) {
   switch (card.type) {
     case "folder-select":
       return <FolderSelectCardUI card={card} onAction={onAction} />;
@@ -33,7 +30,7 @@ export default function ActionCardRenderer({ card, onAction, company, thread, on
     case "clarification":
       return <ClarificationCardUI card={card} onAction={onAction} />;
     case "document-result":
-      return <DocumentResultCardUI card={card} onPreview={onPreview} onBulkRegenerate={onBulkRegenerate} onIssueAck={onIssueAck} onProofread={onProofread} proofreading={proofreading} />;
+      return <DocumentResultCardUI card={card} onPreview={onPreview} onBulkRegenerate={onBulkRegenerate} />;
     case "template-review":
       return (
         <TemplateReviewCardUI
