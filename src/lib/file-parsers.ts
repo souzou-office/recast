@@ -9,16 +9,17 @@ import type { FileContent } from "@/types";
 // パーサーは parseBuffer の中で初回呼び出し時にだけロードする（lazy）。
 // これらが top-level require だと、listFiles だけ使う API（例: /api/workspace の GET）
 // にも 3000 モジュール以上が引きずられて、dev のコールドスタートで 15 秒以上かかる。
-// pdf-parse 2.x はクラスベース API なので PDFParse コンストラクタを格納する。
+// pdf-parse は 1.x を使う (2.x は内部で pdf.worker.mjs を require していて Next.js の
+// bundler で解決できず、PDF 抽出が常時失敗するため 1.x にダウングレード)。
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let PDFParseClass: any = null;
+let pdfParse: ((buffer: Buffer) => Promise<{ text: string; numpages?: number }>) | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mammoth: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let XLSX: any = null;
 function ensureParsers(): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  if (!PDFParseClass) PDFParseClass = require("pdf-parse").PDFParse;
+  if (!pdfParse) pdfParse = require("pdf-parse");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   if (!mammoth) mammoth = require("mammoth");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -122,14 +123,11 @@ export async function parsePdf(buffer: Buffer, name: string, filePath: string): 
     return { name, path: filePath, content: `[ファイルサイズが大きすぎます: ${(buffer.length / 1024 / 1024).toFixed(1)}MB]` };
   }
 
-  // pdf-parse 2.x: new PDFParse({data: buffer}).getText() → {text, pages, total}
-  // Buffer → Uint8Array はコンストラクタが内部で変換する
-  let parser: { destroy: () => Promise<void> } | null = null;
+  // pdf-parse 1.x: pdfParse(buffer) → { text, numpages, ... }
+  // 1.x は worker 不要でメインスレッドで完結する（Next.js bundler との相性 ◎）。
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const p = new PDFParseClass({ data: buffer }) as any;
-    parser = p;
-    const result = await p.getText();
+    if (!pdfParse) throw new Error("pdfParse not loaded");
+    const result = await pdfParse(buffer);
     const text = (result?.text || "").trim();
     if (text && text.length > 50) {
       return { name, path: filePath, content: text };
@@ -137,8 +135,6 @@ export async function parsePdf(buffer: Buffer, name: string, filePath: string): 
   } catch (e) {
     console.warn(`[parsePdf] failed for ${name}:`, e instanceof Error ? e.message : e);
     // パース失敗 → base64にフォールバック
-  } finally {
-    try { await parser?.destroy(); } catch { /* ignore */ }
   }
 
   // テキストが取れない（スキャンPDF等）→ base64
