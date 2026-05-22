@@ -327,7 +327,12 @@ ${commonFilesBlock}
 ## 案件資料
 ${allTexts.join("\n\n")}`;
 
-  // ターン1のユーザー content: PDF添付 + プロンプトテキスト
+  // ターン1のユーザー content: PDF/画像添付 + プロンプトテキスト
+  // - PDF → document block (Claude が内部でテキスト抽出 / OCR)
+  // - JPG/PNG/GIF/WebP → image block (Claude のビジョン機能で認識)
+  // 旧実装は PDF だけ document として追加し画像をスキップしていたので、案件フォルダで
+  // 選ばれたマイナンバーカード等の画像が AI に渡らないバグがあった。
+  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
   const userTurnContent: CaseAiContentBlock[] = [];
   for (const pdf of pdfFiles) {
     if (pdf.mimeType === "application/pdf") {
@@ -335,6 +340,11 @@ ${allTexts.join("\n\n")}`;
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: pdf.base64 },
         title: pdf.name,
+      });
+    } else if (IMAGE_MIMES.has(pdf.mimeType)) {
+      userTurnContent.push({
+        type: "image",
+        source: { type: "base64", media_type: pdf.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: pdf.base64 },
       });
     }
   }
