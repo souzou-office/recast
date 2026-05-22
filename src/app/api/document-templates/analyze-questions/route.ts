@@ -110,6 +110,16 @@ export async function POST(request: NextRequest) {
         const ext = f.name.toLowerCase().split(".").pop() || "";
         let markedText = "";
 
+        // slot 表示に format / sourceHint を組み込む (analyze と同パターン)。
+        // 例: ★取締役の月額報酬額（○万円｜出典: 報酬に関する合意書または（ユーザー確認））★
+        // 「ユーザー確認」が sourceHint にある slot は、AI が「これは確認すべき」と判断しやすくなる。
+        const buildSlotDisplay = (s: { label: string; format?: string; sourceHint?: string }): string => {
+          const extras: string[] = [];
+          if (s.format && s.format.trim()) extras.push(s.format);
+          if (s.sourceHint && s.sourceHint.trim()) extras.push(`出典: ${s.sourceHint}`);
+          return extras.length > 0 ? `${s.label}（${extras.join(" ｜ ")}）` : s.label;
+        };
+
         if (ext === "docx" || ext === "docm") {
           try {
             const buf = await fs.readFile(f.path);
@@ -117,7 +127,7 @@ export async function POST(request: NextRequest) {
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
+              if (s.label && s.label !== "不明") labelById.set(s.slotId, buildSlotDisplay(s));
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -134,7 +144,7 @@ export async function POST(request: NextRequest) {
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
+              if (s.label && s.label !== "不明") labelById.set(s.slotId, buildSlotDisplay(s));
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -233,7 +243,18 @@ ${templateBodyBlock}
 - options には**具体的な候補値**と**出典**を必ず付ける (「📋登記簿」「📋株主名簿」「📇基本情報」「✏️手入力」)
 - 質問が**1つもない**場合は空配列で返す。**無理に質問を作らない**
 - 同じ意味の質問を複数書類で繰り返さない (1書類でユーザーが答えれば全書類に適用される前提)
-- 迷ったら **質問しない側に倒す**。後段の analyze がさらに「unconfirmed」として拾うこともできる
+- 迷ったら **質問しない側に倒す**
+
+## ★label★ の中の補足情報の読み方
+
+テンプレの ★label★ には次の形式で補足が付いている:
+  ★ラベル名（書式｜出典: 出典ヒント）★
+  例: ★取締役の月額報酬額（○万円｜出典: 報酬に関する合意書または（ユーザー確認））★
+
+- **出典ヒント** に「ユーザー確認」が含まれる slot は、案件資料を見て値が見つからなければ
+  質問対象にする (典型的な「依頼人確認案件」)。
+- 出典が明確な slot (例: 「基本情報の役員」「案件スケジュール表」) で、その場所に値が
+  書かれているなら質問対象外。
 
 ## 出力
 
