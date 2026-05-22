@@ -43,8 +43,85 @@ const REASONING_MODEL = "claude-sonnet-4-6";
 // Sonnet なら schema 理解が確実。コスト差は Phase 2 で +数円程度 (1 案件 1 回呼び出し)。
 const JSON_MODEL = "claude-sonnet-4-6";
 
-// Phase 2 の出力 schema (Tool Use 用)。types/index.ts の Phase2DocumentDecision と整合させる。
-// AI はこの schema に従って構造化データを返す。schema 違反は API レベルで弾かれる。
+// 新スキーマ Tool: 段落単位の changes 配列を返す。
+// 旧 4 配列 (slotDecisions / blockDeletes / rowInsertions / textReplaces) を 1 つに統合し、
+// 「1 段落 1 op」が構造的に保証される設計に。指示同士の衝突が発生不可能になる。
+const PHASE2_CHANGES_TOOL: Anthropic.Tool = {
+  name: "submit_phase2_changes",
+  description:
+    "各書類のテンプレに対する段落単位の変更操作リスト (changes) を提出する。" +
+    "推論で確定した「どの段落をどうするか」を段落番号ベースで指定する。" +
+    "1 段落につき指示は 1 つだけ (同じ idx を複数の change で指定しない)。",
+  input_schema: {
+    type: "object",
+    properties: {
+      documents: {
+        type: "array",
+        description: "書類ごとの changes。同じテンプレから複数出力する場合は outputLabel で区別して複数 entry を持つ",
+        items: {
+          type: "object",
+          properties: {
+            templateFile: {
+              type: "string",
+              description: "クリーンな物理テンプレファイル名 (例: '2-1.提案書兼同意書.docx')",
+            },
+            outputLabel: {
+              type: "string",
+              description: "同一テンプレから複数出力する場合の識別 (例: '藤崎用', '法人用')。1 出力なら省略",
+            },
+            changes: {
+              type: "array",
+              description: "段落単位の操作リスト。1 段落 1 op を厳守 (同じ idx を複数 entry に書かない)",
+              items: {
+                type: "object",
+                properties: {
+                  idx: {
+                    type: "number",
+                    description: "段落番号 (1-indexed)。markedText の 「段落N: ...」 の N をそのまま使う",
+                  },
+                  action: {
+                    type: "string",
+                    enum: ["delete", "fill", "rewrite", "insertAfter"],
+                    description:
+                      "delete=段落削除 (範囲削除は until 指定) / " +
+                      "fill=★label★ を値で置換 (slot + value 必須) / " +
+                      "rewrite=段落のテキスト全体を新テキストに差し替え (text 必須) / " +
+                      "insertAfter=この段落の直後に新段落を挿入 (text 必須)",
+                  },
+                  until: {
+                    type: "number",
+                    description: "delete のとき範囲削除する終端段落番号 (含む)。単独削除なら省略",
+                  },
+                  slot: {
+                    type: "string",
+                    description: "fill のとき置換する ★label★ の中身 (★は不要、label 名のみ。labels.json の label と完全一致)",
+                  },
+                  value: {
+                    type: "string",
+                    description: "fill のとき置換後の値 (最終形式、単位込み)",
+                  },
+                  text: {
+                    type: "string",
+                    description: "rewrite / insertAfter のとき完成形テキスト (固定文 + 値を結合して AI が書く)",
+                  },
+                  reason: {
+                    type: "string",
+                    description: "判断理由 (任意、デバッグ用)",
+                  },
+                },
+                required: ["idx", "action"],
+              },
+            },
+          },
+          required: ["templateFile", "changes"],
+        },
+      },
+    },
+    required: ["documents"],
+  },
+};
+
+// 旧 Phase 2 Tool (互換のため残置)。新規 AI 出力には使わない。
 const PHASE2_DECISIONS_TOOL: Anthropic.Tool = {
   name: "submit_phase2_decisions",
   description:
@@ -519,11 +596,11 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
 
           const jsonPrompt = `## あなたの仕事
 
-下の「推論メモ」と「テンプレ本文」を読んで、submit_phase2_decisions ツールを呼び出して
+下の「推論メモ」と「テンプレ本文」を読んで、**submit_phase2_changes** ツールを呼び出して
 Phase 2 の構造化決定を提出してください。
 
-**推論を改変するな**。推論メモに書かれた判断を **正確に** ツールの引数に転記する。あなたは形式変換だけ。
-新しい判断はしない。
+**推論を改変するな**。推論メモに書かれた判断を **正確に** ツールの引数に転記する。
+あなたは形式変換だけ。新しい判断はしない。
 
 ${templateBodyBlock}
 
@@ -537,41 +614,40 @@ ${reasoningText}
 
 ## ツール呼び出しの正しい使い方 (重要)
 
-### slotDecisions (★label★ への指示)
+各書類について \`changes\` 配列を作る。1 段落 1 op が大原則 (同じ idx を複数 change で指定しない)。
 
-- 推論メモに書かれた slot 1 つ 1 つを slotDecisions の entry にする
-- 「delete-row」と書いてあれば \`action: "delete-row"\`
-- 「fill: "X"」と書いてあれば \`action: "fill", value: "X"\`
-- 推論メモに書かれてない slot は documents[].slotDecisions に含めない (空欄 fill しない)
-- **個別の slot 行を消す** のは slotDecisions[delete-row] でやる (blockDeletes ではない)
+### action 別の使い方
 
-### blockDeletes (複数段落の範囲削除)
+**delete: 段落削除**
+- 単独削除: \`{ idx: 10, action: "delete" }\`
+- 範囲削除 (議案ブロック等): \`{ idx: 10, action: "delete", until: 17 }\` (段落 10〜17 を一括削除)
+- 推論メモの「blockDeletes 議案2 → 議案3 の前まで」は、テンプレ本文で段落番号を特定して
+  \`{ idx: 議案2 の段落番号, action: "delete", until: 議案3 の段落番号 - 1 }\` に変換
 
-**individual slot の delete-row には使わない**。議案2 ブロック全体みたいに、**複数段落** を範囲削除するときだけ。
+**fill: ★label★ を値で置換**
+- \`{ idx: 25, action: "fill", slot: "記名押印する代表取締役の氏名", value: "藤崎　伊久哉" }\`
+- slot は ★label★ の中身 (★は不要)。labels.json の label と完全一致させる
+- 段落番号は ★label★ が含まれる段落の番号
 
-\`startAnchor\` = 削除する **最初の段落** に含まれる文字列
-\`endAnchor\` = 削除した **直後に残す段落** に含まれる文字列 (この段落は削除されない)
+**rewrite: 段落全体を新テキストで差し替え**
+- 議案番号繰り上げ等: \`{ idx: 17, action: "rewrite", text: "議案２　代表取締役選任の件" }\`
+- text は **完成形** (固定文 + 値を AI が結合して書く)
 
-❌ 悪い例: \`startAnchor="主たる事務所", endAnchor="★主たる事務所所在地★"\`
-   → 同じ行を指してる。これは個別 slot 削除なので **slotDecisions[delete-row]** でやる
+**insertAfter: 段落の直後に新段落を追加**
+- \`{ idx: 7, action: "insertAfter", text: "取締役　古澤　利成" }\`
+- 複数行挿入したいなら entry を複数並べる (1 entry = 1 段落)
 
-✅ 良い例: \`startAnchor="議案２　取締役の報酬", endAnchor="議案３"\`
-   → 議案2 から議案3 の手前までを範囲削除
+### よくある変換パターン
 
-### rowInsertions (新規行挿入)
+旧スキーマの slotDecisions / blockDeletes / rowInsertions / textReplaces → 新 changes:
 
-**1 行 = 1 entry**。3 行挿入したいなら entry を 3 個作る。
-
-❌ 悪い例: \`template="本店 ★...★\\n商号 ★...★\\n代表取締役 ★...★"\` (\\n で詰め込み)
-   → これは「1 段落の中に改行入りテキスト」になり、3 行として展開されない
-
-✅ 良い例: rowInsertions に 3 entry:
-   1. \`{afterSlot: "甲の代表取締役", template: "本店 ★乙の本店所在地★", fills: [...]}\`
-   2. \`{afterSlot: "乙の本店所在地", template: "商号 ★乙の商号★", fills: [...]}\` (連鎖)
-   3. \`{afterSlot: "乙の商号", template: "代表取締役 ★乙の代表取締役★", fills: [...]}\` (連鎖)
-
-\`afterSlot\` は **必ずテンプレに存在する slot 名** (★label★ の中身) または **前の entry で作った新ラベル名**。
-固定テキスト ("（乙）" "同意欄" 等) は指定不可。
+| 旧 | 新 |
+|--|--|
+| slotDecisions[fill] | \`{ idx, action: "fill", slot, value }\` |
+| slotDecisions[delete-row] | \`{ idx, action: "delete" }\` |
+| blockDeletes (start/end anchor) | \`{ idx, action: "delete", until }\` (テンプレ本文で段落番号を特定) |
+| rowInsertions | \`{ idx, action: "insertAfter", text }\` (text は値込みの完成形) |
+| textReplaces (議案番号繰り上げ) | \`{ idx, action: "rewrite", text }\` (text は新タイトル全体) |
 
 ### templateFile / outputLabel
 
@@ -582,31 +658,33 @@ ${reasoningText}
             model: JSON_MODEL,
             max_tokens: 16384,
             temperature: 0,
-            tools: [PHASE2_DECISIONS_TOOL],
-            tool_choice: { type: "tool", name: "submit_phase2_decisions" },
+            tools: [PHASE2_CHANGES_TOOL],
+            tool_choice: { type: "tool", name: "submit_phase2_changes" },
             messages: [{ role: "user", content: jsonPrompt }],
           });
-          logTokenUsage(`/api/document-templates/analyze (Call 2 json)`, JSON_MODEL, decisionsResponse.usage);
+          logTokenUsage(`/api/document-templates/analyze (Call 2 changes)`, JSON_MODEL, decisionsResponse.usage);
 
-          // tool_use ブロックから decisions 取得
+          // tool_use ブロックから changes 取得
           const toolBlock = decisionsResponse.content.find(
             (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
           );
           let decisions: Phase2Decisions | null = null;
-          if (toolBlock?.name === "submit_phase2_decisions") {
+          if (toolBlock?.name === "submit_phase2_changes") {
+            // 新スキーマ: documents[].changes が入ってる
             decisions = toolBlock.input as Phase2Decisions;
           }
 
           if (decisions && Array.isArray(decisions.documents)) {
             send(controller, { type: "stage", stage: "validating" });
-            validateRowInsertions(decisions);
             await savePhase2Decisions(company.id, threadId, decisions);
+            // 新スキーマ: changes 配列の各 action を集計
             const summary = decisions.documents.map((d: Phase2DocumentDecision) => {
-              const fills = d.slotDecisions.filter((s) => s.action === "fill").length;
-              const dels = d.slotDecisions.filter((s) => s.action === "delete-row").length;
-              const ins = d.rowInsertions?.length ?? 0;
-              const repl = d.textReplaces?.length ?? 0;
-              return `${d.templateFile}: fill ${fills} / delete-row ${dels} / blockDeletes ${d.blockDeletes.length} / rowInsertions ${ins} / textReplaces ${repl}`;
+              const changes = d.changes || [];
+              const fills = changes.filter((c) => c.action === "fill").length;
+              const dels = changes.filter((c) => c.action === "delete").length;
+              const rewrites = changes.filter((c) => c.action === "rewrite").length;
+              const inserts = changes.filter((c) => c.action === "insertAfter").length;
+              return `${d.templateFile}: fill ${fills} / delete ${dels} / rewrite ${rewrites} / insertAfter ${inserts} (changes 計 ${changes.length})`;
             }).join("; ");
             console.log(`[analyze] decisions saved: ${summary}`);
             send(controller, { type: "decisions", decisions });

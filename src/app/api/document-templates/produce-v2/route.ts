@@ -280,6 +280,71 @@ export async function POST(request: NextRequest) {
         const inserts: InsertOp[] = [];
         const replaces: ReplaceOp[] = [];
 
+        // === 新スキーマ (changes 配列) があれば優先で処理 ===
+        // 旧スキーマ (slotDecisions / blockDeletes / rowInsertions / textReplaces) は
+        // changes が無い時の互換 fallback として残置 (changesProcessed フラグで分岐)。
+        let changesProcessed = false;
+        if (decisionDoc.changes && decisionDoc.changes.length > 0) {
+          changesProcessed = true;
+          for (const ch of decisionDoc.changes) {
+            if (ch.action === "delete") {
+              if (isXlsx) continue; // xlsx は構造変更禁止
+              const end = ch.until ?? ch.idx;
+              for (let i = ch.idx; i <= end; i++) {
+                paragraphActions.push({ paragraphIndex: i, action: "delete" });
+              }
+            } else if (ch.action === "fill") {
+              if (ch.slot) {
+                const marker = ch.slot.startsWith("★") ? ch.slot : `★${ch.slot}★`;
+                fills[marker] = ch.value ?? "";
+              }
+            } else if (ch.action === "rewrite") {
+              if (isXlsx) continue;
+              paragraphActions.push({ paragraphIndex: ch.idx, action: "rewrite", newText: ch.text ?? "" });
+            } else if (ch.action === "insertAfter") {
+              if (isXlsx) continue;
+              inserts.push({ afterParagraphIndex: ch.idx, contents: [ch.text ?? ""] });
+            }
+          }
+
+          // auto-clear (Phase 2 が触らなかった ★label★ を空文字 fill で消す)
+          // delete された段落の slot は対象外 (どうせ消えるので)
+          const deletedIndices = new Set<number>();
+          for (const ch of decisionDoc.changes) {
+            if (ch.action === "delete") {
+              const end = ch.until ?? ch.idx;
+              for (let i = ch.idx; i <= end; i++) deletedIndices.add(i);
+            }
+          }
+          let autoClearedCount = 0;
+          if (labels?.slots) {
+            for (const s of labels.slots) {
+              const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
+              const paraIdx = numberedLines.find(nl => nl.labels.includes(labelStr))?.idx ?? null;
+              if (paraIdx !== null && deletedIndices.has(paraIdx)) continue;
+              const marker = `★${labelStr}★`;
+              if (!(marker in fills)) {
+                fills[marker] = "";
+                autoClearedCount++;
+              }
+            }
+          }
+          if (autoClearedCount > 0) {
+            console.log(`[produce-v2] ${f.name} (changes) auto-cleared ${autoClearedCount} unaddressed markers`);
+          }
+          console.log(
+            `[produce-v2] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} (changes mode) prepared:`,
+            JSON.stringify({
+              paragraphActions: paragraphActions.length,
+              inserts: inserts.length,
+              fills: Object.keys(fills).length,
+              deletedIndices: [...deletedIndices],
+            })
+          );
+        }
+
+        // === 旧スキーマ処理 (changes が無い時の互換) ===
+        if (!changesProcessed) {
         // === 設計原則: xlsx は構造変更禁止、fills のみ ===
         // xlsx テンプレ (株主リスト・株主名簿・集計表等) は行構造が固定。
         // 行追加・行削除・ブロック削除をやると数式参照崩れや表構造破壊が起きるので
@@ -466,25 +531,26 @@ export async function POST(request: NextRequest) {
           console.log(`[produce-v2] ${f.name} auto-cleared ${autoClearedCount} unaddressed markers`);
         }
 
-        // 全 delete indices をマージして paragraphActions に
+        // 全 delete indices をマージして paragraphActions に (旧スキーマ)
         const allDeleteIndices = new Set([...blockDeleteIndices, ...slotDeleteIndices]);
         for (const idx of allDeleteIndices) {
           paragraphActions.push({ paragraphIndex: idx, action: "delete" });
         }
+        } // ← 旧スキーマ処理 (changes が無い時の互換) ここまで
 
         const edits: ProduceEdits = { paragraphActions, inserts, replaces, fills };
 
-        console.log(
-          `[produce-v2] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} edits:`,
-          JSON.stringify({
-            paragraphActions: paragraphActions.length,
-            inserts: inserts.length,
-            replaces: replaces.length,
-            fills: Object.keys(fills).length,
-            blockDeleteIndices: [...blockDeleteIndices],
-            slotDeleteIndices: [...slotDeleteIndices],
-          })
-        );
+        if (!changesProcessed) {
+          console.log(
+            `[produce-v2] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} (legacy mode) edits:`,
+            JSON.stringify({
+              paragraphActions: paragraphActions.length,
+              inserts: inserts.length,
+              replaces: replaces.length,
+              fills: Object.keys(fills).length,
+            })
+          );
+        }
 
         // edit engine で適用
         const result = isXlsx
