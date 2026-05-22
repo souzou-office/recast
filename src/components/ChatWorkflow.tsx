@@ -1075,6 +1075,19 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       const reader = res.body?.getReader();
       if (!reader) return;
 
+      // 先にプレースホルダーカードを追加して「セルフチェック中」を可視化。
+      // 旧実装は全部受信し終わってから1個カード追加だったので、20-30秒間「何も起きてない」
+      // ように見えていた。本体テキストを受信しながらリアルタイム更新する。
+      const checkMsgId = `msg_${Date.now()}_verify`;
+      const checkMsg: ThreadMessage = {
+        id: checkMsgId,
+        role: "assistant",
+        content: "",
+        cards: [{ type: "check-result", content: "_セルフチェック中..._" }],
+        timestamp: new Date().toISOString(),
+      };
+      setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
+
       const decoder = new TextDecoder();
       let buffer = "";
       let fullText = "";
@@ -1088,25 +1101,51 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
           const m = line.match(/^data: (.+)$/m);
           if (!m) continue;
           const data = JSON.parse(m[1]);
-          if (data.type === "text") fullText += data.text;
+          if (data.type === "text") {
+            fullText += data.text;
+            // ストリーミング更新: check-result カードの content を進行中テキストで書き換え
+            setThread(prev => {
+              if (!prev) return prev;
+              const msgs = prev.messages.map(m => {
+                if (m.id !== checkMsgId) return m;
+                const newCards = (m.cards || []).map(c =>
+                  c.type === "check-result" ? { ...c, content: fullText } : c
+                );
+                return { ...m, cards: newCards };
+              });
+              return { ...prev, messages: msgs };
+            });
+          }
         }
       }
 
       const trimmed = fullText.trim();
-      if (!trimmed) return;
+      if (!trimmed) {
+        // 完了時に空ならカードを削除
+        setThread(prev => prev ? { ...prev, messages: prev.messages.filter(m => m.id !== checkMsgId) } : prev);
+        return;
+      }
 
-      const checkMsg: ThreadMessage = {
-        id: `msg_${Date.now()}`,
-        role: "assistant",
-        content: "",
+      // 最終確定: trim した内容で書き換え + 永続化
+      setThread(prev => {
+        if (!prev) return prev;
+        const msgs = prev.messages.map(m => {
+          if (m.id !== checkMsgId) return m;
+          const newCards = (m.cards || []).map(c =>
+            c.type === "check-result" ? { ...c, content: trimmed } : c
+          );
+          return { ...m, cards: newCards };
+        });
+        return { ...prev, messages: msgs };
+      });
+      const finalMsg: ThreadMessage = {
+        ...checkMsg,
         cards: [{ type: "check-result", content: trimmed }],
-        timestamp: new Date().toISOString(),
       };
-      setThread(prev => prev ? { ...prev, messages: [...prev.messages, checkMsg] } : prev);
       await fetch(`/api/chat-threads/${currentThread.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId: company.id, message: checkMsg, checkResult: trimmed }),
+        body: JSON.stringify({ companyId: company.id, message: finalMsg, checkResult: trimmed }),
       });
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
