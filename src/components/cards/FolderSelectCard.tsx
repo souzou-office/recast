@@ -27,7 +27,6 @@ function fileIconName(name: string): "FileType" | "FileText" | "FileSpreadsheet"
   return "Paperclip";
 }
 
-// 三状態チェックボックス: チェック ON / チェック OFF / 一部チェック (indeterminate)
 function TriCheckbox({ state, onClick }: { state: "all" | "some" | "none"; onClick: (e: React.MouseEvent) => void }) {
   return (
     <input
@@ -47,6 +46,9 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
   const [openMap, setOpenMap] = useState<Record<string, LiveFolderData | null>>({});
   // 「使うファイル」をローカルで管理（デフォルトは何もチェックされていない）
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  // 案件フォルダとして明示的にマークされたパス（カード下部の「決定」ボタンで使う）。
+  // 複数フォルダにまたがってファイルを選ぶことを許すが、「案件の本拠地」だけは1つ決める必要がある。
+  const [activeFolder, setActiveFolder] = useState<string | null>(null);
 
   const toggleOpen = async (folderPath: string) => {
     // すでに開かれている → 閉じる
@@ -56,10 +58,12 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
         delete next[folderPath];
         return next;
       });
+      if (activeFolder === folderPath) setActiveFolder(null);
       return;
     }
-    // 未取得 → API 叩いて取得
+    // 未取得 → API 叩いて取得 + active にする
     setOpenMap(prev => ({ ...prev, [folderPath]: null }));
+    setActiveFolder(folderPath);
     try {
       const res = await fetch("/api/workspace/list-files", {
         method: "POST",
@@ -92,7 +96,7 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
     });
   };
 
-  // フォルダの三状態 (直下ファイルのみ評価。サブフォルダ配下は再帰的には見ない、シンプル化)
+  // フォルダの三状態 (直下ファイルのみ評価、シンプル化)
   const folderCheckState = (folderPath: string): "all" | "some" | "none" => {
     const data = openMap[folderPath];
     if (!data || data.files.length === 0) return "none";
@@ -112,17 +116,16 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
     setChecked(prev => {
       const next = new Set(prev);
       if (state === "all") {
-        // 全部 ON → 全部 OFF
         for (const f of data.files) next.delete(f.path);
       } else {
-        // none or some → all
         for (const f of data.files) next.add(f.path);
       }
       return next;
     });
   };
 
-  const handleConfirm = (folder: { path: string; name: string }) => {
+  const handleConfirm = () => {
+    if (!activeFolder) return;
     // disabledFiles = 「使わない」もの。
     // 展開済みフォルダ配下のファイルで checked じゃないもの + 展開してないサブフォルダ全部。
     const disabled: string[] = [];
@@ -133,13 +136,16 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
       }
       for (const sf of data.subfolders) {
         if (!(sf.path in openMap)) {
-          // 展開してない = 中身知らない = 使わない（フォルダごと disabled）
           disabled.push(sf.path);
         }
       }
     }
-    onAction({ selectedPath: folder.path, disabledFiles: disabled } as unknown as Partial<ActionCard>);
+    onAction({ selectedPath: activeFolder, disabledFiles: disabled } as unknown as Partial<ActionCard>);
   };
+
+  const activeFolderName = activeFolder
+    ? card.folders.find(f => f.path === activeFolder)?.name || ""
+    : "";
 
   return (
     <div className="mt-4 rounded-2xl border p-1.5 border-[var(--color-border)] bg-[var(--color-panel)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
@@ -152,11 +158,12 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
           const selected = card.selectedPath === f.path;
           const isOpen = f.path in openMap;
           const data = openMap[f.path];
+          const isActive = activeFolder === f.path;
           return (
             <div key={f.path}>
               <div
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${
-                  selected
+                  selected || isActive
                     ? "bg-[var(--color-accent-soft)]"
                     : isLocked
                       ? "opacity-50"
@@ -165,26 +172,23 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
                 onClick={() => !isLocked && toggleOpen(f.path)}
               >
                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                  selected ? "bg-[var(--color-accent-soft)]" : "bg-[var(--color-hover)]"
+                  selected || isActive ? "bg-[var(--color-accent-soft)]" : "bg-[var(--color-hover)]"
                 }`}>
                   <Icon
                     name={isOpen || selected ? "FolderOpen" : "Folder"}
                     size={15}
-                    className={selected ? "text-[var(--color-accent)]" : "text-[var(--color-fg-muted)]"}
+                    className={selected || isActive ? "text-[var(--color-accent)]" : "text-[var(--color-fg-muted)]"}
                   />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className={`text-[13px] truncate ${selected ? "font-medium text-[var(--color-accent-fg)]" : "text-[var(--color-fg)]"}`}>
+                  <div className={`text-[13px] truncate ${selected || isActive ? "font-medium text-[var(--color-accent-fg)]" : "text-[var(--color-fg)]"}`}>
                     {f.name}
                   </div>
                 </div>
-                {!isLocked && isOpen && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleConfirm(f); }}
-                    className="shrink-0 rounded-full bg-[var(--color-fg)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90"
-                  >
-                    このフォルダで進む
-                  </button>
+                {isActive && !isLocked && (
+                  <span className="shrink-0 text-[10px] text-[var(--color-accent-fg)] bg-white/60 rounded-full px-2 py-0.5">
+                    案件フォルダ
+                  </span>
                 )}
                 {selected && (
                   <div className="w-5 h-5 rounded-full bg-[var(--color-accent)] flex items-center justify-center shrink-0">
@@ -215,6 +219,24 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
           );
         })}
       </div>
+
+      {/* カード下部の決定ボタン。案件フォルダを1つだけ「アクティブ」にして進める */}
+      {!isLocked && (
+        <div className="border-t border-[var(--color-border-soft)] mt-1 pt-2 pb-1 px-2 flex items-center justify-between gap-3">
+          <span className="text-[11px] text-[var(--color-fg-subtle)]">
+            {activeFolder
+              ? `案件フォルダ: ${activeFolderName}（${checked.size}ファイル選択中）`
+              : "案件フォルダを開いて選んでください"}
+          </span>
+          <button
+            onClick={handleConfirm}
+            disabled={!activeFolder}
+            className="shrink-0 rounded-full bg-[var(--color-fg)] px-4 py-1.5 text-[11px] font-medium text-white hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            この内容で進む
+          </button>
+        </div>
+      )}
     </div>
   );
 }
