@@ -395,30 +395,47 @@ ${allTexts.join("\n\n")}`;
             // tool 実行 → tool_result を user メッセージとして追加
             workingMessages = [...workingMessages, { role: "assistant", content: final.content }];
             const toolResults: Anthropic.ToolResultBlockParam[] = [];
+            const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
             for (const block of final.content) {
               if (block.type !== "tool_use") continue;
               const reqPath = (block.input as { path?: string })?.path || "";
               const fileName = reqPath.split(/[\\/]/).pop() || reqPath;
               send(controller, { type: "stage", stage: "reading-file" });
               send(controller, { type: "text", text: `\n\n_📂 ${fileName} を読み込み中..._\n\n` });
-              let resultText: string;
+
+              // tool_result の content は string か、text/image block の array が許される。
+              // PDF (document) は tool_result では使えないので、PDF はテキスト抽出済みのみ渡せる。
+              // 画像 (JPG/PNG等) は image block で渡せるので、Claude のビジョン機能で OCR/認識される。
               if (!allowedCommonPaths.has(reqPath)) {
-                resultText = `エラー: 指定されたパスは共通フォルダのファイル一覧に存在しません。一覧から path を選び直してください。\n指定された path: ${reqPath}`;
-              } else {
-                try {
-                  const fc = await readFileContent(reqPath);
-                  if (!fc) {
-                    resultText = `エラー: ファイルの読み込みに失敗しました: ${reqPath}`;
-                  } else if (!fc.content || !fc.content.trim()) {
-                    resultText = `(${fileName} はテキスト抽出できない形式、または空ファイルです)`;
-                  } else {
-                    resultText = fc.content;
-                  }
-                } catch (e) {
-                  resultText = `エラー: ${e instanceof Error ? e.message : "読み込み失敗"}`;
-                }
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: block.id,
+                  content: `エラー: 指定されたパスは共通フォルダのファイル一覧に存在しません。一覧から path を選び直してください。\n指定された path: ${reqPath}`,
+                });
+                continue;
               }
-              toolResults.push({ type: "tool_result", tool_use_id: block.id, content: resultText });
+              try {
+                const fc = await readFileContent(reqPath);
+                if (!fc) {
+                  toolResults.push({ type: "tool_result", tool_use_id: block.id, content: `エラー: ファイルの読み込みに失敗しました: ${reqPath}` });
+                } else if (fc.mimeType && IMAGE_MIMES.has(fc.mimeType) && fc.base64) {
+                  // 画像 → image block で渡す（Claude のビジョンで認識される）
+                  toolResults.push({
+                    type: "tool_result",
+                    tool_use_id: block.id,
+                    content: [
+                      { type: "text", text: `${fileName} を画像として読み込みました。中身を解析してください。` },
+                      { type: "image", source: { type: "base64", media_type: fc.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: fc.base64 } },
+                    ],
+                  });
+                } else if (!fc.content || !fc.content.trim() || /^\[(画像|スキャンPDF):/.test(fc.content.trim())) {
+                  toolResults.push({ type: "tool_result", tool_use_id: block.id, content: `(${fileName} はテキスト抽出できない形式です。Word・Excel・テキスト埋め込み PDF のみテキスト抽出可能。スキャン PDF や非対応形式はこの tool では中身を取得できません)` });
+                } else {
+                  toolResults.push({ type: "tool_result", tool_use_id: block.id, content: fc.content });
+                }
+              } catch (e) {
+                toolResults.push({ type: "tool_result", tool_use_id: block.id, content: `エラー: ${e instanceof Error ? e.message : "読み込み失敗"}` });
+              }
             }
             workingMessages = [...workingMessages, { role: "user", content: toolResults }];
             send(controller, { type: "stage", stage: "organizing" });
