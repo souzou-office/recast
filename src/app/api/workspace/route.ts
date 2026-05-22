@@ -413,6 +413,14 @@ export async function PATCH(request: NextRequest) {
       break;
     }
 
+    case "deleteProfile": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        company.profile = undefined;
+      }
+      break;
+    }
+
     case "createCaseRoom": {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company) {

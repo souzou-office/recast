@@ -58,10 +58,6 @@ export default function Home() {
     if (res.ok) setConfig(await res.json());
   }, []);
 
-  // basePaths から会社一覧を「ファイルシステムに合わせて」再スキャンする。
-  // ファイルエクスプローラーで会社フォルダを追加/リネーム/削除した後、recast の左上プルダウンが
-  // 自動で最新になるように、ウィンドウフォーカス時 & マウント時に呼ぶ。
-  // 既存会社の subfolders は維持され、新会社だけ追加される（POST /api/workspace の挙動）。
   // 選択中の会社の subfolders を「ファイルシステムに合わせて」最新化する。
   // サーバー側で mtime ベースの差分検知が走るので、変わってなければ fs.stat 数回で即返る。
   // 会社切替直後 / ウィンドウフォーカス復帰時に裏で呼び、ユーザーの待ち時間ゼロを保つ。
@@ -88,27 +84,11 @@ export default function Home() {
 
   const selectedCompany = config?.companies.find(c => c.id === config.selectedCompanyId);
 
-  // 共通フォルダ変更検知 → 基本情報を自動再生成（バックグラウンド）
-  const autoRefreshProfile = useCallback(async (companyId: string) => {
-    try {
-      const check = await fetch(`/api/workspace/profile?companyId=${encodeURIComponent(companyId)}`);
-      if (!check.ok) return;
-      const { isStale } = await check.json();
-      if (!isStale) return;
-      const gen = await fetch("/api/workspace/profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId }),
-      });
-      if (gen.ok) fetchConfig();
-    } catch { /* ignore */ }
-  }, [fetchConfig]);
-
-  // 初期ロード後、選択中の会社について鮮度チェック
-  useEffect(() => {
-    const id = config?.selectedCompanyId;
-    if (id) autoRefreshProfile(id);
-  }, [config?.selectedCompanyId, autoRefreshProfile]);
+  // 基本情報の自動生成・自動更新は廃止した。
+  // 旧実装は会社切替の度に GET /api/workspace/profile で stale チェック → 古ければ自動 POST で
+  // AI 再生成していた。共通フォルダが空の会社（会社設立準備など）でも「初回 = 必ず stale」と
+  // 判定されて勝手に全ファイルを AI に投げる挙動になっており、無駄なトークン消費と待ち時間の
+  // 原因だった。今は「基本情報」タブの [生成 / 再生成] ボタンを押した時だけ AI を呼ぶ。
 
   const handleSelectCompany = async (companyId: string) => {
     await fetch("/api/workspace", {
@@ -121,7 +101,6 @@ export default function Home() {
     // ID 切替の表示反映が終わった後で、裏で mtime 差分チェック → 最新化（待たない）。
     // 変更がなければ stat 数回で即返るので、ほぼ無コスト。
     rescanSelectedCompany();
-    // 鮮度チェックはselectedCompanyId変更のuseEffectで自動実行される
   };
 
   const handleNewThread = async () => {
