@@ -65,7 +65,11 @@ export async function POST(request: NextRequest) {
     const files = await readAllFilesInFolder(folderPath);
     const disabled = disabledFiles || [];
     for (const content of files) {
-      if (disabled.includes(content.path)) continue;
+      // フォルダパスを disabledFiles に入れたとき、その配下全ファイルを除外するため
+      // 完全一致ではなく prefix match (isPathDisabled) を使う。
+      // 旧実装は disabled.includes(content.path) で完全一致だったため、
+      // フォルダレベルの除外指定が効かず、未展開フォルダの中身まで AI に渡っていた。
+      if (isPathDisabled(content.path, disabled)) continue;
       const ext = path.extname(content.name).toLowerCase();
       const mime = mimeFromExtension(ext);
       sourceFiles.push({ id: content.path, name: content.name, mimeType: mime });
