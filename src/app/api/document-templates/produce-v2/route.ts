@@ -393,11 +393,28 @@ export async function POST(request: NextRequest) {
           inserts.push({ afterParagraphIndex: afterIdx, contents });
         }
 
+        // blockDelete 範囲内にある slot のラベル集合を事前に計算。
+        // fill / auto-clear どちらも blockDelete 範囲内の slot は対象外にすることで、
+        // 「議案2 ブロック削除なのに中の slot に空 fill が積まれ、edit engine が
+        //  『fill 優先で delete を skip』して議案ブロックが残る」事故を構造的に防ぐ。
+        const blockDeleteSlotLabels = new Set<string>();
+        if (!isXlsx && labels?.slots) {
+          for (const s of labels.slots) {
+            const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
+            const paraIdx = findParagraphIndex(numberedLines, labelStr);
+            if (paraIdx !== null && blockDeleteIndices.has(paraIdx)) {
+              blockDeleteSlotLabels.add(labelStr);
+            }
+          }
+        }
+
         // 5. slotDecisions[fill] → fills
         // 旧設計の unconfirmed action は Phase 2-A 質問フェーズに分離されたので
         // ここには到達しない (action は fill / delete-row の2択)。
+        // blockDelete 範囲内の slot fill は drop (削除が優先される)。
         for (const sd of decisionDoc.slotDecisions || []) {
           if (sd.action === "fill") {
+            if (blockDeleteSlotLabels.has(sd.slot)) continue;
             fills[`★${sd.slot}★`] = sd.value ?? "";
           }
         }
@@ -432,6 +449,7 @@ export async function POST(request: NextRequest) {
           for (const s of labels.slots) {
             const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
             if (deleteRowSlots.has(labelStr)) continue; // delete-row 対象は auto-clear から除外 (docx のみ)
+            if (blockDeleteSlotLabels.has(labelStr)) continue; // blockDelete 範囲内も除外 (どうせ段落ごと消える)
             const marker = `★${labelStr}★`;
             if (!(marker in fills)) {
               fills[marker] = "";
