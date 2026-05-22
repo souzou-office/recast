@@ -39,7 +39,15 @@ export async function POST(request: NextRequest) {
     const files = await Promise.all(
       targets.map(async (e) => {
         const filePath = path.join(body.folderPath!, e.name);
+        const labelsPath = labelsPathFor(filePath);
         const existed = await hasLabels(filePath);
+        // 「初回生成」だけでなく「テンプレ書き換えによる再生成」も検知したい。
+        // ensureDocxLabels/ensureXlsxLabels は sha256 不一致や parserVersion 変更時に
+        // labels.json を書き直すので、その前後で mtime を比較すれば再生成を検知できる。
+        let beforeMtime = 0;
+        if (existed) {
+          try { beforeMtime = (await fs.stat(labelsPath)).mtimeMs; } catch { /* ignore */ }
+        }
         let slotCount = 0;
         let wasNew = false;
         let error: string | undefined;
@@ -52,7 +60,14 @@ export async function POST(request: NextRequest) {
             labels = await ensureXlsxLabels(filePath);
           }
           slotCount = labels?.slots.length || 0;
-          wasNew = !existed && !!labels;
+          if (!existed) {
+            wasNew = !!labels;
+          } else if (labels) {
+            try {
+              const afterMtime = (await fs.stat(labelsPath)).mtimeMs;
+              wasNew = afterMtime !== beforeMtime;
+            } catch { wasNew = false; }
+          }
         } catch (err) {
           error = err instanceof Error ? err.message : String(err);
         }
