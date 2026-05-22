@@ -255,6 +255,18 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
     finally { setGenerating(false); }
   };
 
+  const deleteProfile = async () => {
+    if (!confirm(`「${company.name}」の基本情報を削除しますか？\n\nこの操作は元に戻せません。元のファイルは残ります。`)) return;
+    try {
+      const res = await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "deleteProfile", companyId: company.id }),
+      });
+      if (res.ok) onUpdate();
+    } catch { /* ignore */ }
+  };
+
   const profile = company.profile;
   const sections = profile?.summary ? parseProfile(profile.summary) : [];
 
@@ -300,6 +312,15 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
                   }`}
                 >
                   {showJson ? "テーブル表示" : "JSON表示"}
+                </button>
+              )}
+              {profile && (
+                <button
+                  onClick={deleteProfile}
+                  className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                  title="基本情報を削除（元のファイルは残ります）"
+                >
+                  削除
                 </button>
               )}
               <button

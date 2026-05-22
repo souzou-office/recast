@@ -96,27 +96,11 @@ export default function Home() {
 
   const selectedCompany = config?.companies.find(c => c.id === config.selectedCompanyId);
 
-  // 共通フォルダ変更検知 → 基本情報を自動再生成（バックグラウンド）
-  const autoRefreshProfile = useCallback(async (companyId: string) => {
-    try {
-      const check = await fetch(`/api/workspace/profile?companyId=${encodeURIComponent(companyId)}`);
-      if (!check.ok) return;
-      const { isStale } = await check.json();
-      if (!isStale) return;
-      const gen = await fetch("/api/workspace/profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId }),
-      });
-      if (gen.ok) fetchConfig();
-    } catch { /* ignore */ }
-  }, [fetchConfig]);
-
-  // 初期ロード後、選択中の会社について鮮度チェック
-  useEffect(() => {
-    const id = config?.selectedCompanyId;
-    if (id) autoRefreshProfile(id);
-  }, [config?.selectedCompanyId, autoRefreshProfile]);
+  // 基本情報の自動生成・自動更新は廃止した。
+  // 旧実装は会社切替の度に GET /api/workspace/profile で stale チェック → 古ければ自動 POST で
+  // AI 再生成していた。共通フォルダが空の会社（会社設立準備など）でも「初回 = 必ず stale」と
+  // 判定されて勝手に全ファイルを AI に投げる挙動になっており、無駄なトークン消費と待ち時間の
+  // 原因だった。今は「基本情報」タブの [生成 / 再生成] ボタンを押した時だけ AI を呼ぶ。
 
   const handleSelectCompany = async (companyId: string) => {
     await fetch("/api/workspace", {
@@ -126,7 +110,6 @@ export default function Home() {
     });
     setSelectedThreadId(null);
     await fetchConfig();
-    // 鮮度チェックはselectedCompanyId変更のuseEffectで自動実行される
   };
 
   const handleNewThread = async () => {
