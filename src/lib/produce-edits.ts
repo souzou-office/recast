@@ -475,16 +475,6 @@ function applyIndexedOps(
 
 // --- 追加: 任意テキスト置換 (議案番号繰り上げ等) ---
 
-// 任意テキスト置換 (議案番号繰り上げ等)。
-//
-// AI は段落の「見た目テキスト」で anchor を作るが、docx 内部では同じ段落でも書式境界で
-// <w:t> が複数に分割されることが多い (例: 「議案」「３」「　代表取締役選任の件」の 3 個に
-// 分割されてた)。1 個の <w:t> だけ見ると anchor 全体にマッチせず skip されてしまう問題が
-// あったので、**段落単位で全 <w:t> を結合してから検索** に変更。
-//
-// 副作用: マッチした段落の <w:t> は「最初の <w:t> に結合・置換後テキスト、残りは空」に
-// 圧縮されるため、段落内で書式が混在していた場合 (例: 議案番号だけ太字) は最初の run の
-// 書式に統一される。議案番号繰り上げレベルでは実質問題ないと判断。
 function applyReplaces(
   docXml: string,
   replaces: ReplaceOp[],
@@ -492,33 +482,17 @@ function applyReplaces(
 ): string {
   for (const r of replaces) {
     if (!r.anchor) continue;
+    const escAnchor = escapeXml(r.anchor);
+    const escReplacement = escapeXml(r.replacement ?? "");
     let count = 0;
-
-    docXml = docXml.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (paraXml) => {
-      // 段落内の全 <w:t> テキストを抽出 → unescape → 結合
-      const tMatches = [...paraXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)];
-      if (tMatches.length === 0) return paraXml;
-      const joined = tMatches.map((m) => decodeXml(m[1])).join("");
-
-      if (!joined.includes(r.anchor)) return paraXml;
-
-      // anchor を含む段落 → 結合テキスト全体に対して置換、最初の <w:t> に書き戻し
-      const replaced = joined.split(r.anchor).join(r.replacement ?? "");
-      count += (joined.match(new RegExp(escapeRegexLocal(r.anchor), "g")) || []).length;
-
-      let isFirst = true;
-      return paraXml.replace(/<w:t\b([^>]*)>[\s\S]*?<\/w:t>/g, (_m, attrs) => {
-        if (isFirst) {
-          isFirst = false;
-          const hasPreserve = /xml:space="preserve"/.test(attrs);
-          const newAttrs = hasPreserve ? attrs : `${attrs} xml:space="preserve"`;
-          return `<w:t${newAttrs}>${escapeXml(replaced)}</w:t>`;
-        }
-        // 残りの <w:t> は空に (テキストが二重に出ないように)
-        return `<w:t${attrs}></w:t>`;
-      });
+    docXml = docXml.replace(/<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/g, (m, attrs, txt) => {
+      if (!txt.includes(escAnchor)) return m;
+      const replaced = txt.split(escAnchor).join(escReplacement);
+      count += (txt.match(new RegExp(escapeRegexLocal(escAnchor), "g")) || []).length;
+      const hasPreserve = /xml:space="preserve"/.test(attrs);
+      const newAttrs = hasPreserve ? attrs : `${attrs} xml:space="preserve"`;
+      return `<w:t${newAttrs}>${replaced}</w:t>`;
     });
-
     if (count > 0) log.applied.push({ kind: "replace", detail: `${r.anchor} → ${r.replacement} (${count}件)` });
     else log.skipped.push({ kind: "replace", detail: r.anchor, reason: "テキストが見つからない" });
   }
