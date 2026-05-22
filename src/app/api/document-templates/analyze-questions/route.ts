@@ -110,15 +110,9 @@ export async function POST(request: NextRequest) {
         const ext = f.name.toLowerCase().split(".").pop() || "";
         let markedText = "";
 
-        // slot 表示に format / sourceHint を組み込む (analyze と同パターン)。
-        // 例: ★取締役の月額報酬額（○万円｜出典: 報酬に関する合意書または（ユーザー確認））★
-        // 「ユーザー確認」が sourceHint にある slot は、AI が「これは確認すべき」と判断しやすくなる。
-        const buildSlotDisplay = (s: { label: string; format?: string; sourceHint?: string }): string => {
-          const extras: string[] = [];
-          if (s.format && s.format.trim()) extras.push(s.format);
-          if (s.sourceHint && s.sourceHint.trim()) extras.push(`出典: ${s.sourceHint}`);
-          return extras.length > 0 ? `${s.label}（${extras.join(" ｜ ")}）` : s.label;
-        };
+        // ★label★ には label のみ。format/sourceHint は別表に出して AI に渡す
+        // (analyze と同じ方式)。
+        const slotInfoList: { label: string; format?: string; sourceHint?: string }[] = [];
 
         if (ext === "docx" || ext === "docm") {
           try {
@@ -127,7 +121,10 @@ export async function POST(request: NextRequest) {
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, buildSlotDisplay(s));
+              if (s.label && s.label !== "不明") {
+                labelById.set(s.slotId, s.label);
+                slotInfoList.push({ label: s.label, format: s.format, sourceHint: s.sourceHint });
+              }
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -144,7 +141,10 @@ export async function POST(request: NextRequest) {
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, buildSlotDisplay(s));
+              if (s.label && s.label !== "不明") {
+                labelById.set(s.slotId, s.label);
+                slotInfoList.push({ label: s.label, format: s.format, sourceHint: s.sourceHint });
+              }
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -159,7 +159,20 @@ export async function POST(request: NextRequest) {
         if (!markedText && f.content) markedText = f.content;
         if (!markedText) continue;
         markedText = markedText.replace(/(\(空\)\n)(\(空\)\n)+/g, "(空)\n");
-        templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\``);
+
+        const slotTableLines = slotInfoList
+          .filter(s => s.format || s.sourceHint)
+          .map(s => {
+            const parts: string[] = [];
+            if (s.format) parts.push(`書式 \`${s.format}\``);
+            if (s.sourceHint) parts.push(`出典: ${s.sourceHint}`);
+            return `- \`★${s.label}★\` → ${parts.join(" / ")}`;
+          });
+        const tableSection = slotTableLines.length > 0
+          ? `\n\n**${f.name} の slot 補足** (★label★ ごとの書式と推定出典):\n${slotTableLines.join("\n")}\n`
+          : "";
+
+        templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\`${tableSection}`);
       }
     } catch (e) {
       console.warn("[analyze-questions] template read failed:", e instanceof Error ? e.message : e);
@@ -245,13 +258,17 @@ ${templateBodyBlock}
 - 同じ意味の質問を複数書類で繰り返さない (1書類でユーザーが答えれば全書類に適用される前提)
 - 迷ったら **質問しない側に倒す**
 
-## ★label★ の中の補足情報の読み方
+## slot 補足表の読み方
 
-テンプレの ★label★ には次の形式で補足が付いている:
-  ★ラベル名（書式｜出典: 出典ヒント）★
-  例: ★取締役の月額報酬額（○万円｜出典: 報酬に関する合意書または（ユーザー確認））★
+各書類のテンプレ本文の下に **「○○.docx の slot 補足」** という表が付いている。
+\`★label★\` ごとに **書式** と **推定出典** が書かれている。
 
-- **出典ヒント** に「ユーザー確認」が含まれる slot は、案件資料を見て値が見つからなければ
+例:
+\`\`\`
+- \`★取締役の月額報酬額★\` → 書式 \`○万円\` / 出典: 報酬に関する合意書または（ユーザー確認）
+\`\`\`
+
+- **出典** に「ユーザー確認」が含まれる slot は、案件資料を見て値が見つからなければ
   質問対象にする (典型的な「依頼人確認案件」)。
 - 出典が明確な slot (例: 「基本情報の役員」「案件スケジュール表」) で、その場所に値が
   書かれているなら質問対象外。

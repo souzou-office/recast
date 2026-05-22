@@ -258,17 +258,10 @@ export async function POST(request: NextRequest) {
         const ext = f.name.toLowerCase().split(".").pop() || "";
         let markedText = "";
 
-        // slot 表示: label + format + sourceHint を組み立て、AI が一目で「何の slot、どの書式、
-        // どこから値を取るか」を把握できるようにする。
-        //   例: ★議決権を行使できる株主の数（○名｜出典: 基本情報の株主リスト人数）★
-        // これで AI は「○名 だから単位込み」「出典が基本情報の株主リスト」と判断でき、
-        // 単位消失・推測 fill・不要な質問が減る。
-        const buildSlotDisplay = (s: { label: string; format?: string; sourceHint?: string }): string => {
-          const extras: string[] = [];
-          if (s.format && s.format.trim()) extras.push(s.format);
-          if (s.sourceHint && s.sourceHint.trim()) extras.push(`出典: ${s.sourceHint}`);
-          return extras.length > 0 ? `${s.label}（${extras.join(" ｜ ")}）` : s.label;
-        };
+        // slot 名自体はテンプレ内・slotDecisions 出力で完全一致させる必要があるので、
+        // ★label★ には label のみ入れる (拡張するとマッチ崩れて produce-v2 で fill 当たらず空欄化)。
+        // format / sourceHint は別途 slot 一覧表として プロンプトに添付して AI に渡す (下流参照)。
+        const slotInfoList: { label: string; format?: string; sourceHint?: string }[] = [];
 
         if (ext === "docx" || ext === "docm") {
           try {
@@ -277,7 +270,10 @@ export async function POST(request: NextRequest) {
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, buildSlotDisplay(s));
+              if (s.label && s.label !== "不明") {
+                labelById.set(s.slotId, s.label);
+                slotInfoList.push({ label: s.label, format: s.format, sourceHint: s.sourceHint });
+              }
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -294,7 +290,10 @@ export async function POST(request: NextRequest) {
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, buildSlotDisplay(s));
+              if (s.label && s.label !== "不明") {
+                labelById.set(s.slotId, s.label);
+                slotInfoList.push({ label: s.label, format: s.format, sourceHint: s.sourceHint });
+              }
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -312,7 +311,21 @@ export async function POST(request: NextRequest) {
         // 連続する (空) 行を 1 個に圧縮 (トークン節約)
         markedText = markedText.replace(/(\(空\)\n)(\(空\)\n)+/g, "(空)\n");
 
-        templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\``);
+        // slot 補足表: ★label★ の書式と推定出典を別表として AI に渡す。
+        // ★label★ 自体は元のままで produce-v2 とマッチ。書式/出典は表で参照させる。
+        const slotTableLines = slotInfoList
+          .filter(s => s.format || s.sourceHint)
+          .map(s => {
+            const parts: string[] = [];
+            if (s.format) parts.push(`書式 \`${s.format}\``);
+            if (s.sourceHint) parts.push(`出典: ${s.sourceHint}`);
+            return `- \`★${s.label}★\` → ${parts.join(" / ")}`;
+          });
+        const tableSection = slotTableLines.length > 0
+          ? `\n\n**${f.name} の slot 補足** (★label★ ごとの書式と推定出典):\n${slotTableLines.join("\n")}\n`
+          : "";
+
+        templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\`${tableSection}`);
         templateStructures.push({ templateFile: f.name, markedText });
       }
     } catch (e) {
@@ -372,18 +385,26 @@ ${templateBodyBlock}
 - value に **指示文・注記・説明文を書かない** ("【法人引受人のため本行削除】" 等は全部 NG)
 - 共通ルールにラベル変換ルールがあれば従う
 
-## ★label★ の中の補足情報の読み方
+## slot 補足表の読み方
 
-テンプレの ★label★ には次の形式で補足が付いている:
-  ★ラベル名（書式｜出典: 出典ヒント）★
-  例: ★議決権を行使できる株主の数（○名｜出典: 基本情報の株主リスト人数）★
+各書類のテンプレ本文の下に **「○○.docx の slot 補足」** という表が付いている。
+\`★label★\` ごとに **書式** と **推定出典** が書かれている。
+
+例:
+\`\`\`
+- \`★議決権を行使できる株主の数★\` → 書式 \`○名\` / 出典: 基本情報の株主リスト人数
+- \`★取締役の月額報酬額★\` → 書式 \`○万円\` / 出典: 報酬に関する合意書または（ユーザー確認）
+\`\`\`
 
 - **書式** (○名, ○万円, 令和○年○月○日 など) は value をその形式で揃える指示。
   「○名」とあれば value は「2名」(単位『名』含む)、「○万円」とあれば「100万円」のように作る。
   単位を勝手に省略しない。
 - **出典** は値をどこから取るかのヒント。「基本情報の役員」「案件スケジュール表」など。
-  出典が「ユーザー確認」を含む slot は、案件資料に明確な値がなければ Phase 2-A で既に質問
-  されているはずなので、その回答を反映する。
+  出典が「ユーザー確認」を含む slot は、Phase 2-A の質問で既に確認済みなのでその回答を反映。
+
+**重要**: slotDecisions の \`slot\` フィールドには ★label★ の中身（label 名）だけを書く。
+書式や出典を slot 名に含めない (例: 「議決権を行使できる株主の数」と書く。
+「議決権を行使できる株主の数（○名）」のように補足を含めない)。
 
 ## value (fill) のルール
 
