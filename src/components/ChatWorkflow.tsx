@@ -251,8 +251,8 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
     }
     else if (card?.type === "clarification") {
       // 確認質問に回答 → 回答を反映。
-      // - kind="procedural" (Phase 2 = analyze 後) → clarify-procedural を再呼び出し
-      // - 省略 or "substantive" (Phase 1) → clarify を再呼び出し → 終わったら analyze + procedural へ
+      // - kind="procedural" (Phase 2-A 質問への回答) → 再 clarify なし、即 analyze → produce
+      // - 省略 or "substantive" (Phase 1) → clarify を再呼び出し → 終わったら analyze-questions → analyze → produce
       const isProcedural = card.kind === "procedural";
       const updatedCard = { ...card, ...cardData, answered: true } as ClarificationCard;
       // スレッド状態を明示的に組み立てる（setStateコールバックに依存しない）
@@ -309,41 +309,39 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         }
       }
 
-      // 呼び出すルート: procedural なら clarify-procedural、それ以外は通常 clarify
-      const clarifyRoute = isProcedural
-        ? "/api/document-templates/clarify-procedural"
-        : "/api/document-templates/clarify";
+      // procedural の質問への回答完了 → 再 clarify はせず、即 analyze → produce へ。
+      // (analyze-questions ルートは1回で全質問を出す前提。追加質問は出さない。)
+      if (isProcedural) {
+        const afterAnalyze = await runAnalyze(updatedThread, templatePath);
+        await generateDocuments(afterAnalyze, templatePath, cardData as Partial<ActionCard>);
+        pendingTemplatePath.current = null;
+        return;
+      }
 
-      const clarifyBody = isProcedural
-        ? { companyId: company.id, threadId: thread.id, previousQA }
-        : {
-            companyId: company.id,
-            threadId: thread.id,
-            templateFolderPath: templatePath,
-            previousQA,
-            folderPath: updatedThread.folderPath,
-            disabledFiles: updatedThread.disabledFiles,
-          };
-
-      const clarifyRes = await fetch(clarifyRoute, {
+      // substantive (Phase 1) の回答完了 → さらに質問があるか clarify ルートで判定
+      const clarifyRes = await fetch("/api/document-templates/clarify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(clarifyBody),
+        body: JSON.stringify({
+          companyId: company.id,
+          threadId: thread.id,
+          templateFolderPath: templatePath,
+          previousQA,
+          folderPath: updatedThread.folderPath,
+          disabledFiles: updatedThread.disabledFiles,
+        }),
       });
       const clarifyData = await clarifyRes.json();
 
       if (clarifyData.questions && clarifyData.questions.length > 0) {
-        // まだ確認事項がある → 次のカードを追加
+        // まだ実体的な確認事項がある → 次のカードを追加
         const nextMsg: ThreadMessage = {
           id: `msg_${Date.now()}`,
           role: "assistant",
-          content: isProcedural
-            ? `書面ルール上の確認がさらに${clarifyData.questions.length}点あります`
-            : `さらに${clarifyData.questions.length}点確認があります`,
+          content: `さらに${clarifyData.questions.length}点確認があります`,
           cards: [{
             type: "clarification",
             questions: clarifyData.questions,
-            ...(isProcedural ? { kind: "procedural" as const } : {}),
           }],
           timestamp: new Date().toISOString(),
         };
@@ -355,15 +353,6 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         });
         pendingTemplatePath.current = templatePath;
         setLoading(false);
-        return;
-      }
-
-      // 確認事項なし
-      if (isProcedural) {
-        // Phase 2-A 質問 (analyze-questions) の回答が完了 → analyze で穴埋め決定 → 書類生成
-        const afterAnalyze = await runAnalyze(updatedThread, templatePath);
-        await generateDocuments(afterAnalyze, templatePath, cardData as Partial<ActionCard>);
-        pendingTemplatePath.current = null;
         return;
       }
 
