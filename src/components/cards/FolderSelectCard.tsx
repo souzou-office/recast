@@ -88,12 +88,23 @@ export default function FolderSelectCardUI({ card, onAction }: Props) {
   };
 
   const toggleFileCheck = (filePath: string) => {
+    let turnedOn = false;
     setChecked(prev => {
       const next = new Set(prev);
-      if (next.has(filePath)) next.delete(filePath);
-      else next.add(filePath);
+      if (next.has(filePath)) {
+        next.delete(filePath);
+      } else {
+        next.add(filePath);
+        turnedOn = true;
+      }
       return next;
     });
+    // ON にした時だけ、案件フォルダ未指定なら自動で所属トップレベルフォルダを active に。
+    // 「フォルダを閉じた後にファイルだけチェックしてボタンが disabled」を防ぐ。
+    if (turnedOn && !activeFolder) {
+      const top = card.folders.find(f => filePath.startsWith(f.path + "\\") || filePath.startsWith(f.path + "/"));
+      if (top) setActiveFolder(top.path);
+    }
   };
 
   // フォルダの三状態 (直下ファイルのみ評価、シンプル化)
