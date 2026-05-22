@@ -18,8 +18,11 @@ let mammoth: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let XLSX: any = null;
 function ensureParsers(): void {
+  // pdf-parse 1.x は index.js の冒頭に「自身の test PDF を開く」コードがあり、
+  // 普通に require("pdf-parse") すると test/data/05-versions-space.pdf を読みに行って
+  // ENOENT エラーになる有名なバグ。内部 lib を直接 require して回避する。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  if (!pdfParse) pdfParse = require("pdf-parse");
+  if (!pdfParse) pdfParse = require("pdf-parse/lib/pdf-parse.js");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   if (!mammoth) mammoth = require("mammoth");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
