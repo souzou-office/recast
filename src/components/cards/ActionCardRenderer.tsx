@@ -57,7 +57,7 @@ export default function ActionCardRenderer({ card, onAction, company, thread, on
         </button>
       );
     case "check-result":
-      return <CheckResultCardUI card={card} />;
+      return <CheckResultCardUI card={card} companyName={company.name} threadTitle={thread.displayName} />;
     default:
       return null;
   }
