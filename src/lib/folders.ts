@@ -39,7 +39,15 @@ export async function getWorkspaceConfig(): Promise<WorkspaceConfig> {
   }
 }
 
+// 同一プロセス内で「前回シリアライズした JSON」を持っておき、内容が変わらなければ
+// writeFile を skip する。フォーカス復帰時の空振り rescan で 59KB の書き込みが
+// 走らないようにするための簡易最適化。プロセス再起動後は1回目だけ必ず書く。
+let lastSerialized: string | null = null;
+
 export async function saveWorkspaceConfig(config: WorkspaceConfig): Promise<void> {
+  const serialized = JSON.stringify(config, null, 2);
+  if (serialized === lastSerialized) return;
   await fs.mkdir(path.dirname(DATA_PATH), { recursive: true });
-  await fs.writeFile(DATA_PATH, JSON.stringify(config, null, 2), "utf-8");
+  await fs.writeFile(DATA_PATH, serialized, "utf-8");
+  lastSerialized = serialized;
 }

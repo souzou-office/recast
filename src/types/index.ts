@@ -131,6 +131,10 @@ export interface Company {
   // 後方互換: 旧データ
   masterSheet?: MasterSheet;
   generatedDocuments?: GeneratedDocument[];
+  // 直近 detectSubfolders 時の「会社フォルダ + 中間フォルダ mtime ハッシュ」。
+  // 次回スキャン依頼が来た時にこの sig と現状の sig を比較し、変わってなければ
+  // readdir を一切走らせずに済ませる（mtime cache）。
+  scannedSig?: string;
 }
 
 export interface WorkspaceConfig {
