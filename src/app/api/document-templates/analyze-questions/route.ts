@@ -100,6 +100,7 @@ export async function POST(request: NextRequest) {
       const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
       const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
       const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
+      const { addMarkedTextNumbering } = await import("@/lib/produce-edits");
 
       const tpFiles = await readAllFilesInFolder(templateFolderPath);
       for (const f of tpFiles) {
@@ -109,6 +110,8 @@ export async function POST(request: NextRequest) {
 
         const ext = f.name.toLowerCase().split(".").pop() || "";
         let markedText = "";
+        let docBuf: Buffer | null = null;
+        const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";
 
         // ★label★ には label のみ。format/sourceHint は別表に出して AI に渡す
         // (analyze と同じ方式)。
@@ -116,8 +119,8 @@ export async function POST(request: NextRequest) {
 
         if (ext === "docx" || ext === "docm") {
           try {
-            const buf = await fs.readFile(f.path);
-            const { text } = getMarkedDocumentTextWithSlots(buf);
+            docBuf = await fs.readFile(f.path);
+            const { text } = getMarkedDocumentTextWithSlots(docBuf);
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -134,10 +137,10 @@ export async function POST(request: NextRequest) {
           } catch (e) {
             console.warn(`[analyze-questions] docx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
           }
-        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+        } else if (isXlsx) {
           try {
-            const buf = await fs.readFile(f.path);
-            const { text } = getXlsxMarkedTextWithSlots(buf);
+            docBuf = await fs.readFile(f.path);
+            const { text } = getXlsxMarkedTextWithSlots(docBuf);
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -158,7 +161,10 @@ export async function POST(request: NextRequest) {
 
         if (!markedText && f.content) markedText = f.content;
         if (!markedText) continue;
-        markedText = markedText.replace(/(\(空\)\n)(\(空\)\n)+/g, "(空)\n");
+        // produce-v2 と同じ番号付けで「段落N: 」/「行N: 」プレフィックスを付ける
+        if (docBuf) {
+          markedText = addMarkedTextNumbering(markedText, docBuf, isXlsx);
+        }
 
         const slotTableLines = slotInfoList
           .filter(s => s.format || s.sourceHint)

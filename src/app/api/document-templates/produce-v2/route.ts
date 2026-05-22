@@ -218,59 +218,10 @@ export async function POST(request: NextRequest) {
         });
 
         // markedText を index 付きで組み立てる。docx は連番、xlsx は Excel 行番号 (r= 値)。
-        let markedText = "";
-        if (isXlsx) {
-          // xlsx: Excel 行番号で labelled する
-          const PizZip = (await import("pizzip")).default;
-          const zip = new PizZip(buf);
-          const sheetFiles = Object.keys(zip.files)
-            .filter((fn) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
-            .sort();
-          const xlsxRowNumbers: number[] = [];
-          for (const sf of sheetFiles) {
-            const sheetXml = zip.file(sf)?.asText() || "";
-            const rowRe = /<row\b[^>]*?r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
-            let rm2;
-            while ((rm2 = rowRe.exec(sheetXml)) !== null) {
-              const inner = rm2[2];
-              const cellRe = /<c\b[^>]*?(?:\/>|>([\s\S]*?)<\/c>)/g;
-              let hasContent = false;
-              let cm2;
-              while ((cm2 = cellRe.exec(inner)) !== null) {
-                const cellInner = cm2[1] || "";
-                if (/<v>[^<]*<\/v>/.test(cellInner)) {
-                  hasContent = true;
-                  break;
-                }
-              }
-              if (hasContent) xlsxRowNumbers.push(parseInt(rm2[1], 10));
-            }
-          }
-          const cleaned = markedTextRaw.replace(/\r\n/g, " / ").replace(/\r/g, " / ");
-          const lines = cleaned.split("\n");
-          let rowIdx = 0;
-          markedText = lines
-            .map((line) => {
-              if (line.trim().length === 0) return line;
-              const rowNum = xlsxRowNumbers[rowIdx++] ?? rowIdx;
-              return `行${rowNum}: ${line}`;
-            })
-            .join("\n");
-        } else {
-          // docx: 1-indexed 連番 (空段落 "(空)" マーカー行は除外して連番つけない)
-          // (空) 行は AI 向けに構造を見せる目的のみ。engine の paragraph index は
-          // 非空段落のみで連番つけて contentParagraphs と一致させる。
-          let lineCounter = 0;
-          markedText = markedTextRaw
-            .split("\n")
-            .map((line) => {
-              const trimmed = line.trim();
-              if (trimmed.length === 0 || trimmed === "(空)") return line;
-              lineCounter++;
-              return `段落${lineCounter}: ${line}`;
-            })
-            .join("\n");
-        }
+        // 共通関数化 (produce-edits.addMarkedTextNumbering) で analyze / analyze-questions と
+        // 完全に同じ番号付けを保証する。番号がズレると AI の changes が全部誤爆する。
+        const { addMarkedTextNumbering } = await import("@/lib/produce-edits");
+        const markedText = addMarkedTextNumbering(markedTextRaw, buf, isXlsx);
 
         // === Phase 2 決定を機械的に edit op に変換 ===
         const numberedLines = parseNumberedLines(markedText);
@@ -303,7 +254,18 @@ export async function POST(request: NextRequest) {
               paragraphActions.push({ paragraphIndex: ch.idx, action: "rewrite", newText: ch.text ?? "" });
             } else if (ch.action === "insertAfter") {
               if (isXlsx) continue;
-              inserts.push({ afterParagraphIndex: ch.idx, contents: [ch.text ?? ""] });
+              // **重要**: 同じ idx に対する複数の insertAfter は 1 op の contents 配列にマージする。
+              // 別々の op にすると produce-edits.ts で全てが同じ sortKey になり、毎回「先頭に追加」
+              // される形で挿入されるため、AI の入力順と逆順に並んでしまう
+              // (Polaris ケース: Deep30 組合用 同意欄が完全逆順になった)。
+              // 1 op の contents 配列なら makeStyledParagraphFromReference を順次 join するため
+              // 順序が保たれる。
+              const existing = inserts.find((i) => i.afterParagraphIndex === ch.idx);
+              if (existing) {
+                existing.contents.push(ch.text ?? "");
+              } else {
+                inserts.push({ afterParagraphIndex: ch.idx, contents: [ch.text ?? ""] });
+              }
             }
           }
 

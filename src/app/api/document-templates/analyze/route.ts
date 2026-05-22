@@ -10,7 +10,14 @@
 //
 // === 2 段階 AI 呼び出し ===
 //   Call 1: Sonnet 4.6 が推論 md を生成 (どの slot をどうするか、ラベル変換等を判断)
-//   Call 2: Haiku 4.5 が推論を読んで Tool Use で構造化 JSON を生成 (schema 強制)
+//   Call 2: Sonnet 4.6 が推論を読んで Tool Use で構造化 JSON を生成 (schema 強制)
+//
+//   Call 2 は **書類ごとに Promise.all で並列実行**。理由:
+//     - 全書類分まとめて 1 回で出させると、株主数 × 書類数で changes が 300+ op になり
+//       16k tokens を超えて JSON が途中で切れる事故が起きた (Polaris で 380 op → max_tokens 張り付き)
+//     - 書類ごとに分ければ 1 call あたり 50-60 op (≈ 3-4k tokens) で余裕
+//     - 並列なので時間は増えない (むしろ短縮可能性あり)
+//     - 書類間整合性は Call 1 reasoning で取れてるので Call 2 は転記作業のみ
 //
 //   理由: 1 回で「推論 + JSON 出力」をやらせると、複雑案件で推論が長文化して
 //        JSON 出力に到達しない事故 (Polaris ケース) が起きる。
@@ -318,13 +325,16 @@ export async function POST(request: NextRequest) {
   aiMessages = truncateBeforeStage(aiMessages, "analyze");
 
   // === テンプレ本文を読み込む (markedText 構築) ===
-  const templateBlocks: string[] = [];
+  // templateBlocks は Call 1 (全書類分結合) と Call 2 (書類ごとに分割) の両方で使うため、
+  // ファイル名と本文をペアで保持する。Call 1 では join、Call 2 では Map で引く。
+  const templateBlocks: { templateFile: string; body: string }[] = [];
   const templateStructures: { templateFile: string; markedText: string }[] = [];
   if (templateFolderPath) {
     try {
       const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
       const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
       const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
+      const { addMarkedTextNumbering } = await import("@/lib/produce-edits");
 
       const tpFiles = await readAllFilesInFolder(templateFolderPath);
       for (const f of tpFiles) {
@@ -334,6 +344,8 @@ export async function POST(request: NextRequest) {
 
         const ext = f.name.toLowerCase().split(".").pop() || "";
         let markedText = "";
+        let docBuf: Buffer | null = null;
+        const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";
 
         // slot 名自体はテンプレ内・slotDecisions 出力で完全一致させる必要があるので、
         // ★label★ には label のみ入れる (拡張するとマッチ崩れて produce-v2 で fill 当たらず空欄化)。
@@ -342,8 +354,8 @@ export async function POST(request: NextRequest) {
 
         if (ext === "docx" || ext === "docm") {
           try {
-            const buf = await fs.readFile(f.path);
-            const { text } = getMarkedDocumentTextWithSlots(buf);
+            docBuf = await fs.readFile(f.path);
+            const { text } = getMarkedDocumentTextWithSlots(docBuf);
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -360,10 +372,10 @@ export async function POST(request: NextRequest) {
           } catch (e) {
             console.warn(`[analyze] docx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
           }
-        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+        } else if (isXlsx) {
           try {
-            const buf = await fs.readFile(f.path);
-            const { text } = getXlsxMarkedTextWithSlots(buf);
+            docBuf = await fs.readFile(f.path);
+            const { text } = getXlsxMarkedTextWithSlots(docBuf);
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -385,8 +397,13 @@ export async function POST(request: NextRequest) {
         if (!markedText && f.content) markedText = f.content;
         if (!markedText) continue;
 
-        // 連続する (空) 行を 1 個に圧縮 (トークン節約)
-        markedText = markedText.replace(/(\(空\)\n)(\(空\)\n)+/g, "(空)\n");
+        // **重要**: produce-v2 と完全に同じ番号付けをする。
+        // ズレると AI の changes の idx が全部誤爆する (例: 「下記の者を取締役として選任すること」が消える)。
+        // 共通関数 addMarkedTextNumbering を使う。これで「段落N: 」/「行N: 」プレフィックスが付き、
+        // 空段落は番号付けされない (= produce-v2 の getContentParagraphs と一致)。
+        if (docBuf) {
+          markedText = addMarkedTextNumbering(markedText, docBuf, isXlsx);
+        }
 
         // slot 補足表: ★label★ の書式と推定出典を別表として AI に渡す。
         // ★label★ 自体は元のままで produce-v2 とマッチ。書式/出典は表で参照させる。
@@ -402,7 +419,7 @@ export async function POST(request: NextRequest) {
           ? `\n\n**${f.name} の slot 補足** (★label★ ごとの書式と推定出典):\n${slotTableLines.join("\n")}\n`
           : "";
 
-        templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\`${tableSection}`);
+        templateBlocks.push({ templateFile: f.name, body: `### ${f.name}\n\`\`\`\n${markedText}\n\`\`\`${tableSection}` });
         templateStructures.push({ templateFile: f.name, markedText });
       }
     } catch (e) {
@@ -416,7 +433,7 @@ export async function POST(request: NextRequest) {
 **\`(空)\` 行の意味**: テンプレ内に **空段落** があると \`(空)\` と表示される。
 セクション区切りとして意味があるので、削除対象に含めない限り保持する。
 
-${templateBlocks.join("\n\n")}\n`
+${templateBlocks.map(b => b.body).join("\n\n")}\n`
       : "\n## テンプレート本文\n(読めませんでした)\n";
 
   const qaBlock =
@@ -433,20 +450,9 @@ ${templateBlocks.join("\n\n")}\n`
 テンプレ書類を読んで、**各 slot をどうするか、どの行/ブロックを削除するか、ラベル変換が要るか** を推論する。
 **JSON は出力しなくていい**。推論 md だけ書く (次のターンで別 AI が JSON 化する)。
 
-加えて、テンプレ内容と実体 (案件資料・基本情報・案件整理結果) との **不整合・齟齬があれば必ず指摘する**。
-具体的には、推論 md の各書類セクション内に「⚠ テンプレと実体の齟齬」サブセクションを設けて、次のような項目を列挙:
-- テンプレに **古い情報** が残っている (旧役員名・旧本店・旧議案 等)
-- **案件タイプと関係ない議案ブロック** がある (例: 取締役就任案件なのに役員報酬議案が含まれる)
-- **必要なはずの slot が欠落** している
-- **構造上の問題** で単純な fill / delete では対応できない箇所
-- テンプレに記載された前提と案件の **状況が違う** 部分
-- **書類間の役割重複** (例: 取締役決定書で代表取締役を選定する設計なら、株主総会の議事録に
-  代取選任議案があれば二重決議となり不要 → 株主総会側の議案を削除提案)
-  - 「この判断はこの書類でやる」「あの書類では同じ判断はしない」という **役割分担**を意識する
-  - 案件タイプ + 書類名 + 案件整理結果から、どの書類が何を担当すべきかを判断
-
-齟齬を見つけたら ⚠ 印を付けて指摘し、対応方針 (どの slot を削除 / 置換 / そのまま) も併記する。
-齟齬が無ければサブセクション自体を省略してよい。
+不要な議案ブロックがあれば削除指示する (例: 取締役就任案件なのに役員報酬議案がある、
+書類間で役割重複している議案ブロック等)。それ以外の齟齬解説は不要 (テンプレ自体の修正は
+Phase 2 では対処できないため、ここで書いても無駄)。
 
 ${qaBlock}
 ${templateBodyBlock}
@@ -574,7 +580,7 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           send(controller, { type: "stage", stage: "reasoning" });
           const reasoningStream = client.messages.stream({
             model: REASONING_MODEL,
-            max_tokens: 16384,
+            max_tokens: 32000,
             temperature: 0,
             messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
           });
@@ -592,21 +598,40 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           } catch { /* ignore */ }
 
           // ============== Call 2: Sonnet 4.6 で JSON 化 (Tool Use) ==============
+          // 並列化: 書類ごとに Promise.all で Call 2 を呼び出す。
+          // 理由: 全書類分まとめて 1 回の Tool Use で出させると、株主数 × 書類数の展開で
+          //       16k tokens を超えて JSON が途中で切れる事故が起きた (Polaris ケース)。
+          //       書類ごとに分けると 1 call あたり changes 50-60 op (≈ 3-4k tokens) で余裕に収まる。
+          //       並列なので時間は増えず、書類数が増えてもスケールする。
+          //       書類間の整合性は Call 1 reasoning で全書類分まとめて取ってるため、
+          //       Call 2 は書類ごとの「推論メモを構造化された JSON に転記する作業」のみ。
           send(controller, { type: "stage", stage: "structuring" });
 
-          const jsonPrompt = `## あなたの仕事
+          // 書類ごとに Tool Use を呼ぶサブルーチン
+          const runPhase2ForDocument = async (
+            templateFile: string,
+            bodyForThisDoc: string
+          ): Promise<Phase2DocumentDecision[]> => {
+            const jsonPrompt = `## あなたの仕事
 
-下の「推論メモ」と「テンプレ本文」を読んで、**submit_phase2_changes** ツールを呼び出して
-Phase 2 の構造化決定を提出してください。
+下の「推論メモ」と「テンプレ本文 (${templateFile})」を読んで、**submit_phase2_changes** ツールを呼び出して
+**${templateFile}** についての Phase 2 構造化決定を提出してください。
+
+**他の書類は無視。${templateFile} だけ。**
 
 **推論を改変するな**。推論メモに書かれた判断を **正確に** ツールの引数に転記する。
 あなたは形式変換だけ。新しい判断はしない。
 
-${templateBodyBlock}
+## テンプレート本文 (${templateFile} のみ)
+
+**\`(空)\` 行の意味**: テンプレ内に **空段落** があると \`(空)\` と表示される。
+セクション区切りとして意味があるので、削除対象に含めない限り保持する。
+
+${bodyForThisDoc}
 
 ---
 
-## 推論メモ (Sonnet 4.6 が判断したもの)
+## 推論メモ (Sonnet 4.6 が判断したもの。全書類分含むが、**${templateFile} に関する部分のみ抽出して構造化**)
 
 ${reasoningText}
 
@@ -614,7 +639,8 @@ ${reasoningText}
 
 ## ツール呼び出しの正しい使い方 (重要)
 
-各書類について \`changes\` 配列を作る。1 段落 1 op が大原則 (同じ idx を複数 change で指定しない)。
+\`documents\` 配列には **${templateFile} のみ** を入れる (他書類は他の call で処理される)。
+\`changes\` 配列は 1 段落 1 op が大原則 (同じ idx を複数 change で指定しない)。
 
 ### action 別の使い方
 
@@ -637,44 +663,52 @@ ${reasoningText}
 - \`{ idx: 7, action: "insertAfter", text: "取締役　古澤　利成" }\`
 - 複数行挿入したいなら entry を複数並べる (1 entry = 1 段落)
 
-### よくある変換パターン
-
-旧スキーマの slotDecisions / blockDeletes / rowInsertions / textReplaces → 新 changes:
-
-| 旧 | 新 |
-|--|--|
-| slotDecisions[fill] | \`{ idx, action: "fill", slot, value }\` |
-| slotDecisions[delete-row] | \`{ idx, action: "delete" }\` |
-| blockDeletes (start/end anchor) | \`{ idx, action: "delete", until }\` (テンプレ本文で段落番号を特定) |
-| rowInsertions | \`{ idx, action: "insertAfter", text }\` (text は値込みの完成形) |
-| textReplaces (議案番号繰り上げ) | \`{ idx, action: "rewrite", text }\` (text は新タイトル全体) |
-
 ### templateFile / outputLabel
 
-- \`templateFile\` はクリーンな物理ファイル名 (例: "2-1.提案書兼同意書.docx")
+- \`templateFile\` は **${templateFile}** (このまま使う)
 - 株主毎複製等は \`outputLabel\` で区別。documents 配列に N 個の entry を作る (templateFile は同じまま)`;
 
-          const decisionsResponse = await client.messages.create({
-            model: JSON_MODEL,
-            max_tokens: 16384,
-            temperature: 0,
-            tools: [PHASE2_CHANGES_TOOL],
-            tool_choice: { type: "tool", name: "submit_phase2_changes" },
-            messages: [{ role: "user", content: jsonPrompt }],
-          });
-          logTokenUsage(`/api/document-templates/analyze (Call 2 changes)`, JSON_MODEL, decisionsResponse.usage);
+            try {
+              // max_tokens: 16384 (Anthropic non-streaming は ~21333 が上限)。
+              // 並列化したので 1書類あたり changes 50-60 op (≈ 2-3k tokens) で 16k に余裕で収まる。
+              const response = await client.messages.create({
+                model: JSON_MODEL,
+                max_tokens: 16384,
+                temperature: 0,
+                tools: [PHASE2_CHANGES_TOOL],
+                tool_choice: { type: "tool", name: "submit_phase2_changes" },
+                messages: [{ role: "user", content: jsonPrompt }],
+              });
+              logTokenUsage(
+                `/api/document-templates/analyze (Call 2 changes: ${templateFile})`,
+                JSON_MODEL,
+                response.usage
+              );
+              if (response.stop_reason === "max_tokens") {
+                console.warn(`[analyze] Call 2 for ${templateFile} hit max_tokens (${response.usage.output_tokens})`);
+              }
+              const toolBlock = response.content.find(
+                (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+              );
+              if (toolBlock?.name === "submit_phase2_changes") {
+                const input = toolBlock.input as { documents?: Phase2DocumentDecision[] };
+                return input.documents || [];
+              }
+              console.warn(`[analyze] Call 2 for ${templateFile}: Tool Use returned no decisions`);
+              return [];
+            } catch (e) {
+              console.error(`[analyze] Call 2 for ${templateFile} failed:`, e instanceof Error ? e.message : e);
+              return [];
+            }
+          };
 
-          // tool_use ブロックから changes 取得
-          const toolBlock = decisionsResponse.content.find(
-            (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+          // 書類ごとに並列で Tool Use を呼ぶ
+          const docResults = await Promise.all(
+            templateBlocks.map((b) => runPhase2ForDocument(b.templateFile, b.body))
           );
-          let decisions: Phase2Decisions | null = null;
-          if (toolBlock?.name === "submit_phase2_changes") {
-            // 新スキーマ: documents[].changes が入ってる
-            decisions = toolBlock.input as Phase2Decisions;
-          }
+          const decisions: Phase2Decisions = { documents: docResults.flat() };
 
-          if (decisions && Array.isArray(decisions.documents)) {
+          if (decisions.documents.length > 0) {
             send(controller, { type: "stage", stage: "validating" });
             await savePhase2Decisions(company.id, threadId, decisions);
             // 新スキーマ: changes 配列の各 action を集計
@@ -684,12 +718,12 @@ ${reasoningText}
               const dels = changes.filter((c) => c.action === "delete").length;
               const rewrites = changes.filter((c) => c.action === "rewrite").length;
               const inserts = changes.filter((c) => c.action === "insertAfter").length;
-              return `${d.templateFile}: fill ${fills} / delete ${dels} / rewrite ${rewrites} / insertAfter ${inserts} (changes 計 ${changes.length})`;
+              return `${d.templateFile}${d.outputLabel ? `[${d.outputLabel}]` : ""}: fill ${fills} / delete ${dels} / rewrite ${rewrites} / insertAfter ${inserts} (計 ${changes.length})`;
             }).join("; ");
             console.log(`[analyze] decisions saved: ${summary}`);
             send(controller, { type: "decisions", decisions });
           } else {
-            console.warn("[analyze] Tool Use returned no decisions");
+            console.warn("[analyze] All Call 2 invocations returned no decisions");
             send(controller, { type: "decisions", decisions: null });
           }
 

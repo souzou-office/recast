@@ -20,6 +20,79 @@ import { replaceXlsxMarkedCellsBySlot } from "./xlsx-marker-parser";
 // 1 つの段落に対して同時に複数 op を指定できない構造にして、
 // 重複指示による XML 破壊を **構造的に** 防ぐ。
 
+/**
+ * markedText に「段落N: 」または「行N: 」プレフィックスを付ける共通関数。
+ *
+ * **重要**: この番号付けが produce-v2 の getContentParagraphs (非空段落のみ 1-indexed)
+ * と **完全一致** することが changes スキーマ正常動作の前提条件。
+ * AI に渡される markedText と produce-v2 が処理する段落番号がズレると、AI の changes が
+ * 全部誤爆する (Polaris ケース: 「下記の者を取締役として選任すること」が消える等)。
+ *
+ * - docx: 空段落 ("(空)" マーカー行) は番号付けない (return line)
+ *         中身のある段落のみ連番。produce-v2 の getContentParagraphs と一致。
+ * - xlsx: Excel 行番号 (r= 値) を XML から読んで割り当てる。
+ *
+ * @param markedTextRaw - getMarkedDocumentTextWithSlots / getXlsxMarkedTextWithSlots の text
+ *                        (★label★ 置換は呼び出し側で済ませた状態を想定)
+ * @param buf - xlsx の場合は Excel ファイルの Buffer (Excel 行番号取得のため)
+ * @param isXlsx - xlsx なら true
+ */
+export function addMarkedTextNumbering(
+  markedTextRaw: string,
+  buf: Buffer,
+  isXlsx: boolean
+): string {
+  if (isXlsx) {
+    // xlsx: Excel 行番号で labelled する
+    const zip = new PizZip(buf);
+    const sheetFiles = Object.keys(zip.files)
+      .filter((fn: string) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
+      .sort();
+    const xlsxRowNumbers: number[] = [];
+    for (const sf of sheetFiles) {
+      const sheetXml = zip.file(sf)?.asText() || "";
+      const rowRe = /<row\b[^>]*?r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
+      let rm2;
+      while ((rm2 = rowRe.exec(sheetXml)) !== null) {
+        const inner = rm2[2];
+        const cellRe = /<c\b[^>]*?(?:\/>|>([\s\S]*?)<\/c>)/g;
+        let hasContent = false;
+        let cm2;
+        while ((cm2 = cellRe.exec(inner)) !== null) {
+          const cellInner = cm2[1] || "";
+          if (/<v>[^<]*<\/v>/.test(cellInner)) {
+            hasContent = true;
+            break;
+          }
+        }
+        if (hasContent) xlsxRowNumbers.push(parseInt(rm2[1], 10));
+      }
+    }
+    const cleaned = markedTextRaw.replace(/\r\n/g, " / ").replace(/\r/g, " / ");
+    const lines = cleaned.split("\n");
+    let rowIdx = 0;
+    return lines
+      .map((line) => {
+        if (line.trim().length === 0) return line;
+        const rowNum = xlsxRowNumbers[rowIdx++] ?? rowIdx;
+        return `行${rowNum}: ${line}`;
+      })
+      .join("\n");
+  } else {
+    // docx: 1-indexed 連番 (空段落 "(空)" マーカー行は除外して連番つけない)
+    let lineCounter = 0;
+    return markedTextRaw
+      .split("\n")
+      .map((line) => {
+        const trimmed = line.trim();
+        if (trimmed.length === 0 || trimmed === "(空)") return line;
+        lineCounter++;
+        return `段落${lineCounter}: ${line}`;
+      })
+      .join("\n");
+  }
+}
+
 // 段落単位の操作 (この段落をどうするか)。同じ paragraphIndex は配列に 1 度だけ。
 export interface ParagraphActionOp {
   paragraphIndex: number;             // 1-indexed
