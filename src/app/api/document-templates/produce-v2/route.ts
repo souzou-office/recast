@@ -218,59 +218,10 @@ export async function POST(request: NextRequest) {
         });
 
         // markedText を index 付きで組み立てる。docx は連番、xlsx は Excel 行番号 (r= 値)。
-        let markedText = "";
-        if (isXlsx) {
-          // xlsx: Excel 行番号で labelled する
-          const PizZip = (await import("pizzip")).default;
-          const zip = new PizZip(buf);
-          const sheetFiles = Object.keys(zip.files)
-            .filter((fn) => /^xl\/worksheets\/sheet\d+\.xml$/.test(fn))
-            .sort();
-          const xlsxRowNumbers: number[] = [];
-          for (const sf of sheetFiles) {
-            const sheetXml = zip.file(sf)?.asText() || "";
-            const rowRe = /<row\b[^>]*?r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g;
-            let rm2;
-            while ((rm2 = rowRe.exec(sheetXml)) !== null) {
-              const inner = rm2[2];
-              const cellRe = /<c\b[^>]*?(?:\/>|>([\s\S]*?)<\/c>)/g;
-              let hasContent = false;
-              let cm2;
-              while ((cm2 = cellRe.exec(inner)) !== null) {
-                const cellInner = cm2[1] || "";
-                if (/<v>[^<]*<\/v>/.test(cellInner)) {
-                  hasContent = true;
-                  break;
-                }
-              }
-              if (hasContent) xlsxRowNumbers.push(parseInt(rm2[1], 10));
-            }
-          }
-          const cleaned = markedTextRaw.replace(/\r\n/g, " / ").replace(/\r/g, " / ");
-          const lines = cleaned.split("\n");
-          let rowIdx = 0;
-          markedText = lines
-            .map((line) => {
-              if (line.trim().length === 0) return line;
-              const rowNum = xlsxRowNumbers[rowIdx++] ?? rowIdx;
-              return `行${rowNum}: ${line}`;
-            })
-            .join("\n");
-        } else {
-          // docx: 1-indexed 連番 (空段落 "(空)" マーカー行は除外して連番つけない)
-          // (空) 行は AI 向けに構造を見せる目的のみ。engine の paragraph index は
-          // 非空段落のみで連番つけて contentParagraphs と一致させる。
-          let lineCounter = 0;
-          markedText = markedTextRaw
-            .split("\n")
-            .map((line) => {
-              const trimmed = line.trim();
-              if (trimmed.length === 0 || trimmed === "(空)") return line;
-              lineCounter++;
-              return `段落${lineCounter}: ${line}`;
-            })
-            .join("\n");
-        }
+        // 共通関数化 (produce-edits.addMarkedTextNumbering) で analyze / analyze-questions と
+        // 完全に同じ番号付けを保証する。番号がズレると AI の changes が全部誤爆する。
+        const { addMarkedTextNumbering } = await import("@/lib/produce-edits");
+        const markedText = addMarkedTextNumbering(markedTextRaw, buf, isXlsx);
 
         // === Phase 2 決定を機械的に edit op に変換 ===
         const numberedLines = parseNumberedLines(markedText);
@@ -280,6 +231,82 @@ export async function POST(request: NextRequest) {
         const inserts: InsertOp[] = [];
         const replaces: ReplaceOp[] = [];
 
+        // === 新スキーマ (changes 配列) があれば優先で処理 ===
+        // 旧スキーマ (slotDecisions / blockDeletes / rowInsertions / textReplaces) は
+        // changes が無い時の互換 fallback として残置 (changesProcessed フラグで分岐)。
+        let changesProcessed = false;
+        if (decisionDoc.changes && decisionDoc.changes.length > 0) {
+          changesProcessed = true;
+          for (const ch of decisionDoc.changes) {
+            if (ch.action === "delete") {
+              if (isXlsx) continue; // xlsx は構造変更禁止
+              const end = ch.until ?? ch.idx;
+              for (let i = ch.idx; i <= end; i++) {
+                paragraphActions.push({ paragraphIndex: i, action: "delete" });
+              }
+            } else if (ch.action === "fill") {
+              if (ch.slot) {
+                const marker = ch.slot.startsWith("★") ? ch.slot : `★${ch.slot}★`;
+                fills[marker] = ch.value ?? "";
+              }
+            } else if (ch.action === "rewrite") {
+              if (isXlsx) continue;
+              paragraphActions.push({ paragraphIndex: ch.idx, action: "rewrite", newText: ch.text ?? "" });
+            } else if (ch.action === "insertAfter") {
+              if (isXlsx) continue;
+              // **重要**: 同じ idx に対する複数の insertAfter は 1 op の contents 配列にマージする。
+              // 別々の op にすると produce-edits.ts で全てが同じ sortKey になり、毎回「先頭に追加」
+              // される形で挿入されるため、AI の入力順と逆順に並んでしまう
+              // (Polaris ケース: Deep30 組合用 同意欄が完全逆順になった)。
+              // 1 op の contents 配列なら makeStyledParagraphFromReference を順次 join するため
+              // 順序が保たれる。
+              const existing = inserts.find((i) => i.afterParagraphIndex === ch.idx);
+              if (existing) {
+                existing.contents.push(ch.text ?? "");
+              } else {
+                inserts.push({ afterParagraphIndex: ch.idx, contents: [ch.text ?? ""] });
+              }
+            }
+          }
+
+          // auto-clear (Phase 2 が触らなかった ★label★ を空文字 fill で消す)
+          // delete された段落の slot は対象外 (どうせ消えるので)
+          const deletedIndices = new Set<number>();
+          for (const ch of decisionDoc.changes) {
+            if (ch.action === "delete") {
+              const end = ch.until ?? ch.idx;
+              for (let i = ch.idx; i <= end; i++) deletedIndices.add(i);
+            }
+          }
+          let autoClearedCount = 0;
+          if (labels?.slots) {
+            for (const s of labels.slots) {
+              const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
+              const paraIdx = numberedLines.find(nl => nl.labels.includes(labelStr))?.idx ?? null;
+              if (paraIdx !== null && deletedIndices.has(paraIdx)) continue;
+              const marker = `★${labelStr}★`;
+              if (!(marker in fills)) {
+                fills[marker] = "";
+                autoClearedCount++;
+              }
+            }
+          }
+          if (autoClearedCount > 0) {
+            console.log(`[produce-v2] ${f.name} (changes) auto-cleared ${autoClearedCount} unaddressed markers`);
+          }
+          console.log(
+            `[produce-v2] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} (changes mode) prepared:`,
+            JSON.stringify({
+              paragraphActions: paragraphActions.length,
+              inserts: inserts.length,
+              fills: Object.keys(fills).length,
+              deletedIndices: [...deletedIndices],
+            })
+          );
+        }
+
+        // === 旧スキーマ処理 (changes が無い時の互換) ===
+        if (!changesProcessed) {
         // === 設計原則: xlsx は構造変更禁止、fills のみ ===
         // xlsx テンプレ (株主リスト・株主名簿・集計表等) は行構造が固定。
         // 行追加・行削除・ブロック削除をやると数式参照崩れや表構造破壊が起きるので
@@ -393,13 +420,34 @@ export async function POST(request: NextRequest) {
           inserts.push({ afterParagraphIndex: afterIdx, contents });
         }
 
+        // blockDelete 範囲内にある slot のラベル集合を事前に計算。
+        // fill / auto-clear どちらも blockDelete 範囲内の slot は対象外にすることで、
+        // 「議案2 ブロック削除なのに中の slot に空 fill が積まれ、edit engine が
+        //  『fill 優先で delete を skip』して議案ブロックが残る」事故を構造的に防ぐ。
+        // findParagraphIndex は部分一致まで許すため、別 slot の段落を誤検出してしまう
+        // (例: 「記名押印する代表取締役の氏名」を検索すると「代表取締役の氏名」と部分一致して
+        //  そちらの段落番号が返り、blockDelete 範囲内と誤判定されて fill が drop される)。
+        // ここでは ★label★ の完全一致で探す。
+        const blockDeleteSlotLabels = new Set<string>();
+        if (!isXlsx && labels?.slots) {
+          for (const s of labels.slots) {
+            const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
+            // 完全一致で段落探索 (numberedLines の labels 配列に厳密一致)
+            const paraIdx = numberedLines.find(nl => nl.labels.includes(labelStr))?.idx ?? null;
+            if (paraIdx !== null && blockDeleteIndices.has(paraIdx)) {
+              blockDeleteSlotLabels.add(labelStr);
+            }
+          }
+        }
+
         // 5. slotDecisions[fill] → fills
-        // 6. slotDecisions[unconfirmed] → fills 空文字 (マーカー残骸防止)
+        // 旧設計の unconfirmed action は Phase 2-A 質問フェーズに分離されたので
+        // ここには到達しない (action は fill / delete-row の2択)。
+        // blockDelete 範囲内の slot fill は drop (削除が優先される)。
         for (const sd of decisionDoc.slotDecisions || []) {
           if (sd.action === "fill") {
+            if (blockDeleteSlotLabels.has(sd.slot)) continue;
             fills[`★${sd.slot}★`] = sd.value ?? "";
-          } else if (sd.action === "unconfirmed") {
-            fills[`★${sd.slot}★`] = "";
           }
         }
 
@@ -433,6 +481,7 @@ export async function POST(request: NextRequest) {
           for (const s of labels.slots) {
             const labelStr = s.label && s.label !== "不明" ? s.label : `要入力_${s.slotId}`;
             if (deleteRowSlots.has(labelStr)) continue; // delete-row 対象は auto-clear から除外 (docx のみ)
+            if (blockDeleteSlotLabels.has(labelStr)) continue; // blockDelete 範囲内も除外 (どうせ段落ごと消える)
             const marker = `★${labelStr}★`;
             if (!(marker in fills)) {
               fills[marker] = "";
@@ -444,25 +493,26 @@ export async function POST(request: NextRequest) {
           console.log(`[produce-v2] ${f.name} auto-cleared ${autoClearedCount} unaddressed markers`);
         }
 
-        // 全 delete indices をマージして paragraphActions に
+        // 全 delete indices をマージして paragraphActions に (旧スキーマ)
         const allDeleteIndices = new Set([...blockDeleteIndices, ...slotDeleteIndices]);
         for (const idx of allDeleteIndices) {
           paragraphActions.push({ paragraphIndex: idx, action: "delete" });
         }
+        } // ← 旧スキーマ処理 (changes が無い時の互換) ここまで
 
         const edits: ProduceEdits = { paragraphActions, inserts, replaces, fills };
 
-        console.log(
-          `[produce-v2] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} edits:`,
-          JSON.stringify({
-            paragraphActions: paragraphActions.length,
-            inserts: inserts.length,
-            replaces: replaces.length,
-            fills: Object.keys(fills).length,
-            blockDeleteIndices: [...blockDeleteIndices],
-            slotDeleteIndices: [...slotDeleteIndices],
-          })
-        );
+        if (!changesProcessed) {
+          console.log(
+            `[produce-v2] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} (legacy mode) edits:`,
+            JSON.stringify({
+              paragraphActions: paragraphActions.length,
+              inserts: inserts.length,
+              replaces: replaces.length,
+              fills: Object.keys(fills).length,
+            })
+          );
+        }
 
         // edit engine で適用
         const result = isXlsx

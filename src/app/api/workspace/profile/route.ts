@@ -3,8 +3,20 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
-import { readAllFilesInFolder, readFileContent } from "@/lib/files";
+import { readAllFilesInFolder, readFileContent, listFiles } from "@/lib/files";
 import { isPathDisabled } from "@/lib/disabled-filter";
+
+// 鮮度チェック用の軽量 walk。listFiles は readdir のみで中身パースなし。
+async function walkPathsOnly(dir: string, out: string[]): Promise<void> {
+  const entries = await listFiles(dir);
+  for (const e of entries) {
+    if (e.isDirectory) {
+      await walkPathsOnly(e.path, out);
+    } else {
+      out.push(e.path);
+    }
+  }
+}
 import { logTokenUsage } from "@/lib/token-logger";
 import type { CompanyProfile, StructuredProfile, ChangeHistoryEntry } from "@/types";
 
@@ -92,23 +104,27 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ isStale: true, reason: "not_generated" });
   }
 
-  // 共通フォルダの現在のファイルmtimeを取得（profileSources指定があればそれに絞る）
+  // 共通フォルダの現在のファイルmtimeを取得（profileSources指定があればそれに絞る）。
+  // 鮮度判定は mtime だけ見れば足りるので、PDF/docx 等の中身パースは絶対やらない。
+  // 旧実装は readAllFilesInFolder を呼んでいて、共通フォルダの全 PDF を parsePdf
+  // しようとし（pdf-parse worker 不在で全件失敗するまで秒オーダー待つ）会社切替が
+  // 10 秒級に詰まっていた。
   const commonSubs = company.subfolders.filter(s => s.role === "common");
   const profileSourcesSet = company.profileSources && company.profileSources.length > 0
     ? new Set(company.profileSources)
     : null;
   const currentFiles: { path: string; mtime: string }[] = [];
-  for (const sub of commonSubs) {
-    const allContents = await readAllFilesInFolder(sub.id);
-    const disabled = sub.disabledFiles || [];
-    for (const content of allContents) {
-      if (isPathDisabled(content.path, disabled)) continue;
-      if (profileSourcesSet && !profileSourcesSet.has(content.path)) continue;
-      try {
-        const st = await fs.stat(content.path);
-        currentFiles.push({ path: content.path, mtime: st.mtime.toISOString() });
-      } catch { /* ignore */ }
-    }
+  const allPaths: string[] = [];
+  await Promise.all(commonSubs.map(sub => walkPathsOnly(sub.id, allPaths)));
+  for (const filePath of allPaths) {
+    // どの subfolder 配下かを判定して disabledFiles をチェック
+    const sub = commonSubs.find(s => filePath.startsWith(s.id));
+    if (sub && isPathDisabled(filePath, sub.disabledFiles || [])) continue;
+    if (profileSourcesSet && !profileSourcesSet.has(filePath)) continue;
+    try {
+      const st = await fs.stat(filePath);
+      currentFiles.push({ path: filePath, mtime: st.mtime.toISOString() });
+    } catch { /* ignore */ }
   }
 
   // profile.sourceFiles とのmtime比較

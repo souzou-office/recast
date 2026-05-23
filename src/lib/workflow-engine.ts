@@ -6,42 +6,19 @@ import path from "path";
 
 const client = new Anthropic();
 
-// 新規スレッド作成時の初期メッセージ（フォルダ選択カード）
-export async function createInitialMessage(companyId: string, subfolders: { id: string; name: string; role: string }[]): Promise<ThreadMessage> {
-  // 各サブフォルダを並列に処理し、中のサブフォルダ一覧 + 各ファイル数まで一括取得
-  type Entry = { name: string; path: string; fileCount: number; suffix: string };
-
-  // 直下のサブフォルダ列挙のみ（中身のファイル数カウントはしない＝速い）
-  const processSub = async (sub: { id: string; name: string }, suffix: string): Promise<Entry[]> => {
-    const entries = await listFiles(sub.id);
-    const subDirs = entries.filter(e => e.isDirectory);
-    if (subDirs.length === 0) {
-      return [{
-        name: `${sub.name}${suffix}`,
-        path: sub.id,
-        fileCount: entries.filter(e => !e.isDirectory).length,
-        suffix,
-      }];
-    }
-    return subDirs.map(dir => ({
-      name: `${sub.name} / ${dir.name}${suffix}`,
-      path: dir.path,
+// 新規スレッド作成時の初期メッセージ（フォルダ選択カード）。
+// サイドバーと完全に同じ subfolders をそのまま表示する。
+// 旧実装は listFiles でさらに1段下まで降りて「02.登記 / signroom_archive」のように
+// 分解表示していたが、サイドバーは detectSubfolders の結果 (= subfolders) をそのまま
+// 出しているため見た目がズレていた。listFiles も走らなくなるので速くなる副次効果あり。
+export async function createInitialMessage(_companyId: string, subfolders: { id: string; name: string; role: string }[]): Promise<ThreadMessage> {
+  const folders: FolderSelectCard["folders"] = subfolders
+    .filter(s => s.role === "job" || s.role === "common")
+    .map(s => ({
+      name: s.role === "common" ? `${s.name}（共通）` : s.name,
+      path: s.id,
       fileCount: 0,
-      suffix,
     }));
-  };
-
-  const jobFolders = subfolders.filter(s => s.role === "job");
-  const commonFolders = subfolders.filter(s => s.role === "common");
-
-  // 全サブフォルダの処理を完全並列化
-  const results = await Promise.all([
-    ...jobFolders.map(sub => processSub(sub, "")),
-    ...commonFolders.map(sub => processSub(sub, "（共通）")),
-  ]);
-  const folders: FolderSelectCard["folders"] = results.flat().map(e => ({
-    name: e.name, path: e.path, fileCount: e.fileCount,
-  }));
 
   return {
     id: `msg_${Date.now()}`,
@@ -87,12 +64,10 @@ export async function onFolderSelected(folderPath: string): Promise<ThreadMessag
   }
   await collect(folderPath, "");
 
-  const fileCount = files.filter(f => !f.name.startsWith("📁")).length;
-
   return {
     id: `msg_${Date.now()}`,
     role: "assistant",
-    content: `${fileCount}件のファイルが見つかりました。外すものがあればチェックを外してください`,
+    content: `外すものがあればチェックを外してください`,
     cards: [{
       type: "file-select",
       folderPath,

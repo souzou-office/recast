@@ -131,6 +131,10 @@ export interface Company {
   // 後方互換: 旧データ
   masterSheet?: MasterSheet;
   generatedDocuments?: GeneratedDocument[];
+  // 直近 detectSubfolders 時の「会社フォルダ + 中間フォルダ mtime ハッシュ」。
+  // 次回スキャン依頼が来た時にこの sig と現状の sig を比較し、変わってなければ
+  // readdir を一切走らせずに済ませる（mtime cache）。
+  scannedSig?: string;
 }
 
 export interface WorkspaceConfig {
@@ -308,13 +312,14 @@ export interface Phase2Decisions {
 // 1 slot あたりの決定。各 slot は配列に 1 度だけ登場し、action は必ず 1 つ。
 // (旧設計では slots / deletes / unconfirmed が別配列で、AI が同じ slot に複数指示を
 //  書き込む事故 (value に指示文を埋め込む等) が発生していた → 構造的に防ぐ)
+// さらに新設計 (Phase 2-A 質問フェーズ導入後) では「迷う」は事前に質問で解決済み
+// なので unconfirmed / candidates も削除し、fill / delete-row の2択のみに簡素化。
 export interface SlotDecision {
   slot: string;          // labels.json のラベル名 (例: "乙の無限責任組合員の名称")
-  action: "fill" | "delete-row" | "unconfirmed";
+  action: "fill" | "delete-row";
   value?: string;                                          // fill のとき
   source?: string;                                         // fill のとき
-  reason?: string;                                         // delete-row / unconfirmed のとき
-  candidates?: { value: string; source: string }[];        // unconfirmed のとき
+  reason?: string;                                         // delete-row のとき
 }
 
 // 行挿入: 既存 slot の行の直後に「新ラベル付き行」を追加する。
@@ -356,10 +361,41 @@ export interface Phase2DocumentDecision {
   templateFile: string;                                    // クリーンな物理テンプレファイル名 (例: "2-1.提案書兼同意書.docx")
   outputLabel?: string;                                    // 同一テンプレから複数出力する場合の識別 (例: "藤崎用", "先端機構用")
                                                             // 省略時は同一テンプレに 1 出力。出力ファイル名は {base}_{outputLabel}.{ext}
-  slotDecisions: SlotDecision[];                           // 各 slot 1 entry のみ
-  blockDeletes: BlockDelete[];                             // 議案ブロック等の複数段落削除 (start/end anchor で範囲指定)
+  // 新スキーマ (changes): 段落番号ベースの統一操作リスト。1 段落 1 op が構造的保証される。
+  // 旧 slotDecisions / blockDeletes / rowInsertions / textReplaces は当面互換のため残置するが
+  // 新規 AI 出力ではこちらだけ使う想定。
+  changes?: ChangeOp[];
+  // 旧スキーマ (互換用、新ルートでは使わない)
+  slotDecisions?: SlotDecision[];                          // 各 slot 1 entry のみ
+  blockDeletes?: BlockDelete[];                            // 議案ブロック等の複数段落削除 (start/end anchor で範囲指定)
   rowInsertions?: RowInsertion[];                          // 新規行挿入 (法人引受人なら代表取締役行を足す等)
   textReplaces?: TextReplace[];                            // blockDeletes に伴う議案番号繰り上げ等
+}
+
+// 新スキーマ: 段落単位の操作 1 つ。AI が「どの段落をどうする」を 1 op で表現する。
+// 同じ idx に複数 op を入れない (1 段落 1 op の構造的保証)。
+//
+// action 別の必須/任意:
+//   delete:       idx (until は省略可、複数段落削除なら指定)
+//   fill:         idx + slot + value
+//   rewrite:      idx + text
+//   insertAfter:  idx + text
+export interface ChangeOp {
+  idx: number;                       // 段落番号 (1-indexed)
+  action: "delete" | "fill" | "rewrite" | "insertAfter";
+
+  // delete のとき: 範囲削除なら idx〜until まで (idx 単独削除なら省略)
+  until?: number;
+
+  // fill のとき: ★label★ と置換後の値
+  slot?: string;                     // 例: "★代表取締役の氏名★" or "代表取締役の氏名" (どちらでも)
+  value?: string;
+
+  // rewrite / insertAfter のとき: 完成形テキスト (AI が値込みで生成)
+  text?: string;
+
+  // 任意: AI の判断理由 (デバッグ・verify 用)
+  reason?: string;
 }
 
 // チャットスレッド（CaseRoom + chat-history 統合）

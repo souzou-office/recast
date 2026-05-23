@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs/promises";
 import path from "path";
 import type { ChatThread, ThreadMessage } from "@/types";
-import { onFolderSelected, onFilesConfirmed } from "@/lib/workflow-engine";
+import { onFilesConfirmed } from "@/lib/workflow-engine";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { logTokenUsage } from "@/lib/token-logger";
 
@@ -75,6 +75,10 @@ export async function POST(
         break;
       }
       thread.folderPath = folderPath;
+      // フォルダ選択カード側でファイルチェックも済ませているので、disabledFiles を一緒に確定。
+      if (Array.isArray(data.disabledFiles)) {
+        thread.disabledFiles = data.disabledFiles;
+      }
 
       // フォルダ名からチャットタイトルを自動生成
       const folderName = folderPath.split(/[\\/]/).pop() || "";
@@ -90,16 +94,19 @@ export async function POST(
         if (title) thread.displayName = title;
       } catch { /* ignore */ }
 
-      nextMessage = await onFolderSelected(folderPath);
+      // 旧実装は ここで onFolderSelected を呼んで「ファイル選択カード」を挟んでいた。
+      // 今は FolderSelectCard 内で accordion 展開 + チェックまで済ませてあるので、
+      // 直接 template-select カードに進む。
+      nextMessage = await onFilesConfirmed(config.templateBasePath || "", folderName);
       break;
     }
 
     case "files-confirmed": {
+      // 旧フロー（file-select カード経由）の互換用。新規スレッドでは到達しない。
       const disabledFiles = (data.files || [])
         .filter((f: { enabled: boolean }) => !f.enabled)
         .map((f: { path: string }) => f.path);
       thread.disabledFiles = disabledFiles;
-      // フォルダ名からテンプレートを推奨
       const folderName = thread.folderPath?.split(/[\\/]/).pop() || "";
       nextMessage = await onFilesConfirmed(config.templateBasePath || "", folderName);
       break;

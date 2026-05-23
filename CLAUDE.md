@@ -322,6 +322,168 @@ npm install
 npm run dev    # http://localhost:3000
 ```
 
+## 2026-05-22 セッション: Phase 2 を changes スキーマに刷新 + 多数の保守修正
+
+### ★ 最重要 (直前の変更): Phase 2 を「changes 配列」スキーマに刷新（feat/changes-schema）
+
+**背景**: 旧スキーマ (Phase 2 が 4 種類の指示配列 `slotDecisions` / `blockDeletes` / `rowInsertions` / `textReplaces` を独立で持つ) は、指示同士が干渉して衝突する設計的弱点があった。
+- blockDelete 範囲内に slot fill 指示があると「fill 優先 vs delete 優先」の判定が後段で必要
+- textReplaces の anchor が複数 `<w:t>` にまたがって検索失敗
+- 各層を厳密化するとルール間干渉で破綻する
+- 「ルールベースで厳密性を吸収できない」設計の限界に到達
+
+**新設計**: 1 種類の `changes` 配列で全操作を表現。1 段落 1 op が**構造的に保証**される（衝突発生不可能）。
+
+```ts
+interface ChangeOp {
+  idx: number;  // 段落番号 (1-indexed)
+  action: "delete" | "fill" | "rewrite" | "insertAfter";
+  until?: number;     // delete のとき範囲削除 (idx〜until)
+  slot?: string;      // fill のとき ★label★ の中身
+  value?: string;     // fill のとき置換値
+  text?: string;      // rewrite / insertAfter のとき完成形テキスト
+  reason?: string;    // デバッグ用
+}
+```
+
+**変換マッピング**:
+| 旧 | 新 changes |
+|--|--|
+| slotDecisions[fill] | `{ idx, action: "fill", slot, value }` |
+| slotDecisions[delete-row] | `{ idx, action: "delete" }` |
+| blockDeletes | `{ idx, action: "delete", until }` |
+| rowInsertions | `{ idx, action: "insertAfter", text }` (text は値込みの完成形) |
+| textReplaces (議案番号繰り上げ) | `{ idx, action: "rewrite", text }` |
+
+**実装範囲**:
+- `src/types/index.ts`: `ChangeOp` 型と `Phase2DocumentDecision.changes` フィールド追加。旧型は optional で残置 (互換)
+- `src/app/api/document-templates/analyze/route.ts`:
+  - Call 2 用 Tool `PHASE2_CHANGES_TOOL` を新規定義
+  - Tool Use を `submit_phase2_changes` に切替、プロンプトも changes 形式に
+  - 旧 `PHASE2_DECISIONS_TOOL` は残置 (使われない)
+- `src/app/api/document-templates/produce-v2/route.ts`:
+  - `decisionDoc.changes` があれば優先処理 (`changesProcessed` フラグで分岐)
+  - 旧スキーマ処理は changes が無い時の互換 fallback として残置
+  - auto-clear (Phase 2 が触らなかった ★label★ を空文字 fill) も changes ベース版を追加
+
+**動作確認状況**: feat/changes-schema ブランチで dev サーバ稼働中 (http://localhost:3000)。実機テスト要。
+
+**将来課題 (新スキーマ完成後)**:
+- Call 1 (reasoning) を廃止して Call 2 のみに統合 (Tool Use 1 回で reasoning + changes を返す → コスト半減、時間半減)
+- 旧スキーマ関連の死蔵コード (旧 PHASE2_DECISIONS_TOOL、旧 slotDecisions/blockDeletes/rowInsertions/textReplaces の処理パス) を削除
+- types.ts から旧フィールド削除
+
+### サイドバー高速化 (PR #92 マージ済)
+- `Company.scannedSig` 追加 (会社フォルダ + 中間フォルダの mtime 連結)
+- `selectCompany` は ID 切替のみ、新 action `rescanSelectedIfChanged` で mtime 差分検知
+- フォーカス時の rescan を選択中 1 社だけに絞る (旧は全社直列)
+- `saveWorkspaceConfig` を「同一シリアライズなら writeFile スキップ」
+- `profile` 鮮度チェックを listFiles ベースに (旧は全 PDF を parse して 10s 浪費)
+- フォルダ自動展開廃止、案件フォルダ選択カードの構造をサイドバーと一致、ファイル数表示撤去
+
+### 基本情報の自動生成廃止 + 削除ボタン (PR #93 マージ済)
+- 会社切替時の `autoRefreshProfile` を撤去 (共通フォルダ空でも勝手に AI が走る問題)
+- `action: deleteProfile` 追加
+- 基本情報タブに [削除] ボタン
+
+### 最終チェック確認事項リスト + PDF (PR #91 マージ済)
+- 書類生成 (produce-v2) と一括再生成完了後に自動 verify
+- 結果は markdown チェックリスト形式で次の AI メッセージとして表示
+- `CheckResultCard` に「PDFで保存」ボタン (hidden iframe で印刷ダイアログ起動)
+- 書類カードからバッジ・issue 一覧・proofread/ack UI を撤去 (修正は人間が行う方針)
+- verify をストリーミング表示化 (旧は完了まで何も出ず 20-30 秒待ちが見えてた)
+
+### フォルダ選択 + ファイル選択カードを1つに統合
+- 旧 5 ステップ → 新 3 ステップ
+- FolderSelectCard で accordion 展開、サブフォルダ再帰、ファイルチェックボックス
+- カード下部に「この内容で進む」ボタン (複数フォルダ展開可、checked から自動 active 推定のフォールバック付き)
+- folder-select カードが未確定の間だけチャットエリア幅を 1100 → 1600px に拡張
+
+### Phase 2-A 質問抽出フェーズ追加
+- Phase 2 を 3 段階に分離: `analyze-questions` (テンプレ見て質問) → `clarify` (回答) → `analyze` (穴埋め決定)
+- 表記揺れ (徳/德 等)・複数候補・書類間の役割重複 (取締役決定書 vs 株主総会の代取選任) を事前に質問
+- 過剰質問抑制 (「資料に書いてある」「形式変換だけ」「定型項目」は質問しない)
+- 旧 `clarify-procedural` ルート削除
+
+### execute route に「共通ファイル動的読み込み」tool use
+- 案件整理で AI が必要時に共通フォルダの原本ファイル (定款の細かい条文等) を読み込める
+- `read_common_file(path)` tool を提供、AI が判断 (MCP 的 auto)
+- 「最後の手段」と tool description で厳格化、念のため確認の連発を抑制
+- 共通フォルダのファイル一覧をプロンプトに添付 (path のホワイトリスト検証も)
+
+### labels.json の format/sourceHint 活用
+- 旧: analyze が `label` だけ読んで `format` / `sourceHint` を捨ててた (死蔵)
+- 新: 各テンプレ本文の直下に **slot 補足表** として渡す
+  - 例: `★議決権を行使できる株主の数★ → 書式 ○名 / 出典: 基本情報の株主リスト人数`
+- 「★label★ に format を埋め込む」案は AI が slot 名を改変してマッチ失敗する事故が起きたので、別表方式に
+- 単位消失 (50,000 → 50,000個) や推測 fill の改善に効く
+
+### 画像認識経路の3箇所修正
+- 基本情報生成: 既存で image block 対応 (Claude vision)
+- execute 初回プロンプト: 案件フォルダで選んだ JPG/PNG を image block で渡すよう修正 (旧は PDF だけだった)
+- tool use (read_common_file): tool_result に image block 含めて返すよう拡張 (マイナンバーカード等が AI から見える)
+- ※ tool_result の content には document 型 (PDF) は仕様上含められない。PDF はテキスト抽出経由
+
+### pdf-parse 2.x → 1.x ダウングレード
+- 2.x は内部で `pdf.worker.mjs` を require して Next.js bundler でパス解決失敗 → PDF 抽出が常時失敗してた
+- 基本情報生成は Claude に base64 で PDF 直接渡してたので影響が見えてなかった
+- tool use 経路で初めて顕在化
+- 1.x は worker 不要、`require("pdf-parse/lib/pdf-parse.js")` で test 起動コード回避
+
+### 既知の未解決問題 / 不安要素
+
+1. **議事録テンプレの議案番号繰り上げ失敗** (旧スキーマ)
+   - docx で「議案３」が複数 `<w:t>` に run 分割されてて、`textReplaces` の anchor 検索が失敗
+   - `applyReplaces` を「段落単位で結合検索」に改修したら別経路で fill が壊れる副作用 → revert 済み
+   - 新 changes スキーマでは段落番号直指定なので構造的に解決するはず
+
+2. **AI が稀に slot 名を labels.json と微妙に違う形で出す**
+   - 「議事録記名押印者（代表取締役氏名）」と書くが labels.json は「記名押印する代表取締役の氏名」
+   - produce-v2 で照合失敗 → fill 当たらず空欄
+   - changes スキーマでも同じ問題は出る可能性。プロンプトで「labels.json の label と完全一致」を強化済み
+
+3. **テンプレ手書きの「★...★」**
+   - 黄色マーカー or 赤フォントで囲まれた範囲だけが label として認識される
+   - 手書きのプレーンテキスト「★...★」は素通り → 出力にも残る
+   - 解決: テンプレ側で該当箇所に黄色マーカーをかける
+
+4. **既知の Word docx 仕様**: run 分割 (`<w:t>` が書式境界で分割) が頻発するので、anchor 検索系は注意が必要
+
+## 月曜 (2026-05-25) デモ向け状態
+
+**対象**: バックオフィスサポートソフトとしてバックオフィス担当者に見せる (VC 向け市場性ピッチではない)
+
+**動かす案件**: 027.株式会社QuantumZero / 取締役就任 案件など
+
+**ブランチ選択**:
+- `feat/changes-schema`: 新スキーマ実装。動作未検証
+- `feat/unified-file-select`: 旧スキーマだが安定 (PR #94 マージ前提)
+- 動作確認して changes が安定してれば feat/changes-schema、不安なら feat/unified-file-select
+
+**デモのキーポイント (現場 hook)**:
+1. フォルダ放り込むだけで基本情報出る (共通フォルダ → 基本情報タブ)
+2. 案件フォルダ選択 + ファイルチェック で AI が読む (統合カード)
+3. 判断要るとこだけ聞いてくる (analyze-questions)
+4. 書類が一気に出来上がる (produce-v2)
+5. 最終チェックリストが PDF で出せる (verify + CheckResultCard)
+
+**デモ前に避けるべき**:
+- 大規模な実装変更 (副作用リスク)
+- 触ってないテンプレで動かす (未知の slot 名で AI が混乱する可能性)
+
+## 環境変数 / 起動の注意点
+
+- `.env.local` が読み込まれない事故あり: PowerShell で明示的に env を注入してから `npm run dev` する方が確実
+  ```powershell
+  Get-Content .env.local | Where-Object { $_ -match '^([^#=]+)=(.*)$' } | ForEach-Object { $k, $v = $_ -split '=', 2; [System.Environment]::SetEnvironmentVariable($k, $v, 'Process') }; npm run dev
+  ```
+- port 3000 が他プロセスで使われてると 3001/3002 にフォールバックする。古いプロセス (PID) を kill して 3000 を空けるとブラウザ URL が変わらず楽
+
 ## 現在のブランチ
 
-- `main` — 最新（PR #13〜#18 マージ済み）
+- `main` — 最新 (PR #90 までマージ済み)
+- `feat/auto-verify-after-produce` — Close 済 (PR #91 → PR #94 に統合 → さらに作業継続)
+- `perf/sidebar-mtime-cache` — Close 済 (PR #92 → PR #94 に統合)
+- `feat/profile-manual-only` — Close 済 (PR #93 → PR #94 に統合)
+- `feat/unified-file-select` — **作業継続中** (PR #94 が紐づく、上記 3 PR の統合 + フォルダ統合カード + その他改修)
+- `feat/changes-schema` — **新スキーマ実装ブランチ** (feat/unified-file-select から派生、Phase 2 を changes 配列に刷新)

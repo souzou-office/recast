@@ -10,7 +10,14 @@
 //
 // === 2 段階 AI 呼び出し ===
 //   Call 1: Sonnet 4.6 が推論 md を生成 (どの slot をどうするか、ラベル変換等を判断)
-//   Call 2: Haiku 4.5 が推論を読んで Tool Use で構造化 JSON を生成 (schema 強制)
+//   Call 2: Sonnet 4.6 が推論を読んで Tool Use で構造化 JSON を生成 (schema 強制)
+//
+//   Call 2 は **書類ごとに Promise.all で並列実行**。理由:
+//     - 全書類分まとめて 1 回で出させると、株主数 × 書類数で changes が 300+ op になり
+//       16k tokens を超えて JSON が途中で切れる事故が起きた (Polaris で 380 op → max_tokens 張り付き)
+//     - 書類ごとに分ければ 1 call あたり 50-60 op (≈ 3-4k tokens) で余裕
+//     - 並列なので時間は増えない (むしろ短縮可能性あり)
+//     - 書類間整合性は Call 1 reasoning で取れてるので Call 2 は転記作業のみ
 //
 //   理由: 1 回で「推論 + JSON 出力」をやらせると、複雑案件で推論が長文化して
 //        JSON 出力に到達しない事故 (Polaris ケース) が起きる。
@@ -43,8 +50,89 @@ const REASONING_MODEL = "claude-sonnet-4-6";
 // Sonnet なら schema 理解が確実。コスト差は Phase 2 で +数円程度 (1 案件 1 回呼び出し)。
 const JSON_MODEL = "claude-sonnet-4-6";
 
-// Phase 2 の出力 schema (Tool Use 用)。types/index.ts の Phase2DocumentDecision と整合させる。
-// AI はこの schema に従って構造化データを返す。schema 違反は API レベルで弾かれる。
+// 新スキーマ Tool: 段落単位の changes 配列を返す。
+// 旧 4 配列 (slotDecisions / blockDeletes / rowInsertions / textReplaces) を 1 つに統合し、
+// 「1 段落 1 op」が構造的に保証される設計に。指示同士の衝突が発生不可能になる。
+const PHASE2_CHANGES_TOOL: Anthropic.Tool = {
+  name: "submit_phase2_changes",
+  description:
+    "各書類のテンプレに対する段落単位の変更操作リスト (changes) を提出する。" +
+    "推論で確定した「どの段落をどうするか」を段落番号ベースで指定する。" +
+    "1 段落につき指示は 1 つだけ (同じ idx を複数の change で指定しない)。" +
+    "【重要】op 数を減らす最適化を勝手にやらない。ラベル変換 (delete + insertAfter のセット) で" +
+    "元のラベルが N 行 (本店/商号/代表取締役/議決権 等) ある場合、新ラベル M 行 (主たる事務所/" +
+    "名称/無限責任組合員/組合員/代表取締役/議決権 等) を **insertAfter で 1 行ずつ全て** 指示する。" +
+    "「主たる事務所だけ書けば十分」みたいな省略は禁止。元の情報項目を全て新ラベルで再現すること。",
+  input_schema: {
+    type: "object",
+    properties: {
+      documents: {
+        type: "array",
+        description: "書類ごとの changes。同じテンプレから複数出力する場合は outputLabel で区別して複数 entry を持つ",
+        items: {
+          type: "object",
+          properties: {
+            templateFile: {
+              type: "string",
+              description: "クリーンな物理テンプレファイル名 (例: '2-1.提案書兼同意書.docx')",
+            },
+            outputLabel: {
+              type: "string",
+              description: "同一テンプレから複数出力する場合の識別 (例: '藤崎用', '法人用')。1 出力なら省略",
+            },
+            changes: {
+              type: "array",
+              description: "段落単位の操作リスト。1 段落 1 op を厳守 (同じ idx を複数 entry に書かない)",
+              items: {
+                type: "object",
+                properties: {
+                  idx: {
+                    type: "number",
+                    description: "段落番号 (1-indexed)。markedText の 「段落N: ...」 の N をそのまま使う",
+                  },
+                  action: {
+                    type: "string",
+                    enum: ["delete", "fill", "rewrite", "insertAfter"],
+                    description:
+                      "delete=段落削除 (範囲削除は until 指定) / " +
+                      "fill=★label★ を値で置換 (slot + value 必須) / " +
+                      "rewrite=段落のテキスト全体を新テキストに差し替え (text 必須) / " +
+                      "insertAfter=この段落の直後に新段落を挿入 (text 必須)",
+                  },
+                  until: {
+                    type: "number",
+                    description: "delete のとき範囲削除する終端段落番号 (含む)。単独削除なら省略",
+                  },
+                  slot: {
+                    type: "string",
+                    description: "fill のとき置換する ★label★ の中身 (★は不要、label 名のみ。labels.json の label と完全一致)",
+                  },
+                  value: {
+                    type: "string",
+                    description: "fill のとき置換後の値 (最終形式、単位込み)",
+                  },
+                  text: {
+                    type: "string",
+                    description: "rewrite / insertAfter のとき完成形テキスト (固定文 + 値を結合して AI が書く)",
+                  },
+                  reason: {
+                    type: "string",
+                    description: "判断理由 (任意、デバッグ用)",
+                  },
+                },
+                required: ["idx", "action"],
+              },
+            },
+          },
+          required: ["templateFile", "changes"],
+        },
+      },
+    },
+    required: ["documents"],
+  },
+};
+
+// 旧 Phase 2 Tool (互換のため残置)。新規 AI 出力には使わない。
 const PHASE2_DECISIONS_TOOL: Anthropic.Tool = {
   name: "submit_phase2_decisions",
   description:
@@ -79,24 +167,12 @@ const PHASE2_DECISIONS_TOOL: Anthropic.Tool = {
                   },
                   action: {
                     type: "string",
-                    enum: ["fill", "delete-row", "unconfirmed"],
-                    description: "fill=値を入れる / delete-row=行ごと削除 / unconfirmed=ユーザーに確認",
+                    enum: ["fill", "delete-row"],
+                    description: "fill=値を入れる / delete-row=行ごと削除。「迷う」は Phase 2-A の質問で既に解決済みなので、ここでは2択のみ",
                   },
                   value: { type: "string", description: "fill のときの値 (最終形式)" },
                   source: { type: "string", description: "fill のときの出典" },
-                  reason: { type: "string", description: "delete-row / unconfirmed の理由" },
-                  candidates: {
-                    type: "array",
-                    description: "unconfirmed のときの候補値",
-                    items: {
-                      type: "object",
-                      properties: {
-                        value: { type: "string" },
-                        source: { type: "string" },
-                      },
-                      required: ["value", "source"],
-                    },
-                  },
+                  reason: { type: "string", description: "delete-row の理由" },
                 },
                 required: ["slot", "action"],
               },
@@ -253,13 +329,16 @@ export async function POST(request: NextRequest) {
   aiMessages = truncateBeforeStage(aiMessages, "analyze");
 
   // === テンプレ本文を読み込む (markedText 構築) ===
-  const templateBlocks: string[] = [];
+  // templateBlocks は Call 1 (全書類分結合) と Call 2 (書類ごとに分割) の両方で使うため、
+  // ファイル名と本文をペアで保持する。Call 1 では join、Call 2 では Map で引く。
+  const templateBlocks: { templateFile: string; body: string }[] = [];
   const templateStructures: { templateFile: string; markedText: string }[] = [];
   if (templateFolderPath) {
     try {
       const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
       const { getXlsxMarkedTextWithSlots } = await import("@/lib/xlsx-marker-parser");
       const { ensureDocxLabels, ensureXlsxLabels } = await import("@/lib/template-labels");
+      const { addMarkedTextNumbering } = await import("@/lib/produce-edits");
 
       const tpFiles = await readAllFilesInFolder(templateFolderPath);
       for (const f of tpFiles) {
@@ -269,15 +348,25 @@ export async function POST(request: NextRequest) {
 
         const ext = f.name.toLowerCase().split(".").pop() || "";
         let markedText = "";
+        let docBuf: Buffer | null = null;
+        const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";
+
+        // slot 名自体はテンプレ内・slotDecisions 出力で完全一致させる必要があるので、
+        // ★label★ には label のみ入れる (拡張するとマッチ崩れて produce-v2 で fill 当たらず空欄化)。
+        // format / sourceHint は別途 slot 一覧表として プロンプトに添付して AI に渡す (下流参照)。
+        const slotInfoList: { label: string; format?: string; sourceHint?: string }[] = [];
 
         if (ext === "docx" || ext === "docm") {
           try {
-            const buf = await fs.readFile(f.path);
-            const { text } = getMarkedDocumentTextWithSlots(buf);
+            docBuf = await fs.readFile(f.path);
+            const { text } = getMarkedDocumentTextWithSlots(docBuf);
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
+              if (s.label && s.label !== "不明") {
+                labelById.set(s.slotId, s.label);
+                slotInfoList.push({ label: s.label, format: s.format, sourceHint: s.sourceHint });
+              }
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -287,14 +376,17 @@ export async function POST(request: NextRequest) {
           } catch (e) {
             console.warn(`[analyze] docx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
           }
-        } else if (ext === "xlsx" || ext === "xlsm" || ext === "xls") {
+        } else if (isXlsx) {
           try {
-            const buf = await fs.readFile(f.path);
-            const { text } = getXlsxMarkedTextWithSlots(buf);
+            docBuf = await fs.readFile(f.path);
+            const { text } = getXlsxMarkedTextWithSlots(docBuf);
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
-              if (s.label && s.label !== "不明") labelById.set(s.slotId, s.label);
+              if (s.label && s.label !== "不明") {
+                labelById.set(s.slotId, s.label);
+                slotInfoList.push({ label: s.label, format: s.format, sourceHint: s.sourceHint });
+              }
             }
             markedText = text.replace(/［要入力_(\d+)］/g, (_, idStr) => {
               const id = Number(idStr);
@@ -309,10 +401,29 @@ export async function POST(request: NextRequest) {
         if (!markedText && f.content) markedText = f.content;
         if (!markedText) continue;
 
-        // 連続する (空) 行を 1 個に圧縮 (トークン節約)
-        markedText = markedText.replace(/(\(空\)\n)(\(空\)\n)+/g, "(空)\n");
+        // **重要**: produce-v2 と完全に同じ番号付けをする。
+        // ズレると AI の changes の idx が全部誤爆する (例: 「下記の者を取締役として選任すること」が消える)。
+        // 共通関数 addMarkedTextNumbering を使う。これで「段落N: 」/「行N: 」プレフィックスが付き、
+        // 空段落は番号付けされない (= produce-v2 の getContentParagraphs と一致)。
+        if (docBuf) {
+          markedText = addMarkedTextNumbering(markedText, docBuf, isXlsx);
+        }
 
-        templateBlocks.push(`### ${f.name}\n\`\`\`\n${markedText}\n\`\`\``);
+        // slot 補足表: ★label★ の書式と推定出典を別表として AI に渡す。
+        // ★label★ 自体は元のままで produce-v2 とマッチ。書式/出典は表で参照させる。
+        const slotTableLines = slotInfoList
+          .filter(s => s.format || s.sourceHint)
+          .map(s => {
+            const parts: string[] = [];
+            if (s.format) parts.push(`書式 \`${s.format}\``);
+            if (s.sourceHint) parts.push(`出典: ${s.sourceHint}`);
+            return `- \`★${s.label}★\` → ${parts.join(" / ")}`;
+          });
+        const tableSection = slotTableLines.length > 0
+          ? `\n\n**${f.name} の slot 補足** (★label★ ごとの書式と推定出典):\n${slotTableLines.join("\n")}\n`
+          : "";
+
+        templateBlocks.push({ templateFile: f.name, body: `### ${f.name}\n\`\`\`\n${markedText}\n\`\`\`${tableSection}` });
         templateStructures.push({ templateFile: f.name, markedText });
       }
     } catch (e) {
@@ -326,7 +437,7 @@ export async function POST(request: NextRequest) {
 **\`(空)\` 行の意味**: テンプレ内に **空段落** があると \`(空)\` と表示される。
 セクション区切りとして意味があるので、削除対象に含めない限り保持する。
 
-${templateBlocks.join("\n\n")}\n`
+${templateBlocks.map(b => b.body).join("\n\n")}\n`
       : "\n## テンプレート本文\n(読めませんでした)\n";
 
   const qaBlock =
@@ -343,6 +454,29 @@ ${templateBlocks.join("\n\n")}\n`
 テンプレ書類を読んで、**各 slot をどうするか、どの行/ブロックを削除するか、ラベル変換が要るか** を推論する。
 **JSON は出力しなくていい**。推論 md だけ書く (次のターンで別 AI が JSON 化する)。
 
+不要な議案ブロックがあれば削除指示する (例: 取締役就任案件なのに役員報酬議案がある、
+書類間で役割重複している議案ブロック等)。それ以外の齟齬解説は不要 (テンプレ自体の修正は
+Phase 2 では対処できないため、ここで書いても無駄)。
+
+**⚠ ラベル変換 (本店→主たる事務所、商号→名称 等) を判断する時の重要原則**:
+
+元のラベル行ブロックを新形式に置き換える場合、推論段階で **新形式の全行を明示的に列挙する**。
+例: 法人テンプレ「本店/商号/代表取締役/議決権 (4 行)」を組合用に変換するなら、推論メモに
+
+\`\`\`
+- 段落 36-39 (本店/商号/代表取締役/議決権) を delete range
+- 段落 35 の後に以下 6 行を insertAfter で挿入:
+  1. 主たる事務所 東京都...
+  2. 名称 Deep30投資事業有限責任組合
+  3. 無限責任組合員 Deep30有限責任事業組合
+  4. 組合員 株式会社Deep30
+  5. 代表取締役 川上登福
+  6. 議案の議決権 １，５７８個
+\`\`\`
+
+と **必ず全行を箇条書きで列挙**する。「主たる事務所だけ書けばよい」みたいな省略は厳禁。
+元のラベルが伝える情報項目 (所在地・名称・代表者・議決権数 等) を新ラベル群で全て表現する。
+
 ${qaBlock}
 ${templateBodyBlock}
 
@@ -351,9 +485,11 @@ ${templateBodyBlock}
 各書類について、必要なものだけ:
 
 1. **slotDecisions** (テンプレ既存の★label★ への指示)
-   - 各 slot に action を 1 つ: \`fill\` (値を入れる) / \`delete-row\` (行ごと削除) / \`unconfirmed\` (確認質問)
+   - 各 slot に action を 1 つ: \`fill\` (値を入れる) / \`delete-row\` (行ごと削除)
    - \`fill\` のとき value (最終形式) と source (出典) を書く
    - 「テンプレに slot はあるが該当しない」(例: 引受人が法人なのに「乙の無限責任組合員」slot がある) は delete-row
+   - **「迷う」「確認したい」slot はもう存在しない前提**。Phase 2-A の質問で既に確定済み。
+     previousQA に答えがあるはずなので、それを反映して fill する
 2. **blockDeletes** (議案ブロック等の複数段落削除)
    - startAnchor + endAnchor で範囲指定
    - 議案を削除したら textReplaces で繰り上げも指示
@@ -369,6 +505,27 @@ ${templateBodyBlock}
 - xlsx は **fills のみ** 使う (delete-row / rowInsertions / blockDeletes / textReplaces は禁止)
 - value に **指示文・注記・説明文を書かない** ("【法人引受人のため本行削除】" 等は全部 NG)
 - 共通ルールにラベル変換ルールがあれば従う
+
+## slot 補足表の読み方
+
+各書類のテンプレ本文の下に **「○○.docx の slot 補足」** という表が付いている。
+\`★label★\` ごとに **書式** と **推定出典** が書かれている。
+
+例:
+\`\`\`
+- \`★議決権を行使できる株主の数★\` → 書式 \`○名\` / 出典: 基本情報の株主リスト人数
+- \`★取締役の月額報酬額★\` → 書式 \`○万円\` / 出典: 報酬に関する合意書または（ユーザー確認）
+\`\`\`
+
+- **書式** (○名, ○万円, 令和○年○月○日 など) は value をその形式で揃える指示。
+  「○名」とあれば value は「2名」(単位『名』含む)、「○万円」とあれば「100万円」のように作る。
+  単位を勝手に省略しない。
+- **出典** は値をどこから取るかのヒント。「基本情報の役員」「案件スケジュール表」など。
+  出典が「ユーザー確認」を含む slot は、Phase 2-A の質問で既に確認済みなのでその回答を反映。
+
+**重要**: slotDecisions の \`slot\` フィールドには ★label★ の中身（label 名）だけを書く。
+書式や出典を slot 名に含めない (例: 「議決権を行使できる株主の数」と書く。
+「議決権を行使できる株主の数（○名）」のように補足を含めない)。
 
 ## value (fill) のルール
 
@@ -446,7 +603,7 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           send(controller, { type: "stage", stage: "reasoning" });
           const reasoningStream = client.messages.stream({
             model: REASONING_MODEL,
-            max_tokens: 16384,
+            max_tokens: 32000,
             temperature: 0,
             messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
           });
@@ -464,21 +621,40 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           } catch { /* ignore */ }
 
           // ============== Call 2: Sonnet 4.6 で JSON 化 (Tool Use) ==============
+          // 並列化: 書類ごとに Promise.all で Call 2 を呼び出す。
+          // 理由: 全書類分まとめて 1 回の Tool Use で出させると、株主数 × 書類数の展開で
+          //       16k tokens を超えて JSON が途中で切れる事故が起きた (Polaris ケース)。
+          //       書類ごとに分けると 1 call あたり changes 50-60 op (≈ 3-4k tokens) で余裕に収まる。
+          //       並列なので時間は増えず、書類数が増えてもスケールする。
+          //       書類間の整合性は Call 1 reasoning で全書類分まとめて取ってるため、
+          //       Call 2 は書類ごとの「推論メモを構造化された JSON に転記する作業」のみ。
           send(controller, { type: "stage", stage: "structuring" });
 
-          const jsonPrompt = `## あなたの仕事
+          // 書類ごとに Tool Use を呼ぶサブルーチン
+          const runPhase2ForDocument = async (
+            templateFile: string,
+            bodyForThisDoc: string
+          ): Promise<Phase2DocumentDecision[]> => {
+            const jsonPrompt = `## あなたの仕事
 
-下の「推論メモ」と「テンプレ本文」を読んで、submit_phase2_decisions ツールを呼び出して
-Phase 2 の構造化決定を提出してください。
+下の「推論メモ」と「テンプレ本文 (${templateFile})」を読んで、**submit_phase2_changes** ツールを呼び出して
+**${templateFile}** についての Phase 2 構造化決定を提出してください。
 
-**推論を改変するな**。推論メモに書かれた判断を **正確に** ツールの引数に転記する。あなたは形式変換だけ。
-新しい判断はしない。
+**他の書類は無視。${templateFile} だけ。**
 
-${templateBodyBlock}
+**推論を改変するな**。推論メモに書かれた判断を **正確に** ツールの引数に転記する。
+あなたは形式変換だけ。新しい判断はしない。
+
+## テンプレート本文 (${templateFile} のみ)
+
+**\`(空)\` 行の意味**: テンプレ内に **空段落** があると \`(空)\` と表示される。
+セクション区切りとして意味があるので、削除対象に含めない限り保持する。
+
+${bodyForThisDoc}
 
 ---
 
-## 推論メモ (Sonnet 4.6 が判断したもの)
+## 推論メモ (Sonnet 4.6 が判断したもの。全書類分含むが、**${templateFile} に関する部分のみ抽出して構造化**)
 
 ${reasoningText}
 
@@ -486,82 +662,141 @@ ${reasoningText}
 
 ## ツール呼び出しの正しい使い方 (重要)
 
-### slotDecisions (★label★ への指示)
+\`documents\` 配列には **${templateFile} のみ** を入れる (他書類は他の call で処理される)。
+\`changes\` 配列は 1 段落 1 op が大原則 (同じ idx を複数 change で指定しない)。
 
-- 推論メモに書かれた slot 1 つ 1 つを slotDecisions の entry にする
-- 「delete-row」と書いてあれば \`action: "delete-row"\`
-- 「fill: "X"」と書いてあれば \`action: "fill", value: "X"\`
-- 推論メモに書かれてない slot は documents[].slotDecisions に含めない (空欄 fill しない)
-- **個別の slot 行を消す** のは slotDecisions[delete-row] でやる (blockDeletes ではない)
+### action 別の使い方
 
-### blockDeletes (複数段落の範囲削除)
+**delete: 段落削除**
+- 単独削除: \`{ idx: 10, action: "delete" }\`
+- 範囲削除 (議案ブロック等): \`{ idx: 10, action: "delete", until: 17 }\` (段落 10〜17 を一括削除)
+- 推論メモの「blockDeletes 議案2 → 議案3 の前まで」は、テンプレ本文で段落番号を特定して
+  \`{ idx: 議案2 の段落番号, action: "delete", until: 議案3 の段落番号 - 1 }\` に変換
 
-**individual slot の delete-row には使わない**。議案2 ブロック全体みたいに、**複数段落** を範囲削除するときだけ。
+**fill: ★label★ を値で置換**
+- \`{ idx: 25, action: "fill", slot: "記名押印する代表取締役の氏名", value: "藤崎　伊久哉" }\`
+- slot は ★label★ の中身 (★は不要)。labels.json の label と完全一致させる
+- 段落番号は ★label★ が含まれる段落の番号
 
-\`startAnchor\` = 削除する **最初の段落** に含まれる文字列
-\`endAnchor\` = 削除した **直後に残す段落** に含まれる文字列 (この段落は削除されない)
+**rewrite: 段落全体を新テキストで差し替え**
+- 議案番号繰り上げ等: \`{ idx: 17, action: "rewrite", text: "議案２　代表取締役選任の件" }\`
+- text は **完成形** (固定文 + 値を AI が結合して書く)
 
-❌ 悪い例: \`startAnchor="主たる事務所", endAnchor="★主たる事務所所在地★"\`
-   → 同じ行を指してる。これは個別 slot 削除なので **slotDecisions[delete-row]** でやる
+**insertAfter: 段落の直後に新段落を追加**
+- \`{ idx: 7, action: "insertAfter", text: "取締役　古澤　利成" }\`
+- 複数行挿入したいなら entry を複数並べる (1 entry = 1 段落)
 
-✅ 良い例: \`startAnchor="議案２　取締役の報酬", endAnchor="議案３"\`
-   → 議案2 から議案3 の手前までを範囲削除
+### ⚠ ラベル変換パターン (delete range + insertAfter の組み合わせ) — 必ず読め
 
-### rowInsertions (新規行挿入)
+ラベル行ブロックを別形式に置き換える時 (例: 法人テンプレを組合用に書き換える):
 
-**1 行 = 1 entry**。3 行挿入したいなら entry を 3 個作る。
+\`\`\`
+元テンプレ (4 行):
+段落 36: 本　　　　店　★...★
+段落 37: 商　　　　号　★...★
+段落 38: 代表取締役　★...★
+段落 39: 議案の議決権　★...★
 
-❌ 悪い例: \`template="本店 ★...★\\n商号 ★...★\\n代表取締役 ★...★"\` (\\n で詰め込み)
-   → これは「1 段落の中に改行入りテキスト」になり、3 行として展開されない
+組合用に変換 (6 行):
+（株主）　　主たる事務所　東京都...
+　　　　　　名　　　　称　Deep30投資事業有限責任組合
+　　　　　　無限責任組合員　Deep30有限責任事業組合
+　　　　　　組合員　株式会社Deep30
+　　　　　　代表取締役　川上登福
+　　　　　　議案の議決権　１，５７８個
+\`\`\`
 
-✅ 良い例: rowInsertions に 3 entry:
-   1. \`{afterSlot: "甲の代表取締役", template: "本店 ★乙の本店所在地★", fills: [...]}\`
-   2. \`{afterSlot: "乙の本店所在地", template: "商号 ★乙の商号★", fills: [...]}\` (連鎖)
-   3. \`{afterSlot: "乙の商号", template: "代表取締役 ★乙の代表取締役★", fills: [...]}\` (連鎖)
+正しい changes:
+\`\`\`
+{ idx: 36, action: "delete", until: 39 }                                         ← 元 4 行を範囲削除
+{ idx: 35, action: "insertAfter", text: "（株主）　主たる事務所　東京都..." }    ← 新 1 行目
+{ idx: 35, action: "insertAfter", text: "　　　名　　　　称　Deep30投資..." }    ← 新 2 行目
+{ idx: 35, action: "insertAfter", text: "　　　無限責任組合員　Deep30有限..." }  ← 新 3 行目
+{ idx: 35, action: "insertAfter", text: "　　　組合員　株式会社Deep30" }         ← 新 4 行目
+{ idx: 35, action: "insertAfter", text: "　　　代表取締役　川上登福" }           ← 新 5 行目
+{ idx: 35, action: "insertAfter", text: "　　　議案の議決権　１，５７８個" }     ← 新 6 行目
+\`\`\`
 
-\`afterSlot\` は **必ずテンプレに存在する slot 名** (★label★ の中身) または **前の entry で作った新ラベル名**。
-固定テキスト ("（乙）" "同意欄" 等) は指定不可。
+**絶対やってはいけない最適化**:
+
+❌ 1 行だけ書いて省略:
+\`\`\`
+{ idx: 36, action: "delete", until: 39 }
+{ idx: 35, action: "insertAfter", text: "（株主）　主たる事務所　東京都..." }   ← これだけ！残り 5 行を勝手に省略
+\`\`\`
+→ 商号・代表取締役・議決権・組合員等の情報が完全に書類から消える事故。
+
+❌ 元 N 行 → 新 1 行で「まとめる」:
+\`\`\`
+{ idx: 35, action: "insertAfter", text: "主たる事務所/名称/代表取締役/議決権" }
+\`\`\`
+→ 1 段落に全部書いても法務局には通らない。
+
+**正解の原則**: 元のラベルが伝える **情報項目** (本店所在地/商号/代表者氏名/議決権数 等) を、
+新ラベルの組み合わせで **1 つも省略せず** 表現する。op 数を減らす最適化を勝手にやらない。
+delete range で消す段落数より少ない insertAfter は **ほぼ確実に省略バグ**。
 
 ### templateFile / outputLabel
 
-- \`templateFile\` はクリーンな物理ファイル名 (例: "2-1.提案書兼同意書.docx")
+- \`templateFile\` は **${templateFile}** (このまま使う)
 - 株主毎複製等は \`outputLabel\` で区別。documents 配列に N 個の entry を作る (templateFile は同じまま)`;
 
-          const decisionsResponse = await client.messages.create({
-            model: JSON_MODEL,
-            max_tokens: 16384,
-            temperature: 0,
-            tools: [PHASE2_DECISIONS_TOOL],
-            tool_choice: { type: "tool", name: "submit_phase2_decisions" },
-            messages: [{ role: "user", content: jsonPrompt }],
-          });
-          logTokenUsage(`/api/document-templates/analyze (Call 2 json)`, JSON_MODEL, decisionsResponse.usage);
+            try {
+              // max_tokens: 16384 (Anthropic non-streaming は ~21333 が上限)。
+              // 並列化したので 1書類あたり changes 50-60 op (≈ 2-3k tokens) で 16k に余裕で収まる。
+              const response = await client.messages.create({
+                model: JSON_MODEL,
+                max_tokens: 16384,
+                temperature: 0,
+                tools: [PHASE2_CHANGES_TOOL],
+                tool_choice: { type: "tool", name: "submit_phase2_changes" },
+                messages: [{ role: "user", content: jsonPrompt }],
+              });
+              logTokenUsage(
+                `/api/document-templates/analyze (Call 2 changes: ${templateFile})`,
+                JSON_MODEL,
+                response.usage
+              );
+              if (response.stop_reason === "max_tokens") {
+                console.warn(`[analyze] Call 2 for ${templateFile} hit max_tokens (${response.usage.output_tokens})`);
+              }
+              const toolBlock = response.content.find(
+                (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+              );
+              if (toolBlock?.name === "submit_phase2_changes") {
+                const input = toolBlock.input as { documents?: Phase2DocumentDecision[] };
+                return input.documents || [];
+              }
+              console.warn(`[analyze] Call 2 for ${templateFile}: Tool Use returned no decisions`);
+              return [];
+            } catch (e) {
+              console.error(`[analyze] Call 2 for ${templateFile} failed:`, e instanceof Error ? e.message : e);
+              return [];
+            }
+          };
 
-          // tool_use ブロックから decisions 取得
-          const toolBlock = decisionsResponse.content.find(
-            (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+          // 書類ごとに並列で Tool Use を呼ぶ
+          const docResults = await Promise.all(
+            templateBlocks.map((b) => runPhase2ForDocument(b.templateFile, b.body))
           );
-          let decisions: Phase2Decisions | null = null;
-          if (toolBlock?.name === "submit_phase2_decisions") {
-            decisions = toolBlock.input as Phase2Decisions;
-          }
+          const decisions: Phase2Decisions = { documents: docResults.flat() };
 
-          if (decisions && Array.isArray(decisions.documents)) {
+          if (decisions.documents.length > 0) {
             send(controller, { type: "stage", stage: "validating" });
-            validateRowInsertions(decisions);
             await savePhase2Decisions(company.id, threadId, decisions);
+            // 新スキーマ: changes 配列の各 action を集計
             const summary = decisions.documents.map((d: Phase2DocumentDecision) => {
-              const fills = d.slotDecisions.filter((s) => s.action === "fill").length;
-              const dels = d.slotDecisions.filter((s) => s.action === "delete-row").length;
-              const uncs = d.slotDecisions.filter((s) => s.action === "unconfirmed").length;
-              const ins = d.rowInsertions?.length ?? 0;
-              const repl = d.textReplaces?.length ?? 0;
-              return `${d.templateFile}: fill ${fills} / delete-row ${dels} / unconfirmed ${uncs} / blockDeletes ${d.blockDeletes.length} / rowInsertions ${ins} / textReplaces ${repl}`;
+              const changes = d.changes || [];
+              const fills = changes.filter((c) => c.action === "fill").length;
+              const dels = changes.filter((c) => c.action === "delete").length;
+              const rewrites = changes.filter((c) => c.action === "rewrite").length;
+              const inserts = changes.filter((c) => c.action === "insertAfter").length;
+              return `${d.templateFile}${d.outputLabel ? `[${d.outputLabel}]` : ""}: fill ${fills} / delete ${dels} / rewrite ${rewrites} / insertAfter ${inserts} (計 ${changes.length})`;
             }).join("; ");
             console.log(`[analyze] decisions saved: ${summary}`);
             send(controller, { type: "decisions", decisions });
           } else {
-            console.warn("[analyze] Tool Use returned no decisions");
+            console.warn("[analyze] All Call 2 invocations returned no decisions");
             send(controller, { type: "decisions", decisions: null });
           }
 

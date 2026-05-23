@@ -1,6 +1,6 @@
 "use client";
 
-import type { DocumentResultCard, DocumentResultItem, CheckIssue } from "@/types";
+import type { DocumentResultCard, DocumentResultItem, CheckIssue, FilledSlot } from "@/types";
 import { Icon } from "@/components/ui/Icon";
 
 interface Props {
@@ -10,20 +10,12 @@ interface Props {
     docxBase64?: string;
     fileName: string;
     templatePath?: string;
-    filledSlots?: import("@/types").FilledSlot[];
+    filledSlots?: FilledSlot[];
     issues?: CheckIssue[];
     docName?: string;
   }) => void;
-  // 書類ごとに「問題なし」を手動でマークする（確認済み扱い）
-  onMarkOk?: (fileName: string) => void;
-  // 個別の指摘を「確認済み」にする/戻す（slotId に紐付かない指摘でも使える）
-  onIssueAck?: (fileName: string, issueIndex: number, ack: boolean) => void;
   // 編集タブで保存された変更を一括で再生成する
   onBulkRegenerate?: () => void;
-  // verify が指摘した「未確認」issue を AI 校正モードで自動修正する
-  onProofread?: () => void;
-  // 校正実行中フラグ
-  proofreading?: boolean;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -101,34 +93,12 @@ async function downloadAllToFolder(docs: { docxBase64: string; fileName: string 
   }
 }
 
-function statusBadge(status?: "ok" | "warn" | "error") {
-  if (!status) return null;
-  if (status === "ok") {
-    return <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-ok-fg)]"><Icon name="CheckCircle2" size={11} /> 問題なし</span>;
-  }
-  if (status === "warn") {
-    return <span className="inline-flex items-center gap-1 text-[10px] text-[var(--color-warn-fg)]"><Icon name="AlertTriangle" size={11} /> 要確認</span>;
-  }
-  return <span className="inline-flex items-center gap-1 text-[10px] text-red-600"><Icon name="AlertCircle" size={11} /> 要修正</span>;
-}
-
-function severityDot(sev: CheckIssue["severity"]) {
-  const color = sev === "error" ? "bg-red-500" : sev === "warn" ? "bg-[var(--color-warn-fg)]" : "bg-[var(--color-accent)]";
-  return <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${color}`} />;
-}
-
-function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentResultItem; onPreview?: Props["onPreview"]; onMarkOk?: Props["onMarkOk"]; onIssueAck?: Props["onIssueAck"] }) {
+function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: Props["onPreview"] }) {
   const ext = doc.fileName.split(".").pop()?.toLowerCase() || "";
   const iconName = ext === "pdf" ? "FileType" : ["xlsx", "xls", "xlsm", "csv"].includes(ext) ? "FileSpreadsheet" : "FileText";
-  // 全指摘 + 元のインデックス（確認済みの「戻す」リンク用）。ack 済みは末尾に薄く表示。
-  const allIssuesIndexed = (doc.issues || []).map((iss, idx) => ({ iss, idx }));
-  const activeIssues = allIssuesIndexed.filter(({ iss }) => !iss.acknowledged);
-  const ackedIssues = allIssuesIndexed.filter(({ iss }) => iss.acknowledged);
-  const hasIssues = activeIssues.length > 0 || ackedIssues.length > 0;
-  const isOk = doc.checkStatus === "ok";
 
   return (
-    <div className={`rounded-lg border ${hasIssues ? "border-[var(--color-border)]" : "border-[var(--color-border-soft)]"} bg-[var(--color-panel)] overflow-hidden`}>
+    <div className="rounded-lg border border-[var(--color-border-soft)] bg-[var(--color-panel)] overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2">
         <Icon name={iconName} size={14} className="text-[var(--color-fg-muted)] shrink-0" />
         <span className="flex-1 text-[13px] text-[var(--color-fg)] font-medium truncate">{doc.name}</span>
@@ -137,14 +107,12 @@ function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentRe
             <Icon name="Clock" size={10} /> 更新待ち
           </span>
         )}
-        {statusBadge(doc.checkStatus)}
         <button
           onClick={() => onPreview?.({
             docxBase64: doc.docxBase64,
             fileName: doc.fileName,
             templatePath: doc.templatePath,
             filledSlots: doc.filledSlots,
-            issues: doc.issues,
             docName: doc.name,
           })}
           className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
@@ -152,15 +120,6 @@ function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentRe
         >
           <Icon name="Eye" size={12} />
         </button>
-        {!isOk && onMarkOk && (
-          <button
-            onClick={() => onMarkOk(doc.fileName)}
-            className="inline-flex items-center gap-1 text-[11px] text-[var(--color-ok-fg)] hover:bg-[var(--color-ok-bg)] rounded px-1 py-0.5"
-            title="問題なし（確認済み）にする"
-          >
-            <Icon name="CheckCircle2" size={12} />
-          </button>
-        )}
         <button
           onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
           className="inline-flex items-center gap-1 text-[11px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
@@ -169,118 +128,21 @@ function DocumentRow({ doc, onPreview, onMarkOk, onIssueAck }: { doc: DocumentRe
           <Icon name="Download" size={12} />
         </button>
       </div>
-      {hasIssues && (
-        <div className="px-3 pb-2.5 pt-0.5 border-t border-[var(--color-border-soft)] bg-[var(--color-warn-bg)]/30">
-          <ul className="space-y-1.5 mt-2">
-            {activeIssues.map(({ iss, idx }) => (
-              <li key={idx} className="flex items-start gap-2 text-[12px]">
-                {/* チェックボックス: チェック ON = 「修正対象に含める」(=acknowledged=false / 既定状態)。
-                    user がチェック外す = 「修正対象から除外」(=acknowledged=true)。
-                    既存の「確認済み」と同じ acknowledged state を共有するので、片方触ればもう片方も同期する。 */}
-                {onIssueAck ? (
-                  <label className="shrink-0 inline-flex items-center cursor-pointer mt-1" title="チェックを外すと修正対象から除外">
-                    <input
-                      type="checkbox"
-                      checked={true}
-                      onChange={() => onIssueAck(doc.fileName, idx, true)}
-                      className="w-3.5 h-3.5 accent-[var(--color-accent)] cursor-pointer"
-                    />
-                  </label>
-                ) : (
-                  severityDot(iss.severity)
-                )}
-                <div className="flex-1 leading-relaxed">
-                  <span className="text-[var(--color-fg)]">{iss.problem}</span>
-                  {iss.expected && (
-                    <span className="text-[var(--color-fg-muted)]"> （原本: {iss.expected}）</span>
-                  )}
-                  {iss.aspect && (
-                    <span className="ml-2 text-[10.5px] text-[var(--color-fg-subtle)]">[{iss.aspect}]</span>
-                  )}
-                </div>
-                {/* severity ドットを右側に小さく表示 (情報量維持) */}
-                <span className="shrink-0 mt-1.5" title={`severity: ${iss.severity}`}>
-                  {severityDot(iss.severity)}
-                </span>
-              </li>
-            ))}
-            {ackedIssues.length > 0 && (
-              <li className="pt-1.5 border-t border-[var(--color-border-soft)] mt-1.5">
-                <div className="text-[10px] text-[var(--color-fg-subtle)] mb-1">修正対象から除外 ({ackedIssues.length}件)</div>
-                <ul className="space-y-1">
-                  {ackedIssues.map(({ iss, idx }) => (
-                    <li key={idx} className="flex items-start gap-2 text-[11px] opacity-60">
-                      {onIssueAck ? (
-                        <label className="shrink-0 inline-flex items-center cursor-pointer mt-0.5" title="チェック ON で修正対象に戻す">
-                          <input
-                            type="checkbox"
-                            checked={false}
-                            onChange={() => onIssueAck(doc.fileName, idx, false)}
-                            className="w-3.5 h-3.5 accent-[var(--color-accent)] cursor-pointer"
-                          />
-                        </label>
-                      ) : (
-                        <Icon name="CheckCircle2" size={11} className="text-[var(--color-ok-fg)] mt-0.5 shrink-0" />
-                      )}
-                      <div className="flex-1 leading-relaxed line-through">
-                        {iss.problem}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
 
-export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssueAck, onBulkRegenerate, onProofread, proofreading }: Props) {
+export default function DocumentResultCardUI({ card, onPreview, onBulkRegenerate }: Props) {
   // 編集タブで保存されたが未反映の書類数
   const pendingCount = card.documents.filter(d => d.pendingChanges).length;
-  // 解決済み (acknowledged) の指摘はカウントから除外
-  const totalIssues = card.documents.reduce(
-    (sum, d) => sum + ((d.issues || []).filter(iss => !iss.acknowledged).length),
-    0,
-  );
-  const hasChecked = card.documents.some(d => d.checkStatus !== undefined);
-  const anyError = card.documents.some(d => d.checkStatus === "error");
-  const anyWarn = card.documents.some(d => d.checkStatus === "warn");
-
-  const headerBg = !hasChecked
-    ? "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]"
-    : anyError
-      ? "bg-red-50 text-red-700"
-      : anyWarn
-        ? "bg-[var(--color-warn-bg)] text-[var(--color-warn-fg)]"
-        : "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]";
-  const headerIcon = !hasChecked ? "CheckCircle2" : anyError ? "AlertCircle" : anyWarn ? "AlertTriangle" : "CheckCircle2";
-  const headerLabel = !hasChecked
-    ? "書類を生成しました"
-    : totalIssues === 0
-      ? "全書類、原本と一致"
-      : `${totalIssues}件 要確認`;
 
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] overflow-hidden">
-      <div className={`px-4 py-2.5 text-xs font-medium border-b border-[var(--color-border-soft)] flex items-center justify-between gap-2 ${headerBg}`}>
+      <div className="px-4 py-2.5 text-xs font-medium border-b border-[var(--color-border-soft)] bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)] flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1.5">
-          <Icon name={headerIcon} size={14} /> {headerLabel}
+          <Icon name="CheckCircle2" size={14} /> 書類を生成しました
         </span>
         <div className="flex items-center gap-2">
-          {totalIssues > 0 && onProofread && (
-            <button
-              onClick={() => !proofreading && onProofread()}
-              disabled={proofreading}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-accent)] px-3 py-1 text-[10px] font-medium text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-not-allowed"
-              title={`未確認の指摘 ${totalIssues} 件を AI に修正してもらう (置換 / 段落削除のみ。要約・改変はしない)`}
-            >
-              <Icon name={proofreading ? "Loader2" : "Wand2"} size={11} className={proofreading ? "animate-spin" : ""} />
-              {proofreading ? "修正中…" : `${totalIssues}件 まとめて修正`}
-            </button>
-          )}
           {pendingCount > 0 && onBulkRegenerate && (
             <button
               onClick={() => onBulkRegenerate()}
@@ -312,14 +174,9 @@ export default function DocumentResultCardUI({ card, onPreview, onMarkOk, onIssu
       </div>
       <div className="p-3 space-y-1.5">
         {card.documents.map((doc, i) => (
-          <DocumentRow key={i} doc={doc} onPreview={onPreview} onMarkOk={onMarkOk} onIssueAck={onIssueAck} />
+          <DocumentRow key={i} doc={doc} onPreview={onPreview} />
         ))}
       </div>
-      {card.checkSummary && (
-        <div className="px-4 py-2 border-t border-[var(--color-border-soft)] text-[11px] text-[var(--color-fg-muted)] bg-[var(--color-bg)]">
-          {card.checkSummary}
-        </div>
-      )}
     </div>
   );
 }

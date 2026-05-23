@@ -2,9 +2,47 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import path from "path";
 import { getWorkspaceConfig } from "@/lib/folders";
-import { readAllFilesInFolder } from "@/lib/files";
+import { readAllFilesInFolder, readFileContent, listFiles } from "@/lib/files";
 import { mimeFromExtension } from "@/lib/file-parsers";
 import { isPathDisabled } from "@/lib/disabled-filter";
+
+// 共通フォルダ配下のファイルパスを再帰的に列挙（中身パースしない、軽量）
+async function walkPathsOnly(dir: string, out: { path: string; name: string }[]): Promise<void> {
+  const entries = await listFiles(dir);
+  for (const e of entries) {
+    if (e.isDirectory) {
+      await walkPathsOnly(e.path, out);
+    } else {
+      out.push({ path: e.path, name: e.name });
+    }
+  }
+}
+
+// AI に渡す tool 定義: 共通フォルダのファイルを必要時に読み込む。
+// 基本情報 (profile.structured) に拾われていない細かい条文・属性が必要な
+// 時だけ AI が呼ぶ想定。漫然と全件読まないようプロンプトで誘導する。
+const READ_COMMON_FILE_TOOL = {
+  name: "read_common_file",
+  description: `会社の共通フォルダ（定款・登記簿・株主名簿等）にある原本ファイルの内容を取得する。
+
+**この tool を使うのは「最後の手段」**。次のいずれにも当てはまる時だけ呼ぶ:
+1. 基本情報 (profile) と案件資料の両方を読み終えた後で、まだ不明な値・条文・属性が残っている
+2. その不明値が「業務判断や生成書類の正確性に必須」である
+3. 共通ファイル一覧から該当ファイルが特定できる
+
+**呼んではいけないケース** (誤呼び出しは無駄なコスト):
+- 「念のため確認」「最新性を確かめる」「精度向上のため」← これらは全部 NG。基本情報は信頼してよい
+- 商号・本店・代表者・資本金・役員・株主構成など、基本情報に既に書かれている項目
+- 案件資料 (案件フォルダ内のファイル) に書かれている内容
+- 漠然と「定款を全部読みたい」「登記簿を全部読みたい」← 一般論では呼ばない、具体的な不足が明確な時だけ`,
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      path: { type: "string", description: "読み込むファイルの絶対パス。共通フォルダのファイル一覧に列挙されたパスから1つ選ぶ。" },
+    },
+    required: ["path"],
+  },
+};
 import { logTokenUsage } from "@/lib/token-logger";
 import {
   loadAiMessages,
@@ -65,7 +103,11 @@ export async function POST(request: NextRequest) {
     const files = await readAllFilesInFolder(folderPath);
     const disabled = disabledFiles || [];
     for (const content of files) {
-      if (disabled.includes(content.path)) continue;
+      // フォルダパスを disabledFiles に入れたとき、その配下全ファイルを除外するため
+      // 完全一致ではなく prefix match (isPathDisabled) を使う。
+      // 旧実装は disabled.includes(content.path) で完全一致だったため、
+      // フォルダレベルの除外指定が効かず、未展開フォルダの中身まで AI に渡っていた。
+      if (isPathDisabled(content.path, disabled)) continue;
       const ext = path.extname(content.name).toLowerCase();
       const mime = mimeFromExtension(ext);
       sourceFiles.push({ id: content.path, name: content.name, mimeType: mime });
@@ -120,6 +162,34 @@ export async function POST(request: NextRequest) {
   // 会社の基本情報（profile.structured）も参考データとして添付する
   const profileBlock = company.profile?.structured
     ? `\n## 会社の基本情報（参照データ）\n\`\`\`json\n${JSON.stringify(company.profile.structured, null, 2)}\n\`\`\`\n`
+    : "";
+
+  // 共通フォルダのファイル一覧を作る。tool use で必要時にファイル本体を取りに行ける。
+  // disabledFiles と profileSources の指定はここでも反映（基本情報生成と同じファイル集合を見せる）。
+  const commonFiles: { path: string; name: string; folderName: string }[] = [];
+  const allowedCommonPaths = new Set<string>();
+  const profileSourcesSet = company.profileSources && company.profileSources.length > 0
+    ? new Set(company.profileSources)
+    : null;
+  for (const sub of company.subfolders.filter(s => s.role === "common")) {
+    const subFiles: { path: string; name: string }[] = [];
+    try { await walkPathsOnly(sub.id, subFiles); } catch { /* ignore */ }
+    const disabled = sub.disabledFiles || [];
+    for (const f of subFiles) {
+      if (isPathDisabled(f.path, disabled)) continue;
+      if (profileSourcesSet && !profileSourcesSet.has(f.path)) continue;
+      commonFiles.push({ path: f.path, name: f.name, folderName: sub.name });
+      allowedCommonPaths.add(f.path);
+    }
+  }
+  const commonFilesBlock = commonFiles.length > 0
+    ? `\n## 共通フォルダのファイル一覧（**最後の手段** として read_common_file tool で読める）
+
+**重要**: まず「基本情報 (profile)」と「案件資料」を読み切ること。そこに書かれている内容を tool で改めて確認するのは **無駄**（基本情報は同じファイルから AI が生成したもの）。
+
+tool を呼んでいいのは、両方を読んだ上で **「この値が明確にどこにも書かれていない、でも書類作成には必要」** と判断した時だけ。
+
+\n${commonFiles.map(f => `- [${f.folderName}] ${f.name}\n  path: ${f.path}`).join("\n")}\n`
     : "";
 
   // 共通ルール（テンプレフォルダの上位にある共通ルール集 + テンプレ別注意事項メモ）を読む。
@@ -202,6 +272,7 @@ ${globalRulesBlock}
 ${templateMemoBlock}
 ${caseRulesBlock}
 ${profileBlock}
+${commonFilesBlock}
 
 ## 出力フォーマット（必ずこの形式で）
 
@@ -256,7 +327,12 @@ ${profileBlock}
 ## 案件資料
 ${allTexts.join("\n\n")}`;
 
-  // ターン1のユーザー content: PDF添付 + プロンプトテキスト
+  // ターン1のユーザー content: PDF/画像添付 + プロンプトテキスト
+  // - PDF → document block (Claude が内部でテキスト抽出 / OCR)
+  // - JPG/PNG/GIF/WebP → image block (Claude のビジョン機能で認識)
+  // 旧実装は PDF だけ document として追加し画像をスキップしていたので、案件フォルダで
+  // 選ばれたマイナンバーカード等の画像が AI に渡らないバグがあった。
+  const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
   const userTurnContent: CaseAiContentBlock[] = [];
   for (const pdf of pdfFiles) {
     if (pdf.mimeType === "application/pdf") {
@@ -264,6 +340,11 @@ ${allTexts.join("\n\n")}`;
         type: "document",
         source: { type: "base64", media_type: "application/pdf", data: pdf.base64 },
         title: pdf.name,
+      });
+    } else if (IMAGE_MIMES.has(pdf.mimeType)) {
+      userTurnContent.push({
+        type: "image",
+        source: { type: "base64", media_type: pdf.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: pdf.base64 },
       });
     }
   }
@@ -286,29 +367,95 @@ ${allTexts.join("\n\n")}`;
           send(controller, { type: "meta", sourceFiles });
           send(controller, { type: "stage", stage: "organizing" });
 
-          const aiStream = client.messages.stream({
-            model: MODEL,
-            max_tokens: 8192,
-            temperature: 0,
-            messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
-          });
+          // tool use ループ: AI が read_common_file を呼んだら、サーバ側でファイル内容を
+          // 取得して tool_result で返す。最大 6 回まで反復（暴走防止）。
+          const MAX_ITERATIONS = 6;
+          let workingMessages = toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[];
+          let lastFinalText = "";
+          for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+            const aiStream = client.messages.stream({
+              model: MODEL,
+              max_tokens: 8192,
+              temperature: 0,
+              tools: [READ_COMMON_FILE_TOOL],
+              messages: workingMessages,
+            });
 
-          let assistantText = "";
-          for await (const event of aiStream) {
-            if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-              assistantText += event.delta.text;
-              send(controller, { type: "text", text: event.delta.text });
+            for await (const event of aiStream) {
+              if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
+                send(controller, { type: "stage", stage: "reading-file" });
+              } else if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+                send(controller, { type: "text", text: event.delta.text });
+              }
             }
+
+            const final = await aiStream.finalMessage();
+            try { logTokenUsage(`/api/templates/execute (iter=${iter})`, MODEL, final.usage); } catch { /* ignore */ }
+
+            // 最終 text ブロックを蓄積（次イテレーションで上書き、保存用は最後の値）
+            lastFinalText = final.content
+              .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
+              .map(b => b.text)
+              .join("\n");
+
+            if (final.stop_reason !== "tool_use") {
+              break;
+            }
+
+            // tool 実行 → tool_result を user メッセージとして追加
+            workingMessages = [...workingMessages, { role: "assistant", content: final.content }];
+            const toolResults: Anthropic.ToolResultBlockParam[] = [];
+            const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+            for (const block of final.content) {
+              if (block.type !== "tool_use") continue;
+              const reqPath = (block.input as { path?: string })?.path || "";
+              const fileName = reqPath.split(/[\\/]/).pop() || reqPath;
+              send(controller, { type: "stage", stage: "reading-file" });
+              send(controller, { type: "text", text: `\n\n_📂 ${fileName} を読み込み中..._\n\n` });
+
+              // tool_result の content は string か、text/image block の array が許される。
+              // PDF (document) は tool_result では使えないので、PDF はテキスト抽出済みのみ渡せる。
+              // 画像 (JPG/PNG等) は image block で渡せるので、Claude のビジョン機能で OCR/認識される。
+              if (!allowedCommonPaths.has(reqPath)) {
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: block.id,
+                  content: `エラー: 指定されたパスは共通フォルダのファイル一覧に存在しません。一覧から path を選び直してください。\n指定された path: ${reqPath}`,
+                });
+                continue;
+              }
+              try {
+                const fc = await readFileContent(reqPath);
+                if (!fc) {
+                  toolResults.push({ type: "tool_result", tool_use_id: block.id, content: `エラー: ファイルの読み込みに失敗しました: ${reqPath}` });
+                } else if (fc.mimeType && IMAGE_MIMES.has(fc.mimeType) && fc.base64) {
+                  // 画像 → image block で渡す（Claude のビジョンで認識される）
+                  toolResults.push({
+                    type: "tool_result",
+                    tool_use_id: block.id,
+                    content: [
+                      { type: "text", text: `${fileName} を画像として読み込みました。中身を解析してください。` },
+                      { type: "image", source: { type: "base64", media_type: fc.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: fc.base64 } },
+                    ],
+                  });
+                } else if (!fc.content || !fc.content.trim() || /^\[(画像|スキャンPDF):/.test(fc.content.trim())) {
+                  toolResults.push({ type: "tool_result", tool_use_id: block.id, content: `(${fileName} はテキスト抽出できない形式です。Word・Excel・テキスト埋め込み PDF のみテキスト抽出可能。スキャン PDF や非対応形式はこの tool では中身を取得できません)` });
+                } else {
+                  toolResults.push({ type: "tool_result", tool_use_id: block.id, content: fc.content });
+                }
+              } catch (e) {
+                toolResults.push({ type: "tool_result", tool_use_id: block.id, content: `エラー: ${e instanceof Error ? e.message : "読み込み失敗"}` });
+              }
+            }
+            workingMessages = [...workingMessages, { role: "user", content: toolResults }];
+            send(controller, { type: "stage", stage: "organizing" });
           }
 
-          try {
-            const final = await aiStream.finalMessage();
-            logTokenUsage("/api/templates/execute", MODEL, final.usage);
-          } catch { /* ignore */ }
-
           // assistant ターンを保存（次の clarify/produce/verify が読む）
+          // tool_use の中間ターンは保存しない（aiMessages 型は text/document/image のみ対応）。
+          // 後段は「organize の最終 text」を引き継ぐので、共通ファイルから得た情報も結論として含まれる。
           if (threadId) {
-            const finalMessages = appendAssistantTurn(messagesWithUserTurn, assistantText, "organize");
+            const finalMessages = appendAssistantTurn(messagesWithUserTurn, lastFinalText, "organize");
             await saveAiMessages(company.id, threadId, finalMessages);
           }
 

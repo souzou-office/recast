@@ -1,7 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 import { listFiles } from "@/lib/files";
-import type { Subfolder } from "@/types";
+import type { Subfolder, Company } from "@/types";
+import fs from "fs/promises";
+import nodePath from "path";
+
+// 「会社フォルダ + 中間フォルダ」の mtime を集めて signature 化する。
+// detectSubfolders は中間フォルダ（直下にファイルがなくサブフォルダのみ）の場合
+// 1段下の subfolders を返すので、新規 subfolder 検知のためには中間フォルダ自体の
+// mtime も見る必要がある。fs.stat だけで済む軽量な比較。
+async function computeScannedSig(companyId: string, subfolders: Subfolder[]): Promise<string> {
+  const dirs = new Set<string>([companyId]);
+  for (const sub of subfolders) {
+    const parent = nodePath.dirname(sub.id);
+    if (parent && parent !== companyId) dirs.add(parent);
+  }
+  const sorted = [...dirs].sort();
+  const parts: string[] = [];
+  for (const dir of sorted) {
+    try {
+      const st = await fs.stat(dir);
+      parts.push(`${dir}:${st.mtimeMs}`);
+    } catch {
+      parts.push(`${dir}:missing`);
+    }
+  }
+  return parts.join("|");
+}
+
+// 既存 subfolders を最新ファイルシステム状態に揃える（ロール設定は保持）。
+// 戻り値: 変更があったかどうか。
+async function reconcileSubfolders(company: Company, patterns: string[]): Promise<boolean> {
+  const newSubs = await detectSubfolders(company.id, patterns);
+  let changed = false;
+  for (const ns of newSubs) {
+    if (!company.subfolders.find(s => s.id === ns.id)) {
+      company.subfolders.push(ns);
+      changed = true;
+    }
+  }
+  const { existsSync } = await import("fs");
+  const before = company.subfolders.length;
+  company.subfolders = company.subfolders.filter(s => existsSync(s.id));
+  if (company.subfolders.length !== before) changed = true;
+  company.scannedSig = await computeScannedSig(company.id, company.subfolders);
+  return changed;
+}
 
 // サブフォルダを検出（中間フォルダはスキップして中に入る）
 async function detectSubfolders(companyPath: string, patterns: string[]): Promise<Subfolder[]> {
@@ -85,10 +129,12 @@ export async function POST(request: NextRequest) {
       if (existing) continue;
 
       const subfolders = await detectSubfolders(dir.path, patterns);
+      const scannedSig = await computeScannedSig(dir.path, subfolders);
       config.companies.push({
         id: dir.path,
         name: dir.name,
         subfolders,
+        scannedSig,
       });
     }
   }
@@ -110,22 +156,26 @@ export async function PATCH(request: NextRequest) {
 
   switch (body.action) {
     case "selectCompany": {
+      // ID 切替のみ。ファイルシステムスキャンはしない。
+      // 「最新状態に揃える」は、別 action `rescanSelectedIfChanged` を
+      // クライアントが裏で叩く形に分離した。これにより会社切替自体は
+      // 数 ms で返り、サイドバー表示が引っかからない。
       config.selectedCompanyId = body.companyId;
-      // 選択と同時に subfolders を再スキャンする (ファイルシステムの最新状態に揃える)。
-      // 既存のロール設定 (共通/案件/除外) は保持され、新規フォルダだけ追加 / 削除済みは除外。
-      // 旧実装ではユーザーが「再スキャン」ボタンを押さないと最新化されず、選択直後に
-      // ファイルツリーが古いままになる事故があった。
-      const company = config.companies.find(c => c.id === body.companyId);
+      break;
+    }
+
+    case "rescanSelectedIfChanged": {
+      // 選択中の会社の subfolders を mtime ベースで差分検知し、変わってたら
+      // detectSubfolders で最新化する。会社フォルダ + 中間フォルダの mtime
+      // sig が前回と同じなら readdir 一切なし（fs.stat 数回だけで即返る）。
+      // クライアントは会社切替後 / ウィンドウフォーカス復帰時に裏で叩く。
+      const company = config.companies.find(c => c.id === config.selectedCompanyId);
       if (company) {
-        const patterns = config.defaultCommonPatterns || [];
-        const newSubs = await detectSubfolders(company.id, patterns);
-        for (const ns of newSubs) {
-          if (!company.subfolders.find(s => s.id === ns.id)) {
-            company.subfolders.push(ns);
-          }
+        const currentSig = await computeScannedSig(company.id, company.subfolders);
+        if (currentSig !== company.scannedSig) {
+          const patterns = config.defaultCommonPatterns || [];
+          await reconcileSubfolders(company, patterns);
         }
-        const { existsSync } = await import("fs");
-        company.subfolders = company.subfolders.filter(s => existsSync(s.id));
       }
       break;
     }
@@ -359,6 +409,14 @@ export async function PATCH(request: NextRequest) {
       const company = config.companies.find(c => c.id === body.companyId);
       if (company) {
         company.profileSources = Array.isArray(body.paths) ? body.paths : undefined;
+      }
+      break;
+    }
+
+    case "deleteProfile": {
+      const company = config.companies.find(c => c.id === body.companyId);
+      if (company) {
+        company.profile = undefined;
       }
       break;
     }
