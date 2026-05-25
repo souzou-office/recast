@@ -1,5 +1,79 @@
 # CLAUDE.md — recast
 
+## ★ 進行中の大改修 (feat/officecli-integration) — 2026-05-23 開始
+
+### 動機
+
+今夜の changes スキーマ刷新で見つけた問題群:
+- 段落番号付けが docx-marker-parser と produce-edits で暗黙にズレてた
+- run 分割で anchor 検索が失敗する
+- ★label★ の位置特定が脆い
+- AI が op 数を最小化する傾向 (ラベル変換時に省略する)
+
+これらを**自前で全部解決**しようとしてた。が、**OfficeCLI (https://github.com/iOfficeAI/OfficeCLI)** という AI agent 前提に作られた CLI ツールを発見。試したら recast の全ての悩みを構造的に解決できることが判明:
+
+| recast の悩み | OfficeCLI での解決 |
+|---|---|
+| 段落番号ズレ | `@paraId` で一意特定 (insert/delete でも不変) |
+| run 分割で anchor 失敗 | `find=` が run 境界を跨いで動作 |
+| ★label★ 位置特定 | `query 'run[highlight=yellow]'` で一発取得 |
+| insertAfter 順序逆転 | `--after <path>` で位置指定、順序保証 |
+| 書式保持 | 自動 |
+| LibreOffice 依存 | OfficeCLI に rendering engine 内蔵 → HTML/PNG 出力可 |
+| verify の精度 | `view issues` + `validate` + `query` で構造的にチェック |
+| AI コメント書き込み | `add comment` で Word ネイティブコメント書ける |
+
+### 採用方針 (C 案 = AI が JSON で officecli コマンドを記述、recast が CLI 化)
+
+AI の出力フォーマット:
+```json
+{
+  "commands": [
+    {
+      "command": "set",
+      "path": "/body/p[@paraId=064BAB11]",
+      "props": { "find": "令和８年２月１１日", "replace": "令和８年６月１日" }
+    },
+    {
+      "command": "remove",
+      "path": "/body/p[@paraId=17F80A4A]"
+    },
+    {
+      "command": "add",
+      "parent": "/body",
+      "type": "comment",
+      "props": { "text": "ここマイナンバーカード記載と相違あり" }
+    }
+  ]
+}
+```
+
+recast の処理は「JSON を officecli の CLI 引数に組み立てて exec するだけ」。Tool Use schema で形式強制、AI は officecli の用語そのまま使う、recast 側に翻訳テーブル不要。
+
+### 実装ステップ
+
+1. ✅ ブランチ作成
+2. lib/officecli.ts: 薄いラッパー (`runOfficeCli`, `viewText`, `query` 等)
+3. Phase 2 (analyze) に OfficeCLI モード追加 (env var `RECAST_ENGINE=officecli` で切替)
+4. produce-v2 に OfficeCLI モード追加 (同上)
+5. 1 書類動作確認 → 全書類動作確認 → 旧モードに残してマージ
+
+### 廃止候補 (動作確認後)
+
+- `src/lib/docx-marker-parser.ts` (★label★ 抽出 / 番号付け)
+- `src/lib/produce-edits.ts` (XML 直接操作)
+- `src/lib/template-labels.ts` (slot 補足)
+- `Phase2Decisions.changes` 型 (1 段落 1 op スキーマ)
+- LibreOffice 依存 (`preview-pdf`, `preview-html`)
+
+### 残課題
+
+- バイナリ配布: Windows / macOS / Linux 用バイナリを recast に同梱 or インストールガイド
+- パフォーマンス: 大量の officecli コマンドを順次実行する場合のオーバーヘッド (resident mode で軽減可)
+- テンプレ作成 workflow: 既存の「黄色ハイライト + ★label★」がそのまま使えるか確認
+
+---
+
 ## プロジェクト概要
 
 **recast**（リキャスト）は、バックオフィス業務を効率化するソフトウェア。

@@ -361,15 +361,37 @@ export interface Phase2DocumentDecision {
   templateFile: string;                                    // クリーンな物理テンプレファイル名 (例: "2-1.提案書兼同意書.docx")
   outputLabel?: string;                                    // 同一テンプレから複数出力する場合の識別 (例: "藤崎用", "先端機構用")
                                                             // 省略時は同一テンプレに 1 出力。出力ファイル名は {base}_{outputLabel}.{ext}
-  // 新スキーマ (changes): 段落番号ベースの統一操作リスト。1 段落 1 op が構造的保証される。
-  // 旧 slotDecisions / blockDeletes / rowInsertions / textReplaces は当面互換のため残置するが
-  // 新規 AI 出力ではこちらだけ使う想定。
+  // 最新スキーマ (officecli): C 案 = AI が officecli の用語そのまま使ったコマンド配列。
+  // RECAST_ENGINE=officecli のとき produce-v2 がこれを実行する。
+  // 旧 changes も互換のため残置する。
+  officeCommands?: OfficeCliCommandPayload[];
+  // 中間スキーマ (changes): 段落番号ベースの統一操作リスト。1 段落 1 op が構造的保証される。
+  // OfficeCLI 移行が完了したら廃止予定。
   changes?: ChangeOp[];
   // 旧スキーマ (互換用、新ルートでは使わない)
   slotDecisions?: SlotDecision[];                          // 各 slot 1 entry のみ
   blockDeletes?: BlockDelete[];                            // 議案ブロック等の複数段落削除 (start/end anchor で範囲指定)
   rowInsertions?: RowInsertion[];                          // 新規行挿入 (法人引受人なら代表取締役行を足す等)
   textReplaces?: TextReplace[];                            // blockDeletes に伴う議案番号繰り上げ等
+}
+
+/**
+ * OfficeCLI コマンド (C 案、AI 出力 → recast が CLI 引数化)。
+ * src/lib/officecli.ts の OfficeCliCommand と同形 (型循環避けるため type 定義はここに置く)。
+ *
+ * 例:
+ *   { command: "set", path: "/body/p[@paraId=064BAB11]",
+ *     props: { find: "令和８年２月１１日", replace: "令和８年６月１日" } }
+ */
+export interface OfficeCliCommandPayload {
+  command: "set" | "add" | "remove" | "get" | "query" | "view" | "validate" | "close";
+  path?: string;
+  parent?: string;
+  type?: string;
+  after?: string;
+  before?: string;
+  props?: Record<string, string>;
+  reason?: string;
 }
 
 // 新スキーマ: 段落単位の操作 1 つ。AI が「どの段落をどうする」を 1 op で表現する。

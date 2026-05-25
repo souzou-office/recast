@@ -43,6 +43,13 @@ import type { Phase2Decisions, Phase2DocumentDecision } from "@/types";
 
 const client = new Anthropic();
 const REASONING_MODEL = "claude-sonnet-4-6";
+
+// === エンジン切替 ===
+// RECAST_ENGINE=officecli にすると Phase 2 が OfficeCLI コマンド出力モードに切り替わる。
+// デフォルト (未設定 or "changes") は既存の changes スキーマで動く (後方互換)。
+function useOfficeCliEngine(): boolean {
+  return process.env.RECAST_ENGINE === "officecli";
+}
 // Call 2 も Sonnet を使う。Haiku は schema の semantic (blockDeletes anchor の意味、
 // rowInsertions の 1 行 1 entry ルール、afterSlot に slot 名のみ可、等) を誤解する傾向が
 // あり、推論メモを正しく構造化できないケースが頻発した (総数引受で blockDelete の endAnchor を
@@ -125,6 +132,97 @@ const PHASE2_CHANGES_TOOL: Anthropic.Tool = {
             },
           },
           required: ["templateFile", "changes"],
+        },
+      },
+    },
+    required: ["documents"],
+  },
+};
+
+// 最新スキーマ Tool (C 案): AI が officecli の用語そのままで commands を出す。
+// recast 側は --prop key=value に組み立てて exec するだけ。中間翻訳テーブル不要。
+//
+// AI に渡す情報:
+//   - officecli view text の出力 (各段落の @paraId と本文)
+//   - officecli query 'run[highlight=yellow]' の出力 (★label★ 相当の位置と内容)
+//   - Phase 1 案件整理 + Phase 2-A の Q&A
+//   - 統一ルール
+//
+// AI が出す commands の典型例:
+//   - set: 段落の find/replace でテキスト書き換え
+//   - remove: 段落削除
+//   - add: 段落 / コメント追加
+const PHASE2_OFFICECLI_TOOL: Anthropic.Tool = {
+  name: "submit_phase2_officecli",
+  description:
+    "各書類に対する OfficeCLI コマンドのリストを提出する。" +
+    "recast は AI が出したコマンドを officecli の CLI 引数に組み立てて順次実行するだけ。" +
+    "コマンドの構文は SKILL.md (https://officecli.ai/SKILL.md) に従う。" +
+    "段落の特定には @paraId を必ず使う (位置番号は使うな、insert/delete でズレる)。" +
+    "★label★ の書き換えは set + find/replace を使う。run 分割があっても find は run 境界を跨いで動く。",
+  input_schema: {
+    type: "object",
+    properties: {
+      documents: {
+        type: "array",
+        description: "書類ごとの OfficeCLI コマンド列。同じテンプレから複数出力する場合は outputLabel で区別",
+        items: {
+          type: "object",
+          properties: {
+            templateFile: {
+              type: "string",
+              description: "クリーンな物理テンプレファイル名 (例: '2-1.提案書兼同意書.docx')",
+            },
+            outputLabel: {
+              type: "string",
+              description: "同一テンプレから複数出力する場合の識別 (例: '藤崎用')。1 出力なら省略",
+            },
+            commands: {
+              type: "array",
+              description: "OfficeCLI コマンド列。順次実行される",
+              items: {
+                type: "object",
+                properties: {
+                  command: {
+                    type: "string",
+                    enum: ["set", "add", "remove", "get", "query", "view", "validate", "close"],
+                    description: "officecli の動詞。set=プロパティ変更/find-replace、add=要素追加、remove=削除",
+                  },
+                  path: {
+                    type: "string",
+                    description: "対象要素の XPath (例: '/body/p[@paraId=064BAB11]')。@paraId を必ず使う",
+                  },
+                  parent: {
+                    type: "string",
+                    description: "add のとき: 親要素のパス (例: '/body')",
+                  },
+                  type: {
+                    type: "string",
+                    description: "add のとき: 追加する要素タイプ (例: 'paragraph', 'comment')",
+                  },
+                  after: {
+                    type: "string",
+                    description: "add のとき: この要素の直後に挿入 (例: '/body/p[@paraId=xxx]')",
+                  },
+                  before: {
+                    type: "string",
+                    description: "add のとき: この要素の直前に挿入",
+                  },
+                  props: {
+                    type: "object",
+                    description: "--prop key=value 形式の引数。set なら find/replace、add なら text 等",
+                    additionalProperties: { type: "string" },
+                  },
+                  reason: {
+                    type: "string",
+                    description: "判断理由 (任意、デバッグ用、CLI には反映しない)",
+                  },
+                },
+                required: ["command"],
+              },
+            },
+          },
+          required: ["templateFile", "commands"],
         },
       },
     },
@@ -401,11 +499,24 @@ export async function POST(request: NextRequest) {
         if (!markedText && f.content) markedText = f.content;
         if (!markedText) continue;
 
-        // **重要**: produce-v2 と完全に同じ番号付けをする。
-        // ズレると AI の changes の idx が全部誤爆する (例: 「下記の者を取締役として選任すること」が消える)。
-        // 共通関数 addMarkedTextNumbering を使う。これで「段落N: 」/「行N: 」プレフィックスが付き、
-        // 空段落は番号付けされない (= produce-v2 の getContentParagraphs と一致)。
-        if (docBuf) {
+        if (useOfficeCliEngine() && !isXlsx) {
+          // OfficeCLI モード: officecli view text の出力を markedText として使う。
+          // 各段落の @paraId と本文が `[/body/p[@paraId=XXX]] 本文` 形式で取得できる。
+          // AI が @paraId を使って commands を作る。番号付けの自前管理は不要 (paraId は不変)。
+          // 黄色ハイライト位置も query で取得し、テンプレ補足表として併記する。
+          try {
+            const { viewText, query } = await import("@/lib/officecli");
+            const officeText = await viewText(f.path);
+            const highlightsResult = await query(f.path, "run[highlight=yellow]");
+            const highlights = typeof highlightsResult === "string" ? highlightsResult : JSON.stringify(highlightsResult);
+            markedText = `${officeText}\n\n--- 黄色ハイライト run 一覧 (★label★ 相当) ---\n${highlights}`;
+          } catch (e) {
+            console.warn(`[analyze officecli] view text failed (${f.name}):`, e instanceof Error ? e.message : e);
+            // フォールバック: 既存の番号付け markedText
+            if (docBuf) markedText = addMarkedTextNumbering(markedText, docBuf, isXlsx);
+          }
+        } else if (docBuf) {
+          // 既存 changes モード: produce-v2 の getContentParagraphs と一致する番号付け。
           markedText = addMarkedTextNumbering(markedText, docBuf, isXlsx);
         }
 
@@ -630,11 +741,171 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           //       Call 2 は書類ごとの「推論メモを構造化された JSON に転記する作業」のみ。
           send(controller, { type: "stage", stage: "structuring" });
 
-          // 書類ごとに Tool Use を呼ぶサブルーチン
+          // ===== OfficeCLI モード用サブルーチン =====
+          // env var RECAST_ENGINE=officecli のとき呼ばれる。
+          // AI に officecli の commands を出させる (C 案)。
+          const runPhase2OfficeCliForDocument = async (
+            templateFile: string,
+            bodyForThisDoc: string
+          ): Promise<Phase2DocumentDecision[]> => {
+            const jsonPrompt = `## あなたの仕事
+
+下の「推論メモ」と「テンプレ本文 (${templateFile})」を読んで、**submit_phase2_officecli** ツールを呼び出して
+**${templateFile}** に対する OfficeCLI コマンド列を提出してください。
+
+**他の書類は無視。${templateFile} だけ。**
+
+**推論を改変するな**。推論メモに書かれた判断を、officecli のコマンドに変換して提出する。
+あなたは形式変換だけ。新しい判断はしない。
+
+## テンプレート本文 (${templateFile})
+
+下記は \`officecli view ${templateFile} text\` の出力。
+各段落の冒頭に \`[/body/p[@paraId=XXXXXXXX]]\` 形式でスタブル ID が付いている。
+段落の特定には **必ずこの @paraId を使う**。位置番号 (p[1], p[2]) は使うな (insert/delete でズレる)。
+
+末尾には「黄色ハイライト run 一覧」が併記されている。これが ★label★ 相当 = 値を埋める対象。
+各 run は \`/body/p[@paraId=XXX]/r[N]\` 形式のパスを持つが、書き換えは段落単位の find/replace で十分。
+
+${bodyForThisDoc}
+
+---
+
+## 推論メモ (Sonnet 4.6 が判断したもの。全書類分含むが、**${templateFile} に関する部分のみ抽出して変換**)
+
+${reasoningText}
+
+---
+
+## OfficeCLI コマンドの書き方
+
+### set: 段落のテキストを書き換え (find/replace)
+
+\`\`\`json
+{ "command": "set", "path": "/body/p[@paraId=064BAB11]",
+  "props": { "find": "令和８年２月１１日", "replace": "令和８年６月１日" } }
+\`\`\`
+
+- **★label★ の中身を埋めるとき**: 元のテンプレ本文 (置換前の値) を find に、最終的な値を replace に
+- find は run 境界を跨いで動くので、複数 run に分割されてても問題なし
+- 1 段落内に複数の置換があれば set を複数回出す (同じ paraId に対して OK)
+
+### remove: 段落削除
+
+\`\`\`json
+{ "command": "remove", "path": "/body/p[@paraId=17F80A4A]" }
+\`\`\`
+
+範囲削除は無い (1 op = 1 段落)。複数段落消すなら remove を複数並べる。
+
+### add: 新規段落の挿入
+
+\`\`\`json
+{ "command": "add", "parent": "/body",
+  "after": "/body/p[@paraId=064BAB11]",
+  "type": "paragraph",
+  "props": { "text": "代表取締役　川上登福" } }
+\`\`\`
+
+- parent は親要素 (通常は \`/body\`)
+- after で挿入位置を指定 (この段落の直後に挿入)
+- type は \`paragraph\` または \`comment\` 等
+
+### ⚠ ラベル変換パターン (remove + add の組み合わせ)
+
+法人テンプレを組合用に書き換える例:
+
+\`\`\`
+元 4 段落:
+  /body/p[@paraId=AAAA1111] : 本店　★...★
+  /body/p[@paraId=AAAA2222] : 商号　★...★
+  /body/p[@paraId=AAAA3333] : 代表取締役　★...★
+  /body/p[@paraId=AAAA4444] : 議案の議決権　★...★
+
+組合用に変換 (6 段落):
+  主たる事務所 / 名称 / 無限責任組合員 / 組合員 / 代表取締役 / 議案の議決権
+\`\`\`
+
+正しい commands (元 4 つを remove + 新 6 つを add):
+
+\`\`\`json
+[
+  { "command": "remove", "path": "/body/p[@paraId=AAAA1111]" },
+  { "command": "remove", "path": "/body/p[@paraId=AAAA2222]" },
+  { "command": "remove", "path": "/body/p[@paraId=AAAA3333]" },
+  { "command": "remove", "path": "/body/p[@paraId=AAAA4444]" },
+  { "command": "add", "parent": "/body", "after": "/body/p[@paraId=PREV]",
+    "type": "paragraph", "props": { "text": "（株主）　主たる事務所　東京都..." } },
+  { "command": "add", "parent": "/body", "after": "/body/p[@paraId=PREV]",
+    "type": "paragraph", "props": { "text": "名　　称　Deep30投資事業有限責任組合" } },
+  { "command": "add", "parent": "/body", "after": "/body/p[@paraId=PREV]",
+    "type": "paragraph", "props": { "text": "無限責任組合員　Deep30有限責任事業組合" } },
+  { "command": "add", "parent": "/body", "after": "/body/p[@paraId=PREV]",
+    "type": "paragraph", "props": { "text": "組合員　株式会社Deep30" } },
+  { "command": "add", "parent": "/body", "after": "/body/p[@paraId=PREV]",
+    "type": "paragraph", "props": { "text": "代表取締役　川上登福" } },
+  { "command": "add", "parent": "/body", "after": "/body/p[@paraId=PREV]",
+    "type": "paragraph", "props": { "text": "議案の議決権　１，５７８個" } }
+]
+\`\`\`
+
+**重要原則**: 元のラベルが伝える情報項目を、新ラベルで **1 つも省略せず** 表現する。
+op 数を減らす最適化を勝手にやらない。remove 数より少ない add は **ほぼ確実に省略バグ**。
+
+### templateFile / outputLabel
+
+- \`templateFile\` は **${templateFile}** (このまま使う)
+- 株主毎複製等は \`outputLabel\` で区別`;
+
+            try {
+              const response = await client.messages.create({
+                model: JSON_MODEL,
+                max_tokens: 16384,
+                temperature: 0,
+                tools: [PHASE2_OFFICECLI_TOOL],
+                tool_choice: { type: "tool", name: "submit_phase2_officecli" },
+                messages: [{ role: "user", content: jsonPrompt }],
+              });
+              logTokenUsage(
+                `/api/document-templates/analyze (Call 2 officecli: ${templateFile})`,
+                JSON_MODEL,
+                response.usage
+              );
+              if (response.stop_reason === "max_tokens") {
+                console.warn(`[analyze officecli] Call 2 for ${templateFile} hit max_tokens (${response.usage.output_tokens})`);
+              }
+              const toolBlock = response.content.find(
+                (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+              );
+              if (toolBlock?.name === "submit_phase2_officecli") {
+                const input = toolBlock.input as {
+                  documents?: { templateFile: string; outputLabel?: string; commands: unknown[] }[]
+                };
+                // input.documents[].commands を officeCommands に格納
+                const out: Phase2DocumentDecision[] = (input.documents || []).map((d) => ({
+                  templateFile: d.templateFile,
+                  outputLabel: d.outputLabel,
+                  officeCommands: d.commands as Phase2DocumentDecision["officeCommands"],
+                }));
+                return out;
+              }
+              console.warn(`[analyze officecli] Call 2 for ${templateFile}: Tool Use returned no commands`);
+              return [];
+            } catch (e) {
+              console.error(`[analyze officecli] Call 2 for ${templateFile} failed:`, e instanceof Error ? e.message : e);
+              return [];
+            }
+          };
+
+          // 書類ごとに Tool Use を呼ぶサブルーチン (changes モード)
           const runPhase2ForDocument = async (
             templateFile: string,
             bodyForThisDoc: string
           ): Promise<Phase2DocumentDecision[]> => {
+            // env var officecli ならそっちのルートに振る
+            if (useOfficeCliEngine()) {
+              return runPhase2OfficeCliForDocument(templateFile, bodyForThisDoc);
+            }
             const jsonPrompt = `## あなたの仕事
 
 下の「推論メモ」と「テンプレ本文 (${templateFile})」を読んで、**submit_phase2_changes** ツールを呼び出して

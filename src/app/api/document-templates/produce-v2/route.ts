@@ -191,6 +191,41 @@ export async function POST(request: NextRequest) {
           console.warn(`[produce-v2] 物理テンプレが見つからない: ${decisionDoc.templateFile}`);
           return null;
         }
+
+        // ===== OfficeCLI モード: decisionDoc.officeCommands があれば優先 =====
+        // (新スキーマ。AI が officecli の用語そのままで commands を出す。
+        //  recast は引数組み立て + exec のみ。)
+        if (decisionDoc.officeCommands && decisionDoc.officeCommands.length > 0) {
+          const { copyToTemp, applyCommands } = await import("@/lib/officecli");
+          const workCopy = await copyToTemp(f.path, decisionDoc.outputLabel);
+          const execResults = await applyCommands(workCopy, decisionDoc.officeCommands);
+          const failed = execResults.filter((r) => !r.ok);
+          if (failed.length > 0) {
+            console.warn(
+              `[produce-v2 officecli] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} ` +
+              `${failed.length}/${execResults.length} commands failed:`,
+              failed.slice(0, 3).map((x) => x.error)
+            );
+          } else {
+            console.log(
+              `[produce-v2 officecli] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} ` +
+              `applied ${execResults.length} commands`
+            );
+          }
+          const resultBuf = await fs.readFile(workCopy);
+          const baseName = f.name.replace(/\.[^.]+$/, "");
+          const ext0 = f.name.split(".").pop() || "docx";
+          const labelSuffix = decisionDoc.outputLabel ? `_${sanitizeFsName(decisionDoc.outputLabel)}` : "";
+          // PoC 段階では previewHtml は空 (フロント側プレビュー or 後段の view html 呼び出しで対応)。
+          return {
+            name: `${baseName}${labelSuffix}`,
+            fileName: `${baseName}${labelSuffix}.${ext0}`,
+            docxBase64: resultBuf.toString("base64"),
+            previewHtml: "",
+            templatePath: f.path,
+          };
+        }
+
         const buf = await fs.readFile(f.path);
         const ext = f.name.toLowerCase().split(".").pop() || "";
         const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";
