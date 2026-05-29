@@ -1420,38 +1420,37 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       {/* 幅 60% に拡張 (50% → 60%) してプレビューを見やすく */}
       {previewTabs.length > 0 && previewFile && (
         <div className="flex w-[60%] min-w-0 border-l border-[var(--color-border-soft)] bg-[var(--color-panel)]">
-          {/* タブサイドバー — 縦に並べて全部見える。160px に細く (200 → 160) */}
-          <div className="w-[160px] shrink-0 flex flex-col border-r border-[var(--color-border-soft)] bg-[var(--color-panel-soft)]">
-            <div className="flex items-center justify-between px-2 py-1.5 border-b border-[var(--color-border-soft)] text-[10px] text-[var(--color-fg-subtle)] font-medium">
-              <span>{previewTabs.length} 件</span>
+          {/* タブサイドバー — 縦に並べて全部見える */}
+          <div className="w-[184px] shrink-0 flex flex-col border-r border-[var(--color-border-soft)] bg-[var(--color-panel-soft)]">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border-soft)]">
+              <span className="text-[11px] text-[var(--color-fg-muted)] font-medium">書類 {previewTabs.length}件</span>
               <button
                 onClick={() => { setPreviewTabs([]); setActiveTabIdx(0); }}
-                className="px-1.5 hover:text-[var(--color-fg)]"
+                className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] transition-colors"
                 title="全タブ閉じる"
-              >全閉じる</button>
+              >すべて閉じる</button>
             </div>
-            <div className="flex-1 overflow-y-auto py-1">
+            <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
               {previewTabs.map((tab, idx) => {
-                // 拡張子で色分け (xlsx は緑、docx は青、その他はグレー)
+                // 拡張子でアイコン + 色分け
                 const ext = (tab.fileName.split(".").pop() || "").toLowerCase();
                 const isXlsx = ext === "xlsx" || ext === "xls" || ext === "xlsm";
                 const isDocx = ext === "docx" || ext === "docm";
-                const accentClass = isXlsx
-                  ? "border-l-green-500"
-                  : isDocx
-                  ? "border-l-blue-500"
-                  : "border-l-gray-400";
+                const iconName = isXlsx ? "FileSpreadsheet" : isDocx ? "FileText" : "File";
+                const iconColor = isXlsx ? "text-green-600" : isDocx ? "text-blue-600" : "text-gray-500";
+                const active = idx === activeTabIdx;
                 return (
                   <div
                     key={tab.fileName + idx}
-                    className={`group flex items-center gap-1 px-2 py-1.5 text-[11px] cursor-pointer border-l-2 ${accentClass} ${
-                      idx === activeTabIdx
-                        ? "bg-[var(--color-panel)] text-[var(--color-fg)] font-medium"
-                        : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
+                    className={`group flex items-center gap-2 pl-2 pr-1.5 py-1.5 text-[11px] cursor-pointer rounded-lg transition-colors ${
+                      active
+                        ? "bg-[var(--color-panel)] text-[var(--color-fg)] font-medium shadow-sm ring-1 ring-[var(--color-border-soft)]"
+                        : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                     }`}
                     onClick={() => setActiveTabIdx(idx)}
                     title={tab.fileName}
                   >
+                    <Icon name={iconName} size={13} className={`shrink-0 ${active ? iconColor : "text-[var(--color-fg-subtle)]"}`} />
                     <span className="flex-1 truncate leading-tight">{tab.docName || tab.fileName}</span>
                     <button
                       onClick={(e) => {
@@ -1463,9 +1462,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                           return next;
                         });
                       }}
-                      className="opacity-0 group-hover:opacity-100 text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] shrink-0 px-1"
+                      className="opacity-0 group-hover:opacity-100 text-[var(--color-fg-subtle)] hover:text-[var(--color-danger-fg)] shrink-0 w-4 h-4 flex items-center justify-center rounded transition-opacity"
                       title="閉じる"
-                    >×</button>
+                    ><Icon name="X" size={11} /></button>
                   </div>
                 );
               })}
