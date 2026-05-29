@@ -27,7 +27,7 @@ const RENDER_TIMEOUT_MS = 60_000;
 const SCREENSHOT_WIDTH = "1600";
 const DOCX_MAX_PAGES = "1-30";  // 存在しないページは officecli が無視する (stats 呼び出し不要)
 // レンダリング設定のバージョン。render args 変更時にここを bump するとキャッシュ無効化される。
-const RENDER_VERSION = "v4-xlsx-w800";
+const RENDER_VERSION = "v5-xlsx-noruby";
 
 // ---- サーバ側 PNG キャッシュ (process 内のみ、再起動で消える) ----
 const htmlCache = new Map<string, string>();
@@ -138,6 +138,35 @@ async function renderToHtml(args: {
     inputPath = filePath;
   } else {
     throw new Error("内部エラー: 入力パスを決定できない");
+  }
+
+  // xlsx: ふりがな (ルビ rPh) を除去した temp コピーを作ってからスクショする。
+  // 株主リスト等のヘッダーに「住所ジュウショ」のようにルビが出て見づらいため。
+  // 原本は絶対に変更しない (filePath 直指定でも必ず temp コピー上で除去)。
+  if (!isDocx) {
+    try {
+      const tmpDir = nodePath.join(os.tmpdir(), "recast-preview-input");
+      await fs.mkdir(tmpDir, { recursive: true });
+      const uniq = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const strippedPath = nodePath.join(tmpDir, `${uniq}_noruby.xlsx`);
+      const PizZip = (await import("pizzip")).default;
+      const zip = new PizZip(await fs.readFile(inputPath));
+      const ss = zip.file("xl/sharedStrings.xml")?.asText();
+      if (ss && /<rPh\b/.test(ss)) {
+        const stripped = ss
+          .replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")   // ルビ run を除去
+          .replace(/<phoneticPr\b[^>]*\/>/g, "");         // phonetic 表示設定も除去
+        zip.file("xl/sharedStrings.xml", stripped);
+        await fs.writeFile(strippedPath, zip.generate({ type: "nodebuffer" }));
+        // 元が base64-temp ならそれは finally で消えるので、新 temp に差し替え + cleanup 対象に
+        if (cleanupInput) { try { await fs.unlink(inputPath); } catch { /* ignore */ } }
+        inputPath = strippedPath;
+        cleanupInput = true;
+      }
+    } catch (e) {
+      console.warn("[preview-html] ルビ除去スキップ:", e instanceof Error ? e.message : e);
+      // 失敗しても元ファイルでスクショ続行
+    }
   }
 
   // 出力 PNG path

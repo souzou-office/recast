@@ -925,12 +925,19 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           // 既に入ってるので、それと jsonPrompt を一緒に送る。
           const runPhase2OfficeCliForDocument = async (
             templateFile: string,
-            bodyForThisDoc: string
+            bodyForThisDoc: string,
+            valueTableHint?: Record<string, string>   // 仕分けモードの確定値表 (書類間で値を揃えるため)
           ): Promise<Phase2DocumentDecision[]> => {
+            // 確定値表があれば「この値をそのまま使え」とプロンプトに明示 (書類間の表記統一)
+            const valueTableBlock = valueTableHint && Object.keys(valueTableHint).length > 0
+              ? `\n## ★確定済みの値 (他書類と統一済み。この表記をそのまま使い、勝手に再フォーマットするな)\n` +
+                Object.entries(valueTableHint).map(([k, v]) => `- ${k}: ${v}`).join("\n") + "\n"
+              : "";
             const jsonPrompt = `## あなたの仕事
 
 会話履歴の Phase 1 (案件整理) + Phase 2-A (確認 Q&A) + 統一ルールを踏まえて、
 **submit_phase2_officecli** で **${templateFile}** の OfficeCLI commands を提出。他書類は無視。
+${valueTableBlock}
 
 ## 株主の振り分けルール (重要)
 
@@ -1283,11 +1290,11 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
               });
             }
 
-            // ai モードのテンプレだけ従来 AI で生成
+            // ai モードのテンプレだけ従来 AI で生成。確定値表を渡して書類間の表記を統一。
             if (aiTemplates.length > 0) {
               send(controller, { type: "text", text: `AI個別生成 ${aiTemplates.length}件...\n` });
               const aiResults = await Promise.all(
-                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body))
+                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body, plan.valueTable))
               );
               results.push(...aiResults);
             }
