@@ -32,6 +32,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   };
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>([]);
   const [activeTabIdx, setActiveTabIdx] = useState(0);
+  const [tabListOpen, setTabListOpen] = useState(true);   // プレビュー左の書類一覧の開閉
   // 既存コードとの互換 wrapper (setPreviewFile 呼ばれたら同名タブを切替 or 追加)
   // 関数版 (prev => next) はアクティブタブの内容を更新する用途
   const setPreviewFile = (
@@ -1420,15 +1421,38 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       {/* 幅 60% に拡張 (50% → 60%) してプレビューを見やすく */}
       {previewTabs.length > 0 && previewFile && (
         <div className="flex w-[60%] min-w-0 border-l border-[var(--color-border-soft)] bg-[var(--color-panel)]">
-          {/* タブサイドバー — 縦に並べて全部見える */}
+          {/* 畳んだ状態: 細いレール (展開ボタン + 件数) */}
+          {!tabListOpen && (
+            <div className="w-9 shrink-0 flex flex-col items-center gap-2 border-r border-[var(--color-border-soft)] bg-[var(--color-panel-soft)] py-2">
+              <button
+                onClick={() => setTabListOpen(true)}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                title="書類一覧を開く"
+              >
+                <Icon name="PanelLeftOpen" size={16} />
+              </button>
+              <span className="text-[10px] text-[var(--color-fg-subtle)] font-medium">{previewTabs.length}</span>
+            </div>
+          )}
+          {/* タブサイドバー — 縦に並べて全部見える (開いてる時) */}
+          {tabListOpen && (
           <div className="w-[184px] shrink-0 flex flex-col border-r border-[var(--color-border-soft)] bg-[var(--color-panel-soft)]">
             <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border-soft)]">
               <span className="text-[11px] text-[var(--color-fg-muted)] font-medium">書類 {previewTabs.length}件</span>
-              <button
-                onClick={() => { setPreviewTabs([]); setActiveTabIdx(0); }}
-                className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] transition-colors"
-                title="全タブ閉じる"
-              >すべて閉じる</button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => { setPreviewTabs([]); setActiveTabIdx(0); }}
+                  className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] transition-colors"
+                  title="全タブ閉じる"
+                >全閉</button>
+                <button
+                  onClick={() => setTabListOpen(false)}
+                  className="w-5 h-5 flex items-center justify-center rounded text-[var(--color-fg-subtle)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
+                  title="一覧を畳む (プレビューを広く)"
+                >
+                  <Icon name="PanelLeftClose" size={14} />
+                </button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
               {previewTabs.map((tab, idx) => {
@@ -1470,6 +1494,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
               })}
             </div>
           </div>
+          )}
           {/* アクティブタブの内容 (FilePreview はリサイザー + 本体の Fragment を返すので flex で横並べ) */}
           <div className="flex-1 min-h-0 flex flex-col">
             <div className="flex-1 min-h-0 flex">
