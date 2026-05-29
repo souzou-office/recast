@@ -1025,7 +1025,17 @@ export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffe
 //   C) 赤いテキスト run    → セル内の赤い部分だけ ［要入力_N］、他は固定で残す
 // AIは前案件の値に引きずられず文脈だけで判断できる。
 // slots: N → セルの元値（originalValue）。produce 側で {origValue → newValue} の置換マップを作る用。
-export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
+// slot ごとのセル位置。ルールベース fill コマンド生成で officecli path=/SheetName/CellAddr を作るのに使う。
+export interface XlsxSlotPosition {
+  ref: string;        // "B14"
+  sheetName: string;  // "株主リスト（承認決議）（包括）"
+}
+
+export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
+  text: string;
+  slots: Map<number, string>;
+  slotPositions: Map<number, XlsxSlotPosition>;
+} {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
   const yellowStyles = findYellowStyleIndexes(stylesXml);
@@ -1034,8 +1044,10 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
   const redSiMap = ssXml ? findRedSharedStrings(ssXml) : new Map<number, SiRun[]>();
+  const wbXml = zip.file("xl/workbook.xml")?.asText() || "";
 
   const slots = new Map<number, string>();
+  const slotPositions = new Map<number, XlsxSlotPosition>();
   let slotId = 0;
   const lines: string[] = [];
 
@@ -1043,6 +1055,17 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
     if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
     const sheetXml = zip.file(fileName)?.asText();
     if (!sheetXml) continue;
+
+    // シート名を解決 (extractXlsxMarkedCells と同じロジック)
+    const sheetNum = fileName.match(/sheet(\d+)/)?.[1] || "1";
+    let sheetName = `Sheet${sheetNum}`;
+    if (wbXml) {
+      const sheetRe = /<sheet\s+name="([^"]*)"[^>]*r:id="rId(\d+)"/g;
+      let sm;
+      while ((sm = sheetRe.exec(wbXml)) !== null) {
+        if (sm[2] === sheetNum) { sheetName = sm[1]; break; }
+      }
+    }
 
     // マージ内の非 top-left は装飾扱いで skip (extractXlsxMarkedCells と同じ)
     const mergeSuppressed = findMergeSuppressedRefs(sheetXml);
@@ -1100,6 +1123,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
           }
           // セル全体が可変 (空でも slot として登録 → 株主リスト等の空欄行で重要)
           slots.set(slotId, val);
+          slotPositions.set(slotId, { ref, sheetName });
           rowTexts.push(`［要入力_${slotId}］`);
           slotId++;
         } else if (val.trim() && siIndex >= 0 && redSiMap.has(siIndex)) {
@@ -1109,6 +1133,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
           for (const run of runs) {
             if (run.isRed) {
               slots.set(slotId, run.text);
+              slotPositions.set(slotId, { ref, sheetName });
               cellText += `［要入力_${slotId}］`;
               slotId++;
             } else {
@@ -1123,7 +1148,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
       if (rowTexts.some(t => t.trim())) lines.push(rowTexts.join("\t"));
     }
   }
-  return { text: lines.join("\n"), slots };
+  return { text: lines.join("\n"), slots, slotPositions };
 }
 
 // Excelの全体テキストを★マーク付きで返す（旧方式、後方互換用）
