@@ -521,6 +521,19 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  // 統一ルール (組合の構造変換 ④ 等) を 1 度だけ読む。Step A と ai モード両方で使う。
+  // Phase 1 整理結果は「共通ルール④に基づく」と番号参照のみで本体が無いため、
+  // Phase 2 にもルール本体を渡さないと組合変換 (名称/無限責任組合員/代表者) ができない。
+  let globalRulesText = "";
+  if (templateFolderPath && config.templateBasePath) {
+    try {
+      const { loadGlobalRules } = await import("@/lib/global-rules");
+      globalRulesText = await loadGlobalRules(config.templateBasePath, templateFolderPath);
+    } catch (e) {
+      console.warn("[analyze] loadGlobalRules failed:", e instanceof Error ? e.message : e);
+    }
+  }
+
   // Phase 1 (organize) 完了が前提
   let aiMessages = await loadAiMessages(company.id, threadId);
   if (!hasStage(aiMessages, "organize")) {
@@ -997,7 +1010,10 @@ remove より少ない add は **ほぼ確実に省略バグ**。op 数を減ら
               // 圧縮し、cache_control で並列 cacheRead を効かせる。
               // organizeResult.structured (Phase 1 の Tool Use 出力) があれば優先使用。
               const organizeResult = await loadOrganizeResult(company.id, threadId);
-              const essentialContext = extractEssentialContext(messagesWithUserTurn, organizeResult);
+              let essentialContext = extractEssentialContext(messagesWithUserTurn, organizeResult);
+              if (globalRulesText.trim()) {
+                essentialContext += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
+              }
               const response = await client.messages.create({
                 model: JSON_MODEL,
                 max_tokens: 16384,
@@ -1217,7 +1233,11 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             }));
 
             const organizeForPlan = await loadOrganizeResult(company.id, threadId);
-            const caseContextForPlan = extractEssentialContext(messagesWithUserTurn, organizeForPlan);
+            let caseContextForPlan = extractEssentialContext(messagesWithUserTurn, organizeForPlan);
+            // 統一ルール本体を Step A に渡す (番号参照だけでは組合変換できないため)
+            if (globalRulesText.trim()) {
+              caseContextForPlan += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
+            }
             const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates });
             send(controller, {
               type: "text",
