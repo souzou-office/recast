@@ -54,32 +54,17 @@ export function resolveSlots(args: {
   return out;
 }
 
-// 1 slot を 1 つの set コマンドに変換する。
-// find = oldValue (前案件の値) / replace = newValue。
-// docx は paraId、xlsx は /シート名/セル を path に。
-function slotToCommand(slot: ResolvedSlot, newValue: string): OfficeCliCommandPayload | null {
-  if (slot.docx) {
-    if (!slot.docx.paraId) return null; // paraId 無しは安全に特定できない → スキップ
-    const props: Record<string, string> = { highlight: "none" };
-    if (slot.oldValue) {
-      // 通常: find/replace で前案件値を新値に。run 分割を跨いで officecli が探す。
-      props.find = slot.oldValue;
-      props.replace = newValue;
-    } else {
-      // 空マーカー (oldValue 無し): 段落末尾に追記しかできないが、ここでは text 設定で対応
-      props.text = newValue;
-    }
-    return { command: "set", path: `/body/p[@paraId=${slot.docx.paraId}]`, props };
+// docx slot → set コマンド (find=oldValue / replace=newValue)。
+function docxSlotToCommand(slot: ResolvedSlot, newValue: string): OfficeCliCommandPayload | null {
+  if (!slot.docx?.paraId) return null; // paraId 無しは安全に特定できない → スキップ
+  const props: Record<string, string> = { highlight: "none" };
+  if (slot.oldValue) {
+    props.find = slot.oldValue;
+    props.replace = newValue;
+  } else {
+    props.text = newValue;
   }
-  if (slot.xlsx) {
-    // xlsx は find/replace が run 分割で 0 マッチしやすいので必ず value= でセル丸ごと上書き。
-    return {
-      command: "set",
-      path: `/${slot.xlsx.sheetName}/${slot.xlsx.ref}`,
-      props: { value: newValue, fill: "FFFFFF" },
-    };
-  }
-  return null;
+  return { command: "set", path: `/body/p[@paraId=${slot.docx.paraId}]`, props };
 }
 
 // label → 値 を引く。entity (loop の現在行) を優先、無ければ valueTable。
@@ -94,24 +79,61 @@ function resolveValue(
 }
 
 // 1 書類分のコマンドを生成する。entity が渡されれば loop の 1 エンティティ分。
+// xlsxCellTexts があれば xlsx はセル単位で再構築する (1セル複数slot の上書き事故を防ぐ)。
 function generateForOneOutput(
   slots: ResolvedSlot[],
   valueTable: Record<string, string>,
   entity?: Record<string, string>,
-  outputLabel?: string
+  outputLabel?: string,
+  xlsxCellTexts?: Map<string, string>
 ): GeneratedDoc {
   const commands: OfficeCliCommandPayload[] = [];
   const unresolvedLabels: string[] = [];
+
+  // --- docx: slot 単位で find/replace ---
   for (const slot of slots) {
+    if (!slot.docx) continue;
     const value = resolveValue(slot.label, valueTable, entity);
-    if (value === undefined) {
-      unresolvedLabels.push(slot.label);
-      continue; // 埋める値が無い → そのマーカーは触らない (空欄や前案件値が残る → verify が拾う)
-    }
-    const cmd = slotToCommand(slot, value);
+    if (value === undefined) { unresolvedLabels.push(slot.label); continue; }
+    const cmd = docxSlotToCommand(slot, value);
     if (cmd) commands.push(cmd);
     else unresolvedLabels.push(`${slot.label}(位置不明)`);
   }
+
+  // --- xlsx: セル単位で再構築 (同一セルの複数 slot を 1 つの value= にまとめる) ---
+  const xlsxSlots = slots.filter((s) => s.xlsx);
+  if (xlsxSlots.length > 0) {
+    // ref ごとに slot をまとめる
+    const byRef = new Map<string, { sheetName: string; slots: ResolvedSlot[] }>();
+    for (const s of xlsxSlots) {
+      const ref = s.xlsx!.ref;
+      if (!byRef.has(ref)) byRef.set(ref, { sheetName: s.xlsx!.sheetName, slots: [] });
+      byRef.get(ref)!.slots.push(s);
+    }
+    const slotById = new Map(xlsxSlots.map((s) => [s.slotId, s]));
+    for (const [ref, { sheetName, slots: cellSlots }] of byRef) {
+      const template = xlsxCellTexts?.get(ref);
+      let newCellValue: string;
+      if (template) {
+        // テンプレの ［要入力_N］ を各 slot の値で置換。値が無ければ前値(oldValue)を残す。
+        newCellValue = template.replace(/［要入力_(\d+)］/g, (_, idStr) => {
+          const slot = slotById.get(Number(idStr));
+          if (!slot) return "";
+          const v = resolveValue(slot.label, valueTable, entity);
+          if (v === undefined) { unresolvedLabels.push(slot.label); return slot.oldValue; }
+          return v;
+        });
+      } else {
+        // テンプレ無し (単一 slot 想定): その slot の値で
+        const slot = cellSlots[0];
+        const v = resolveValue(slot.label, valueTable, entity);
+        if (v === undefined) { unresolvedLabels.push(slot.label); continue; }
+        newCellValue = v;
+      }
+      commands.push({ command: "set", path: `/${sheetName}/${ref}`, props: { value: newCellValue, fill: "FFFFFF" } });
+    }
+  }
+
   return { outputLabel, commands, unresolvedLabels };
 }
 
@@ -122,24 +144,25 @@ export function generateFillCommands(args: {
   slots: ResolvedSlot[];
   valueTable: Record<string, string>;
   entityGroups: EntityGroup[];
+  xlsxCellTexts?: Map<string, string>;   // xlsx のセル単位再構築用 (パーサーの cellTexts)
 }): GeneratedDoc[] {
-  const { plan, slots, valueTable, entityGroups } = args;
+  const { plan, slots, valueTable, entityGroups, xlsxCellTexts } = args;
 
   if (plan.mode === "fill") {
-    return [generateForOneOutput(slots, valueTable)];
+    return [generateForOneOutput(slots, valueTable, undefined, undefined, xlsxCellTexts)];
   }
 
   if (plan.mode === "loop") {
     const group = entityGroups.find((g) => g.groupId === plan.entityGroupId);
     if (!group) {
       // グループが見つからない → fill 扱いにフォールバック (1通だけ生成)
-      return [generateForOneOutput(slots, valueTable)];
+      return [generateForOneOutput(slots, valueTable, undefined, undefined, xlsxCellTexts)];
     }
     return group.entities.map((entity) => {
       const outputLabel = plan.outputLabelField
         ? entity[plan.outputLabelField]
         : Object.values(entity)[0]; // フィールド指定なければ先頭値を識別に
-      return generateForOneOutput(slots, valueTable, entity, outputLabel);
+      return generateForOneOutput(slots, valueTable, entity, outputLabel, xlsxCellTexts);
     });
   }
 

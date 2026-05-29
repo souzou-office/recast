@@ -1035,6 +1035,10 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
   text: string;
   slots: Map<number, string>;
   slotPositions: Map<number, XlsxSlotPosition>;
+  // ref (例: "A26") → そのセルの完全テンプレ。固定文 + ［要入力_N］ プレースホルダ入り。
+  // 1 セルに複数 slot (赤 run 等) がある場合、value= の上書き事故を防ぐため
+  // このテンプレに全 slot の値を埋め込んで 1 回で書き込む。
+  cellTexts: Map<string, string>;
 } {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
@@ -1048,6 +1052,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
 
   const slots = new Map<number, string>();
   const slotPositions = new Map<number, XlsxSlotPosition>();
+  const cellTexts = new Map<string, string>();
   let slotId = 0;
   const lines: string[] = [];
 
@@ -1124,7 +1129,9 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
           // セル全体が可変 (空でも slot として登録 → 株主リスト等の空欄行で重要)
           slots.set(slotId, val);
           slotPositions.set(slotId, { ref, sheetName });
-          rowTexts.push(`［要入力_${slotId}］`);
+          const placeholder = `［要入力_${slotId}］`;
+          rowTexts.push(placeholder);
+          cellTexts.set(ref, placeholder);  // セル全体 = この 1 placeholder
           slotId++;
         } else if (val.trim() && siIndex >= 0 && redSiMap.has(siIndex)) {
           // 赤 run 含むセル: 赤部分だけ slot 化、他は固定文字として残す
@@ -1141,6 +1148,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
             }
           }
           rowTexts.push(cellText);
+          cellTexts.set(ref, cellText);  // 固定文 + 複数 placeholder のテンプレ
         } else if (val.trim()) {
           rowTexts.push(val);
         }
@@ -1148,7 +1156,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
       if (rowTexts.some(t => t.trim())) lines.push(rowTexts.join("\t"));
     }
   }
-  return { text: lines.join("\n"), slots, slotPositions };
+  return { text: lines.join("\n"), slots, slotPositions, cellTexts };
 }
 
 // Excelの全体テキストを★マーク付きで返す（旧方式、後方互換用）

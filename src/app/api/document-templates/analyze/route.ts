@@ -538,6 +538,7 @@ export async function POST(request: NextRequest) {
     slots: Map<number, string>;
     docxPositions?: Map<number, import("@/lib/docx-marker-parser").DocxSlotPosition>;
     xlsxPositions?: Map<number, import("@/lib/xlsx-marker-parser").XlsxSlotPosition>;
+    xlsxCellTexts?: Map<string, string>;   // xlsx セル単位再構築用
     starMarkedText: string;   // ★label★ 入り本文 (Step A の文脈把握用)
   };
   const classificationData: ClassData[] = [];
@@ -591,7 +592,7 @@ export async function POST(request: NextRequest) {
         } else if (isXlsx) {
           try {
             docBuf = await fs.readFile(f.path);
-            const { text, slots, slotPositions } = getXlsxMarkedTextWithSlots(docBuf);
+            const { text, slots, slotPositions, cellTexts } = getXlsxMarkedTextWithSlots(docBuf);
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -607,7 +608,7 @@ export async function POST(request: NextRequest) {
             });
             classificationData.push({
               templateFile: f.name, filePath: f.path, isXlsx: true,
-              labels: labels ?? null, slots, xlsxPositions: slotPositions, starMarkedText: markedText,
+              labels: labels ?? null, slots, xlsxPositions: slotPositions, xlsxCellTexts: cellTexts, starMarkedText: markedText,
             });
           } catch (e) {
             console.warn(`[analyze] xlsx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
@@ -1239,7 +1240,7 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
                 docxPositions: cd.docxPositions,
                 xlsxPositions: cd.xlsxPositions,
               });
-              const docs = generateFillCommands({ plan: tp, slots: resolved, valueTable: plan.valueTable, entityGroups: plan.entityGroups });
+              const docs = generateFillCommands({ plan: tp, slots: resolved, valueTable: plan.valueTable, entityGroups: plan.entityGroups, xlsxCellTexts: cd.xlsxCellTexts });
               const decisionsForTpl: Phase2DocumentDecision[] = docs.map((d) => ({
                 templateFile: tp.templateFile,
                 outputLabel: d.outputLabel,
