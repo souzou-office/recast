@@ -394,6 +394,46 @@ export interface OfficeCliCommandPayload {
   reason?: string;
 }
 
+// ============================================================
+// 仕分け式アーキテクチャ (classification-based fill) の型
+// ============================================================
+// 思想: AI は「判断」だけする (確定値を1つに決める + 各テンプレの扱いを仕分ける)。
+//       「同じ値を人数分コピペする」みたいな機械作業は recast がルールベースでやる。
+// これにより (1) コスト激減 (2) 書類間の整合性が構造的に保証される (3) 処理が可視化される。
+
+// Step A (AI 1回) の出力。
+export interface Phase2Plan {
+  // 案件レベルの確定値。label (labels.json の意味ラベル) → 確定した最終表記の値。
+  // 全書類がこの同じ表を引くので「ある書類は75万円、別は750,000円」が起きない。
+  valueTable: Record<string, string>;
+
+  // 人数分ループするテンプレ用の、エンティティ別データ。
+  entityGroups: EntityGroup[];
+
+  // 各テンプレの扱いの仕分け。
+  templatePlans: TemplatePlan[];
+}
+
+// 同質な複数エンティティの集まり (例: 個人株主7人、法人株主2社)。
+export interface EntityGroup {
+  groupId: string;                       // "個人株主" など (templatePlan が参照)
+  // 各エンティティ = label → 値 の表。
+  // 例 (個人): { "株主の氏名": "徳永優也", "株主の住所": "東京都...", "株主の株式数": "24,756" }
+  entities: Record<string, string>[];
+}
+
+export interface TemplatePlan {
+  templateFile: string;
+  mode: "fill" | "loop" | "ai";
+  // fill: 出力1通。全 slot を valueTable から機械で埋める
+  // loop: entityGroupId のエンティティ数だけ出力。共通 slot は valueTable、
+  //       エンティティ固有 slot は各 entity から (差し込み印刷)
+  // ai:   構造変化等で機械化できない → 従来通り AI に officeCommands を出させる
+  entityGroupId?: string;                // loop のとき必須: どの EntityGroup をループするか
+  outputLabelField?: string;             // loop のとき: outputLabel に使う entity のフィールド (例: "株主の氏名")
+  reason?: string;                       // ai のとき: なぜ機械化できないか (ログ・可視化用)
+}
+
 // 新スキーマ: 段落単位の操作 1 つ。AI が「どの段落をどうする」を 1 op で表現する。
 // 同じ idx に複数 op を入れない (1 段落 1 op の構造的保証)。
 //
