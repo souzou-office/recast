@@ -32,7 +32,6 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   };
   const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>([]);
   const [activeTabIdx, setActiveTabIdx] = useState(0);
-  const [tabListOpen, setTabListOpen] = useState(true);   // プレビュー左の書類一覧の開閉
   // 既存コードとの互換 wrapper (setPreviewFile 呼ばれたら同名タブを切替 or 追加)
   // 関数版 (prev => next) はアクティブタブの内容を更新する用途
   const setPreviewFile = (
@@ -1417,85 +1416,50 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       </div>
       </div>
 
-      {/* 右: プレビュー (タブはサイドバー型で縦に並ぶ、本体は右側) */}
-      {/* 幅 60% に拡張 (50% → 60%) してプレビューを見やすく */}
+      {/* 右: プレビュー (上部ドロップダウンで書類切替、本体はフル幅) */}
       {previewTabs.length > 0 && previewFile && (
-        <div className="flex w-[60%] min-w-0 border-l border-[var(--color-border-soft)] bg-[var(--color-panel)]">
-          {/* 畳んだ状態: 細いレール (展開ボタン + 件数) */}
-          {!tabListOpen && (
-            <div className="w-9 shrink-0 flex flex-col items-center gap-2 border-r border-[var(--color-border-soft)] bg-[var(--color-panel-soft)] py-2">
-              <button
-                onClick={() => setTabListOpen(true)}
-                className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-                title="書類一覧を開く"
+        <div className="flex flex-col w-[60%] min-w-0 border-l border-[var(--color-border-soft)] bg-[var(--color-panel)]">
+          {/* ドロップダウンヘッダー: 前へ / 選択 / 次へ / 全閉じる */}
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border-soft)] bg-[var(--color-panel-soft)] shrink-0">
+            <button
+              onClick={() => setActiveTabIdx(Math.max(0, activeTabIdx - 1))}
+              disabled={activeTabIdx === 0}
+              className="w-6 h-6 flex items-center justify-center rounded text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-30 disabled:cursor-default shrink-0"
+              title="前の書類"
+            ><Icon name="ChevronLeft" size={15} /></button>
+
+            <div className="relative flex-1 min-w-0">
+              <select
+                value={activeTabIdx}
+                onChange={(e) => setActiveTabIdx(Number(e.target.value))}
+                className="w-full appearance-none bg-[var(--color-panel)] border border-[var(--color-border-soft)] rounded-lg pl-3 pr-8 py-1.5 text-[12px] text-[var(--color-fg)] font-medium cursor-pointer hover:border-[var(--color-border)] focus:outline-none focus:border-[var(--color-accent)] truncate"
               >
-                <Icon name="PanelLeftOpen" size={16} />
-              </button>
-              <span className="text-[10px] text-[var(--color-fg-subtle)] font-medium">{previewTabs.length}</span>
+                {previewTabs.map((tab, idx) => (
+                  <option key={tab.fileName + idx} value={idx}>
+                    {idx + 1}. {tab.docName || tab.fileName}
+                  </option>
+                ))}
+              </select>
+              <Icon name="ChevronsUpDown" size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--color-fg-subtle)] pointer-events-none" />
             </div>
-          )}
-          {/* タブサイドバー — 縦に並べて全部見える (開いてる時) */}
-          {tabListOpen && (
-          <div className="w-[184px] shrink-0 flex flex-col border-r border-[var(--color-border-soft)] bg-[var(--color-panel-soft)]">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--color-border-soft)]">
-              <span className="text-[11px] text-[var(--color-fg-muted)] font-medium">書類 {previewTabs.length}件</span>
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => { setPreviewTabs([]); setActiveTabIdx(0); }}
-                  className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] transition-colors"
-                  title="全タブ閉じる"
-                >全閉</button>
-                <button
-                  onClick={() => setTabListOpen(false)}
-                  className="w-5 h-5 flex items-center justify-center rounded text-[var(--color-fg-subtle)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)]"
-                  title="一覧を畳む (プレビューを広く)"
-                >
-                  <Icon name="PanelLeftClose" size={14} />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
-              {previewTabs.map((tab, idx) => {
-                // 拡張子でアイコン + 色分け
-                const ext = (tab.fileName.split(".").pop() || "").toLowerCase();
-                const isXlsx = ext === "xlsx" || ext === "xls" || ext === "xlsm";
-                const isDocx = ext === "docx" || ext === "docm";
-                const iconName = isXlsx ? "FileSpreadsheet" : isDocx ? "FileText" : "File";
-                const iconColor = isXlsx ? "text-green-600" : isDocx ? "text-blue-600" : "text-gray-500";
-                const active = idx === activeTabIdx;
-                return (
-                  <div
-                    key={tab.fileName + idx}
-                    className={`group flex items-center gap-2 pl-2 pr-1.5 py-1.5 text-[11px] cursor-pointer rounded-lg transition-colors ${
-                      active
-                        ? "bg-[var(--color-panel)] text-[var(--color-fg)] font-medium shadow-sm ring-1 ring-[var(--color-border-soft)]"
-                        : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
-                    }`}
-                    onClick={() => setActiveTabIdx(idx)}
-                    title={tab.fileName}
-                  >
-                    <Icon name={iconName} size={13} className={`shrink-0 ${active ? iconColor : "text-[var(--color-fg-subtle)]"}`} />
-                    <span className="flex-1 truncate leading-tight">{tab.docName || tab.fileName}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setPreviewTabs((prev) => {
-                          const next = prev.filter((_, i) => i !== idx);
-                          if (activeTabIdx >= next.length) setActiveTabIdx(Math.max(0, next.length - 1));
-                          else if (activeTabIdx > idx) setActiveTabIdx(activeTabIdx - 1);
-                          return next;
-                        });
-                      }}
-                      className="opacity-0 group-hover:opacity-100 text-[var(--color-fg-subtle)] hover:text-[var(--color-danger-fg)] shrink-0 w-4 h-4 flex items-center justify-center rounded transition-opacity"
-                      title="閉じる"
-                    ><Icon name="X" size={11} /></button>
-                  </div>
-                );
-              })}
-            </div>
+
+            <span className="text-[11px] text-[var(--color-fg-subtle)] shrink-0 tabular-nums">{activeTabIdx + 1}/{previewTabs.length}</span>
+
+            <button
+              onClick={() => setActiveTabIdx(Math.min(previewTabs.length - 1, activeTabIdx + 1))}
+              disabled={activeTabIdx >= previewTabs.length - 1}
+              className="w-6 h-6 flex items-center justify-center rounded text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-30 disabled:cursor-default shrink-0"
+              title="次の書類"
+            ><Icon name="ChevronRight" size={15} /></button>
+
+            <button
+              onClick={() => { setPreviewTabs([]); setActiveTabIdx(0); }}
+              className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] shrink-0 px-1"
+              title="プレビューを閉じる"
+            >閉じる</button>
           </div>
-          )}
-          {/* アクティブタブの内容 (FilePreview はリサイザー + 本体の Fragment を返すので flex で横並べ) */}
+
+          {/* アクティブ書類の内容 (フル幅) */}
           <div className="flex-1 min-h-0 flex flex-col">
             <div className="flex-1 min-h-0 flex">
         <FilePreview
