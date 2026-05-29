@@ -240,7 +240,15 @@ const PHASE2_OFFICECLI_TOOL: Anthropic.Tool = {
     "  - 誤: { command:'set', path:'/株主リスト/B26', props:{ find:'★証明書の作成日★', replace:'...' } } ← 0 マッチで失敗" +
     "  - セル値に改行を含めたい時は value 内に \\n を入れる (officecli が改行セルとして扱う)" +
     "  - 塗りつぶし除去: --prop fill=FFFFFF (白で潰す)。docx の highlight=none は xlsx で無効" +
-    "  - 各セルを個別の set op で書き換える (1 行 = 5 セルなら 5 op)。1 op = 1 セル = value 指定",
+    "  - 各セルを個別の set op で書き換える (1 行 = 5 セルなら 5 op)。1 op = 1 セル = value 指定" +
+    "【docx の行追加 (add) は列ずれに注意 — 重要】" +
+    "  - add で段落を足すと **書式 (タブ位置・インデント・スタイル) が引き継がれず列がずれる**。" +
+    "  - ★まず既存段落の rewrite (set find/replace) で対応できないか考える★。" +
+    "    例: 法人テンプレの『商号』行を組合の『名称』行に変えるなら、商号段落を remove+add せず、" +
+    "    その段落を set find/replace で『商号 ○○』→『名　称　○○』にラベルごと書き換える (書式維持)。" +
+    "  - どうしても行を増やす場合 (組合で行数が足りない等) は、直前の同種段落と同じ見た目になるよう " +
+    "    add の props に style (例: その段落の styleId) と align を付ける。" +
+    "  - ラベルと値の間の字下げは、テンプレ既存行の全角スペースの個数をそのまま踏襲する。",
   input_schema: {
     type: "object",
     properties: {
