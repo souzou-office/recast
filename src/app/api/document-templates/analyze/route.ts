@@ -51,6 +51,12 @@ function useOfficeCliEngine(): boolean {
   return process.env.RECAST_ENGINE === "officecli";
 }
 
+// 仕分け式アーキテクチャ (Step A 確定値表 + ルール機械生成 + ai 退避) を使うか。
+// officecli モード前提。RECAST_FILL_MODE=legacy で旧 (書類ごと AI 全生成) に戻せる。
+function useClassificationMode(): boolean {
+  return useOfficeCliEngine() && process.env.RECAST_FILL_MODE !== "legacy";
+}
+
 // === officecli モード用: 必要情報だけ抽出 ===
 // aiMessages 全体を送ると 30k+ トークン (添付 PDF/画像、tool_use 往復、テンプレ二度送り 等)。
 // Call 2 が必要なのは:
@@ -522,6 +528,19 @@ export async function POST(request: NextRequest) {
   // ファイル名と本文をペアで保持する。Call 1 では join、Call 2 では Map で引く。
   const templateBlocks: { templateFile: string; body: string }[] = [];
   const templateStructures: { templateFile: string; markedText: string }[] = [];
+  // 仕分け式アーキテクチャ用: テンプレごとに「パーサーの slots/位置 + labels + ★label★本文」を捕捉。
+  // Step A (確定値表+仕分け) → ルール生成器 に渡す材料。
+  type ClassData = {
+    templateFile: string;
+    filePath: string;
+    isXlsx: boolean;
+    labels: import("@/lib/template-labels").TemplateLabels | null;
+    slots: Map<number, string>;
+    docxPositions?: Map<number, import("@/lib/docx-marker-parser").DocxSlotPosition>;
+    xlsxPositions?: Map<number, import("@/lib/xlsx-marker-parser").XlsxSlotPosition>;
+    starMarkedText: string;   // ★label★ 入り本文 (Step A の文脈把握用)
+  };
+  const classificationData: ClassData[] = [];
   if (templateFolderPath) {
     try {
       const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
@@ -548,7 +567,7 @@ export async function POST(request: NextRequest) {
         if (ext === "docx" || ext === "docm") {
           try {
             docBuf = await fs.readFile(f.path);
-            const { text } = getMarkedDocumentTextWithSlots(docBuf);
+            const { text, slots, slotPositions } = getMarkedDocumentTextWithSlots(docBuf);
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -562,13 +581,17 @@ export async function POST(request: NextRequest) {
               const lbl = labelById.get(id) || `要入力_${id}`;
               return `★${lbl}★`;
             });
+            classificationData.push({
+              templateFile: f.name, filePath: f.path, isXlsx: false,
+              labels: labels ?? null, slots, docxPositions: slotPositions, starMarkedText: markedText,
+            });
           } catch (e) {
             console.warn(`[analyze] docx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
           }
         } else if (isXlsx) {
           try {
             docBuf = await fs.readFile(f.path);
-            const { text } = getXlsxMarkedTextWithSlots(docBuf);
+            const { text, slots, slotPositions } = getXlsxMarkedTextWithSlots(docBuf);
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -581,6 +604,10 @@ export async function POST(request: NextRequest) {
               const id = Number(idStr);
               const lbl = labelById.get(id) || `要入力_${id}`;
               return `★${lbl}★`;
+            });
+            classificationData.push({
+              templateFile: f.name, filePath: f.path, isXlsx: true,
+              labels: labels ?? null, slots, xlsxPositions: slotPositions, starMarkedText: markedText,
             });
           } catch (e) {
             console.warn(`[analyze] xlsx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
@@ -1165,7 +1192,78 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
           // → 1 つ目を先に実行して cache 作成 → 残り並列で cacheRead (10倍安い)。
           // 時間: 完全並列なら N 秒、半並列なら 2N 秒 (1 件分待ち + 残り並列)。コスト 1/3 になる。
           let docResults: Phase2DocumentDecision[][];
-          if (templateBlocks.length === 0) {
+          if (useClassificationMode() && classificationData.length > 0) {
+            // ===== 仕分け式: Step A (確定値表+仕分け) → fill/loop は機械生成、ai は従来 AI =====
+            send(controller, { type: "stage", stage: "structuring" });
+            send(controller, { type: "text", text: "仕分けモード: 確定値表を作成中...\n" });
+            const { runPhase2Planning } = await import("@/lib/phase2-plan");
+            const { resolveSlots, generateFillCommands } = await import("@/lib/fill-command-generator");
+
+            const planTemplates = classificationData.map((c) => ({
+              templateFile: c.templateFile,
+              markedText: c.starMarkedText,
+              labels: (c.labels?.slots || [])
+                .filter((s) => s.label && s.label !== "不明")
+                .map((s) => ({ label: s.label, format: s.format, sourceHint: s.sourceHint, oldValue: c.slots.get(s.slotId) })),
+            }));
+
+            const organizeForPlan = await loadOrganizeResult(company.id, threadId);
+            const caseContextForPlan = extractEssentialContext(messagesWithUserTurn, organizeForPlan);
+            const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates });
+            send(controller, {
+              type: "text",
+              text: `確定値 ${Object.keys(plan.valueTable).length}件 / エンティティ ${plan.entityGroups.map((g) => `${g.groupId}:${g.entities.length}`).join(", ")}\n`,
+            });
+
+            const byFile = new Map(classificationData.map((c) => [c.templateFile, c]));
+            const results: Phase2DocumentDecision[][] = [];
+            const aiTemplates: { templateFile: string; body: string }[] = [];
+
+            for (const tp of plan.templatePlans) {
+              const cd = byFile.get(tp.templateFile);
+              if (!cd || !cd.labels) {
+                send(controller, { type: "text", text: `  ${tp.templateFile}: メタ無し → skip\n` });
+                continue;
+              }
+              if (tp.mode === "ai") {
+                // 構造変化 (組合等) は従来 AI に委譲
+                send(controller, { type: "text", text: `  ${tp.templateFile}: [AI個別] ${tp.reason || ""}\n` });
+                const block = templateBlocks.find((b) => b.templateFile === tp.templateFile);
+                if (block) aiTemplates.push(block);
+                continue;
+              }
+              // fill / loop → 機械生成
+              const resolved = resolveSlots({
+                labels: cd.labels,
+                slots: cd.slots,
+                docxPositions: cd.docxPositions,
+                xlsxPositions: cd.xlsxPositions,
+              });
+              const docs = generateFillCommands({ plan: tp, slots: resolved, valueTable: plan.valueTable, entityGroups: plan.entityGroups });
+              const decisionsForTpl: Phase2DocumentDecision[] = docs.map((d) => ({
+                templateFile: tp.templateFile,
+                outputLabel: d.outputLabel,
+                officeCommands: d.commands as Phase2DocumentDecision["officeCommands"],
+              }));
+              results.push(decisionsForTpl);
+              const totalCmds = docs.reduce((s, d) => s + d.commands.length, 0);
+              const unresolved = [...new Set(docs.flatMap((d) => d.unresolvedLabels))];
+              send(controller, {
+                type: "text",
+                text: `  ${tp.templateFile}: ${tp.mode} ${docs.length}通 ${totalCmds}コマンド機械生成${unresolved.length ? ` (未解決: ${unresolved.slice(0, 3).join(", ")})` : ""}\n`,
+              });
+            }
+
+            // ai モードのテンプレだけ従来 AI で生成
+            if (aiTemplates.length > 0) {
+              send(controller, { type: "text", text: `AI個別生成 ${aiTemplates.length}件...\n` });
+              const aiResults = await Promise.all(
+                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body))
+              );
+              results.push(...aiResults);
+            }
+            docResults = results;
+          } else if (templateBlocks.length === 0) {
             docResults = [];
           } else if (templateBlocks.length === 1) {
             docResults = [await runPhase2ForDocument(templateBlocks[0].templateFile, templateBlocks[0].body)];
