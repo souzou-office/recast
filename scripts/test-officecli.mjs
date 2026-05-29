@@ -172,6 +172,67 @@ async function main() {
   info(`結果ファイル: ${workCopy}`);
   info(`Word で開く場合: start ${workCopy}`);
 
+  // ============== 追加シナリオ: highlight=none で黄色除去 ==============
+  console.log();
+  info("Step 6: highlight=none で黄色マーカー除去確認");
+  const workCopy2 = await copyToTemp(TEMPLATE);
+  await runOfficeCli(buildArgs(workCopy2, {
+    command: "set",
+    path: "/body/p[@paraId=064BAB11]",
+    props: { find: "令和８年２月１１日", replace: "令和８年６月１日", highlight: "none" },
+  }));
+  await runOfficeCli(["close", workCopy2]).catch(() => {});
+  // 該当 paraId に yellow run が残ってないか確認
+  const yellowResult = await runOfficeCli(["query", workCopy2, "run[highlight=yellow]"]);
+  const yellowAtPara = yellowResult.stdout.split("\n").filter(l => l.includes("064BAB11"));
+  assert(yellowAtPara.length === 0, `paraId=064BAB11 の黄色ハイライトが除去された (残り ${yellowAtPara.length} 個)`);
+
+  // ============== 追加シナリオ: xlsx セル set ==============
+  console.log();
+  info("Step 7: xlsx セル単体 set 確認");
+  const XLSX_TEMPLATE = "H:\\共有ドライブ\\司法書士法人そうぞう共有フォルダ\\テンプレート\\取締役就任(取締役1人から複数人)\\4.株主リスト.xlsx";
+  // 別パターンのテンプレ名も試す (括弧の半角/全角揺れ対応)
+  const XLSX_TEMPLATE_FULLWIDTH = "H:\\共有ドライブ\\司法書士法人そうぞう共有フォルダ\\テンプレート\\取締役就任(取締役1人から複数人)\\4.株主リスト.xlsx";
+  let xlsxPath = XLSX_TEMPLATE;
+  try { await stat(xlsxPath); } catch {
+    try { await stat(XLSX_TEMPLATE_FULLWIDTH); xlsxPath = XLSX_TEMPLATE_FULLWIDTH; } catch {
+      // 全角括弧
+      xlsxPath = "H:\\共有ドライブ\\司法書士法人そうぞう共有フォルダ\\テンプレート\\取締役就任(取締役1人から複数人)\\4.株主リスト.xlsx".replace("(", "（").replace(")", "）");
+    }
+  }
+
+  try {
+    await stat(xlsxPath);
+    const xlsxWork = await copyToTemp(xlsxPath);
+    // シート名取得
+    const outline = await runOfficeCli(["view", xlsxWork, "outline"]);
+    const sheetMatch = outline.stdout.match(/├── "([^"]+)"/);
+    const sheetName = sheetMatch ? sheetMatch[1] : null;
+    assert(!!sheetName, `xlsx シート名取得: ${sheetName}`);
+
+    if (sheetName) {
+      // セル B14 を set
+      const setResult = await runOfficeCli(buildArgs(xlsxWork, {
+        command: "set",
+        path: `/${sheetName}/B14`,
+        props: { value: "テスト氏名", fill: "FFFFFF" },
+      }));
+      assert(setResult.exitCode === 0, `xlsx B14 セル set 成功`);
+
+      // 結果検証
+      await runOfficeCli(["close", xlsxWork]).catch(() => {});
+      const verifyResult = await runOfficeCli(["get", xlsxWork, `/${sheetName}/B14`]);
+      assert(verifyResult.stdout.includes("テスト氏名"), `B14 セルに "テスト氏名" が入った`);
+
+      // 塗りつぶしが白になったか確認
+      const fillResult = await runOfficeCli(["get", xlsxWork, `/${sheetName}/B14`]);
+      const hasYellow = /fill=#?FFFF00/i.test(fillResult.stdout);
+      assert(!hasYellow, `B14 セルの黄色塗りつぶしが除去された`);
+    }
+  } catch (e) {
+    warn(`xlsx テストスキップ (テンプレ見つからず): ${e.message}`);
+  }
+
   // 結果
   console.log();
   if (failures === 0) {

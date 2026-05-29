@@ -435,6 +435,14 @@ export interface ChatThread {
   // Phase 2 で確定した「テンプレに入れる値・削除する議案・残る要確認」。
   // clarify-procedural と produce の両方が参照する。
   phase2Decisions?: Phase2Decisions;
+  // Phase 1 (organize) の整理結果。
+  //   - markdown: 人間用の整理 (チャットに表示)
+  //   - structured: Tool Use で AI が出した構造化 JSON。Phase 2-A / Phase 2 / verify が
+  //     会話履歴を引き継がず、これだけを参照する設計 (疎結合 + トークン削減)。
+  organizeResult?: {
+    markdown: string;
+    structured: unknown;  // ExecuteOrganizeResult (将来的に型付け、現状 unknown)
+  };
   // 1案件=1会話: 案件整理→質問→書類生成→検証 を Claude の同じ会話履歴で進める
   // （別人感をなくし、各ステップが前段の判断・迷いを継承するため）
   aiMessages?: CaseAiMessage[];

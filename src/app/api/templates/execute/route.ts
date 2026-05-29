@@ -43,6 +43,83 @@ const READ_COMMON_FILE_TOOL = {
     required: ["path"],
   },
 };
+
+// AI に「整理結果を構造化 JSON で出力」させる Tool。
+// 整理 markdown とは別に、Phase 2 が機械的に引き出せる形 (key:value, list) で確定値を出す。
+// これにより Phase 2 が markdown を読み解く必要がなくなる → 誤判定減 + トークン激減。
+const SUBMIT_ORGANIZE_RESULT_TOOL = {
+  name: "submit_organize_result",
+  description:
+    "案件整理の確定値を構造化 JSON で提出する。Phase 2 (穴埋め) がこれを使って各 ★label★ に値を埋める。" +
+    "整理 markdown を書き終えた**最後に必ず**呼ぶ。markdown と JSON 両方が後段で使われる。",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      summary: { type: "string", description: "案件の 1-2 行要約 (例: 取締役 1 名追加選任 + 代取選定)" },
+      caseType: { type: "string", description: "手続き種別 (例: 取締役就任、募集株式発行)" },
+      company: {
+        type: "object",
+        description: "発行会社の情報",
+        properties: {
+          name: { type: "string", description: "会社名 (登記簿表記、全角/半角は登記通り)" },
+          address: { type: "string", description: "本店所在地" },
+          totalShares: { type: "string", description: "発行済株式総数" },
+          totalVotes: { type: "string", description: "総議決権数" },
+        },
+      },
+      keyDates: {
+        type: "object",
+        description: "重要な日付 (key: value)。例: meetingDate, decisionDate, paymentDate 等",
+        additionalProperties: { type: "string" },
+      },
+      parties: {
+        type: "array",
+        description:
+          "登場人物。role は最低限の役職のみ: 代表取締役 / 新任取締役 / 株主 / 引受人 / 監査役 等。" +
+          "【厳守】個人/法人/組合の分類は絶対にしない。" +
+          "**株主は全員 'role: 株主'** (法人株主・組合株主・個人株主 等の分類禁止)。" +
+          "法人格を持つ株主 (会社・組合) の特殊属性 (代表者・組合員構成等) は representative と note に書く。" +
+          "テンプレへの振り分けは Phase 2 (analyze) で AI が共通ルール参照で判断するので、" +
+          "ここで分類しなくていい。",
+        items: {
+          type: "object",
+          properties: {
+            role: {
+              type: "string",
+              description:
+                "役職名 (代表取締役 / 新任取締役 / 株主 / 引受人 等)。" +
+                "株主は法人でも個人でも組合でも全員 'role: 株主'。",
+            },
+            name: { type: "string", description: "氏名または法人名 (確定済みの正式表記)" },
+            address: { type: "string", description: "住所 (代取住所と株主住所が違う場合は別 entry で書く)" },
+            shares: { type: "string", description: "株主の場合: 株式数 (例: 24756)" },
+            votes: { type: "string", description: "株主の場合: 議決権数" },
+            ratio: { type: "string", description: "株主の場合: 議決権割合 (例: 78.40%)" },
+            representative: { type: "string", description: "法人格を持つ株主の場合: 代表者氏名" },
+            note: {
+              type: "string",
+              description:
+                "備考。法人格 (会社・組合) の株主はここに「法人」「組合 (無限責任組合員: XX、組合員: YY)」など明示。" +
+                "個人株主は備考なしで OK。",
+            },
+          },
+          required: ["role"],
+        },
+      },
+      values: {
+        type: "object",
+        description: "その他確定値 (key: value 形式)。例: 役員報酬, 支給開始時期, 払込金額, 等",
+        additionalProperties: { type: "string" },
+      },
+      uncertainties: {
+        type: "array",
+        description: "Phase 2-A で質問するべき要確認事項 (確定できなかったもの)",
+        items: { type: "string" },
+      },
+    },
+    required: ["summary", "caseType"],
+  },
+};
 import { logTokenUsage } from "@/lib/token-logger";
 import {
   loadAiMessages,
@@ -243,6 +320,9 @@ tool を呼んでいいのは、両方を読んだ上で **「この値が明確
 案件資料を **全部読んで** 実体を整理してください。司法書士が「これ何の案件？事実関係どうなってる？」を
 把握するための整理。
 
+**整理が終わったら必ず最後に \`submit_organize_result\` ツールを呼んで構造化 JSON を提出すること**。
+JSON は Phase 2 (穴埋め) が機械的に値を引き出すのに使う。markdown 整理だけで終わらない。
+
 ### 整理のポイント
 
 - 案件構造の判断（例: 第三者割当 / 株主割当、現金 / 現物、特別決議要件の充足等）
@@ -369,15 +449,17 @@ ${allTexts.join("\n\n")}`;
 
           // tool use ループ: AI が read_common_file を呼んだら、サーバ側でファイル内容を
           // 取得して tool_result で返す。最大 6 回まで反復（暴走防止）。
-          const MAX_ITERATIONS = 6;
+          // 最後に AI が submit_organize_result を呼んで構造化 JSON を提出 → ループ終了。
+          const MAX_ITERATIONS = 8;
           let workingMessages = toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[];
           let lastFinalText = "";
+          let organizeResultStructured: unknown = null;
           for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
             const aiStream = client.messages.stream({
               model: MODEL,
               max_tokens: 8192,
               temperature: 0,
-              tools: [READ_COMMON_FILE_TOOL],
+              tools: [READ_COMMON_FILE_TOOL, SUBMIT_ORGANIZE_RESULT_TOOL],
               messages: workingMessages,
             });
 
@@ -398,6 +480,17 @@ ${allTexts.join("\n\n")}`;
               .map(b => b.text)
               .join("\n");
 
+            // submit_organize_result が呼ばれたら整理完了 → 構造化 JSON を取り出してループ終了
+            const submitBlock = final.content.find(
+              (b): b is Extract<typeof b, { type: "tool_use" }> =>
+                b.type === "tool_use" && b.name === "submit_organize_result"
+            );
+            if (submitBlock) {
+              organizeResultStructured = submitBlock.input;
+              send(controller, { type: "stage", stage: "organize-completed" });
+              break;
+            }
+
             if (final.stop_reason !== "tool_use") {
               break;
             }
@@ -408,6 +501,10 @@ ${allTexts.join("\n\n")}`;
             const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
             for (const block of final.content) {
               if (block.type !== "tool_use") continue;
+              if (block.name === "submit_organize_result") {
+                // 上の早期 break で処理済み (理論上ここに来ない)
+                continue;
+              }
               const reqPath = (block.input as { path?: string })?.path || "";
               const fileName = reqPath.split(/[\\/]/).pop() || reqPath;
               send(controller, { type: "stage", stage: "reading-file" });
@@ -457,6 +554,32 @@ ${allTexts.join("\n\n")}`;
           if (threadId) {
             const finalMessages = appendAssistantTurn(messagesWithUserTurn, lastFinalText, "organize");
             await saveAiMessages(company.id, threadId, finalMessages);
+
+            // 整理結果の構造化 JSON を thread.organizeResult に保存。
+            // Phase 2-A / Phase 2 はここから必要な値だけ引き出す (会話履歴を引き継がない設計)。
+            if (organizeResultStructured) {
+              try {
+                const fsLib = await import("fs/promises");
+                const nodePath = await import("path");
+                // eslint-disable-next-line @typescript-eslint/no-require-imports
+                const crypto = require("crypto");
+                const companyHash = crypto.createHash("md5").update(company.id).digest("hex");
+                const threadFile = nodePath.default.join(process.cwd(), "data", "chat-threads", companyHash, `${threadId}.json`);
+                const raw = await fsLib.default.readFile(threadFile, "utf-8");
+                const threadData = JSON.parse(raw);
+                threadData.organizeResult = {
+                  markdown: lastFinalText,
+                  structured: organizeResultStructured,
+                };
+                threadData.updatedAt = new Date().toISOString();
+                await fsLib.default.writeFile(threadFile, JSON.stringify(threadData, null, 2), "utf-8");
+                console.log(`[execute] organizeResult.structured saved (${JSON.stringify(organizeResultStructured).length} chars)`);
+              } catch (e) {
+                console.warn("[execute] organizeResult save failed:", e instanceof Error ? e.message : e);
+              }
+            } else {
+              console.warn("[execute] submit_organize_result が呼ばれずに終了。Phase 2 は markdown だけ使う (機能低下)");
+            }
           }
 
           send(controller, { type: "done" });

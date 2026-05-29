@@ -1,299 +1,185 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+// 書類プレビューパネル — 1 タブ分の表示を担当。
+//
+// 表示エンジンの振り分け (拡張子で判定):
+//   - docx / docm / xls / xlsx / xlsm → /api/workspace/preview-html (OfficeCLI screenshot → PNG)
+//   - pdf                              → /api/workspace/raw-file (ブラウザネイティブ表示)
+//   - 画像 (png/jpg/jpeg/gif/webp)     → /api/workspace/raw-file (img タグ)
+//   - html / htm                       → /api/workspace/raw-file (iframe)
+//   - その他 (txt 等)                  → /api/workspace/read-file (テキスト表示)
+//
+// 設計方針:
+//   - LibreOffice ・ docx-preview ・ sheetjs 等のクライアント側レンダリングは廃止 (OfficeCLI 一本化)
+//   - キャッシュは src/lib/preview-cache.ts、サーバ側にも同等のキャッシュあり
+//   - キャッシュヒット時はローディング状態を挟まない (タブ切替のフリッカー対策)
+
+import { useState, useEffect, useRef } from "react";
 import DocumentValueEditor from "./DocumentValueEditor";
-import type { FilledSlot } from "@/types";
+import type { FilledSlot, CheckIssue } from "@/types";
+import { getCacheKey, getCached, setCached } from "@/lib/preview-cache";
+
+const OFFICE_EXTS = new Set([".docx", ".docm", ".xls", ".xlsx", ".xlsm"]);
+const PDF_EXTS = new Set([".pdf"]);
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
+const HTML_EXTS = new Set([".html", ".htm"]);
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 interface Props {
   filePath?: string;
+  docxBase64?: string;
   fileName: string;
   onClose: () => void;
-  docxBase64?: string;
-  // 値の編集タブ用（生成済み書類でのみ有効）
+  // 値の編集タブ用 (生成済み書類のみ)
   filledSlots?: FilledSlot[];
   templatePath?: string;
   companyId?: string;
   threadId?: string;
-  verifyIssues?: { docName: string; issues: import("@/types").CheckIssue[] }[];
+  verifyIssues?: { docName: string; issues: CheckIssue[] }[];
   onRegenerated?: (docxBase64: string, filledSlots: FilledSlot[]) => void;
   onSaveValues?: (filledSlots: FilledSlot[]) => void;
   onIssueAcknowledge?: (slotId: number, acknowledged: boolean) => void;
 }
 
-const RAW_VIEWABLE = new Set([".pdf", ".png", ".jpg", ".jpeg", ".gif", ".html", ".htm"]);
-// ブラウザ側で直接レンダリングできる Word（docx-preview で処理）
-const BROWSER_DOCX = new Set([".docx", ".docm"]);
-// LibreOffice が必要な古い Word / PowerPoint
-const SERVER_DOCX = new Set([".doc", ".odt", ".ppt", ".pptx"]);
-const EXCEL_EXTS = new Set([".xls", ".xlsx", ".ods"]);
+type ViewState =
+  | { kind: "loading" }
+  | { kind: "html"; html: string }            // iframe srcDoc (PNG 埋め込み HTML)
+  | { kind: "url"; url: string; mime: "pdf" | "image" | "html" }  // raw blob 経由
+  | { kind: "text"; text: string }            // テキスト系
+  | { kind: "error"; message: string }
+  | { kind: "unsupported"; ext: string };
 
-function base64ToUint8(base64: string): Uint8Array {
-  const byteChars = atob(base64);
-  const byteArray = new Uint8Array(byteChars.length);
-  for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);
-  return byteArray;
+function base64ToUint8(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
+function getExt(fileName: string): string {
+  const m = fileName.match(/\.[^./\\]+$/);
+  return m ? m[0].toLowerCase() : "";
 }
 
 export default function FilePreview({
-  filePath, fileName, onClose, docxBase64,
-  filledSlots, templatePath, companyId, threadId, verifyIssues, onRegenerated, onSaveValues, onIssueAcknowledge,
+  filePath, docxBase64, fileName, onClose,
+  filledSlots, templatePath, companyId, threadId, verifyIssues,
+  onRegenerated, onSaveValues, onIssueAcknowledge,
 }: Props) {
-  const ext = `.${(fileName.split(".").pop() || "").toLowerCase()}`;
-  const isRawViewable = RAW_VIEWABLE.has(ext);
-  const isBrowserDocx = BROWSER_DOCX.has(ext);
-  const isServerDocx = SERVER_DOCX.has(ext);
-  const isExcel = EXCEL_EXTS.has(ext);
-
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [textContent, setTextContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [width, setWidth] = useState(50); // パーセント。チャットとプレビュー半々がデフォルト。ドラッグで 20〜90% の範囲で調整可。
-  const docxContainerRef = useRef<HTMLDivElement | null>(null);
-
-  // 値の編集タブ
+  const [state, setState] = useState<ViewState>({ kind: "loading" });
   const canEdit = !!(filledSlots && templatePath && companyId && onRegenerated);
   const [activeTab, setActiveTab] = useState<"preview" | "edit">("preview");
 
-  const handleDragStart = useCallback(() => {
-    const handleMove = (e: MouseEvent) => {
-      const container = document.getElementById("main-content-area");
-      if (!container) return;
-      const rect = container.getBoundingClientRect();
-      const pct = 100 - ((e.clientX - rect.left) / rect.width) * 100;
-      setWidth(Math.max(20, Math.min(90, pct)));
-    };
-    const handleUp = () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", handleMove);
-      document.removeEventListener("mouseup", handleUp);
-    };
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", handleMove);
-    document.addEventListener("mouseup", handleUp);
-  }, []);
-
-  // docx のブラウザ側レンダリング
-  const renderDocxInBrowser = useCallback(async (buffer: ArrayBuffer | Uint8Array) => {
-    if (!docxContainerRef.current) return;
-    docxContainerRef.current.innerHTML = ""; // クリア
-    try {
-      const { renderAsync } = await import("docx-preview");
-      await renderAsync(buffer, docxContainerRef.current, undefined, {
-        className: "docx-preview",
-        inWrapper: true,
-        ignoreWidth: false,
-        ignoreHeight: false,
-        breakPages: true,
-      });
-    } catch (err) {
-      if (docxContainerRef.current) {
-        docxContainerRef.current.textContent = `プレビューに失敗しました: ${err instanceof Error ? err.message : String(err)}`;
-      }
+  // URL.createObjectURL で作った URL を後始末するための ref
+  const objectUrlRef = useRef<string | null>(null);
+  const revokeObjectUrl = () => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
     }
-  }, []);
-
-  // xlsx のブラウザ側レンダリング（sheetjs で HTML に変換）
-  // 現在は生成 xlsx プレビューでは未使用（LibreOffice PDF 変換に移行）。
-  // 将来ブラウザ側描画に戻す可能性に備えて残している。
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _renderXlsxInBrowserAsHtml = useCallback(async (buffer: Uint8Array): Promise<string> => {
-    const XLSX = await import("xlsx");
-    const wb = XLSX.read(buffer, { type: "array", cellStyles: true });
-    const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-    const parts: string[] = [];
-    for (const name of wb.SheetNames) {
-      const ws = wb.Sheets[name];
-      const ref = ws["!ref"];
-      if (!ref) continue;
-      const range = XLSX.utils.decode_range(ref);
-
-      // セル結合のマップ: "r,c" → { rowspan, colspan } or "skip"
-      const merges = (ws["!merges"] || []) as { s: { r: number; c: number }; e: { r: number; c: number } }[];
-      const mergeInfo: Record<string, { rowspan: number; colspan: number } | "skip"> = {};
-      for (const m of merges) {
-        const rowspan = m.e.r - m.s.r + 1;
-        const colspan = m.e.c - m.s.c + 1;
-        mergeInfo[`${m.s.r},${m.s.c}`] = { rowspan, colspan };
-        for (let r = m.s.r; r <= m.e.r; r++) {
-          for (let c = m.s.c; c <= m.e.c; c++) {
-            if (r === m.s.r && c === m.s.c) continue;
-            mergeInfo[`${r},${c}`] = "skip";
-          }
-        }
-      }
-
-      // 列幅（Excel の wch / wpx 単位を CSS 幅に変換）
-      const cols = (ws["!cols"] || []) as { wpx?: number; wch?: number }[];
-      const colWidths: string[] = [];
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const col = cols[c];
-        if (col?.wpx) colWidths.push(`${col.wpx}px`);
-        else if (col?.wch) colWidths.push(`${Math.round(col.wch * 7.5)}px`); // wch ≒ 文字数、1文字 ~7.5px
-        else colWidths.push("auto");
-      }
-
-      const rows: string[] = [];
-      for (let r = range.s.r; r <= range.e.r; r++) {
-        const cells: string[] = [];
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const info = mergeInfo[`${r},${c}`];
-          if (info === "skip") continue;
-          const addr = XLSX.utils.encode_cell({ r, c });
-          const cell = ws[addr];
-          const value = cell ? (cell.w ?? cell.v ?? "") : "";
-          const span = info
-            ? `${info.rowspan > 1 ? ` rowspan="${info.rowspan}"` : ""}${info.colspan > 1 ? ` colspan="${info.colspan}"` : ""}`
-            : "";
-          // 簡易スタイル: 太字・配置・背景色・文字色（cellStyles: true で取れたもののみ）
-          const style = cell?.s as { font?: { bold?: boolean; color?: { rgb?: string } }; alignment?: { horizontal?: string; vertical?: string }; fgColor?: { rgb?: string }; fill?: { fgColor?: { rgb?: string } } } | undefined;
-          const styleParts: string[] = [];
-          if (style?.font?.bold) styleParts.push("font-weight:600");
-          if (style?.font?.color?.rgb) styleParts.push(`color:#${style.font.color.rgb.slice(-6)}`);
-          if (style?.alignment?.horizontal) styleParts.push(`text-align:${style.alignment.horizontal}`);
-          if (style?.alignment?.vertical) styleParts.push(`vertical-align:${style.alignment.vertical === "center" ? "middle" : style.alignment.vertical}`);
-          const bg = style?.fill?.fgColor?.rgb || style?.fgColor?.rgb;
-          if (bg && bg !== "FFFFFF" && bg !== "FFFFFFFF") styleParts.push(`background:#${bg.slice(-6)}`);
-          const styleAttr = styleParts.length > 0 ? ` style="${styleParts.join(";")}"` : "";
-          cells.push(`<td${span}${styleAttr}>${esc(String(value))}</td>`);
-        }
-        rows.push(`<tr>${cells.join("")}</tr>`);
-      }
-
-      const colgroup = `<colgroup>${colWidths.map(w => `<col style="width:${w}">`).join("")}</colgroup>`;
-      parts.push(`<h3>${esc(name)}</h3><table>${colgroup}${rows.join("")}</table>`);
-    }
-
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-/* iframe のネイティブスクロール (html 要素) に任せる。body に overflow を書くと逆に阻害される */
-html,body{margin:0;padding:0;background:#fff;color:#111}
-body{padding:12px;font:12px -apple-system,system-ui,sans-serif}
-h3{margin:16px 8px 4px;font:600 13px -apple-system,system-ui,sans-serif;color:#555}
-/* width:max-content でテーブルが列幅の合計分まで広がる → viewport を超えれば iframe が横スクロール */
-table{border-collapse:collapse;margin:0 8px 16px;width:max-content;max-width:none;table-layout:auto}
-td{border:1px solid #ddd;padding:4px 6px;vertical-align:top;white-space:nowrap}
-col{min-width:60px}
-</style></head><body>${parts.join("")}</body></html>`;
-  }, []);
+  };
 
   useEffect(() => {
-    setLoading(true);
-    setBlobUrl(null);
-    setTextContent(null);
+    const ext = getExt(fileName);
+    let cancelled = false;
 
-    // base64 から直接レンダリング（ファイル種類で分岐）
-    if (docxBase64) {
-      // xlsx / xlsm / xls は sheetjs の HTML 表示ではスクロール等が厳しいので、
-      // LibreOffice で PDF に変換して表示する（Word の既存ルートと同じ）。
-      if (isExcel) {
-        fetch("/api/workspace/preview-pdf", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ base64: docxBase64, fileName }),
-        })
-          .then(async (res) => {
-            if (!res.ok) throw new Error(`PDF 変換失敗 (${res.status})`);
-            const blob = await res.blob();
-            setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
-          })
-          .catch((err) => setTextContent(`プレビューに失敗しました: ${err instanceof Error ? err.message : String(err)}`))
-          .finally(() => setLoading(false));
-        return;
+    // -- Office 系 (docx / xlsx) → preview-html route --
+    if (OFFICE_EXTS.has(ext)) {
+      const key = getCacheKey({ filePath, docxBase64 });
+      const cached = key ? getCached(key) : undefined;
+      if (cached) {
+        // キャッシュヒット: loading 表示を挟まずに即時切替 (フリッカー回避)
+        setState({ kind: "html", html: cached });
+        return () => { cancelled = true; };
       }
-      // docx / docm（default） → docx-preview でレンダリング
-      (async () => {
-        try {
-          const bytes = base64ToUint8(docxBase64);
-          await renderDocxInBrowser(bytes);
-        } finally {
-          setLoading(false);
-        }
-      })();
-      return;
-    }
-
-    if (!filePath) { setLoading(false); return; }
-
-    if (isRawViewable) {
-      fetch("/api/workspace/raw-file", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: filePath }),
-      })
-        .then(async (res) => {
-          if (!res.ok) throw new Error();
-          const blob = await res.blob();
-          setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
-        })
-        .catch(() => setTextContent("ファイルを読み取れませんでした"))
-        .finally(() => setLoading(false));
-    } else if (isBrowserDocx) {
-      // docx/docm → ブラウザで直接レンダリング
-      fetch("/api/workspace/raw-file", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: filePath }),
-      })
-        .then(async (res) => {
-          if (!res.ok) throw new Error();
-          const buf = await res.arrayBuffer();
-          await renderDocxInBrowser(buf);
-        })
-        .catch(() => setTextContent("プレビューに失敗しました"))
-        .finally(() => setLoading(false));
-    } else if (isServerDocx) {
-      // .doc / .ppt / .odt → LibreOffice 経由（docx-preview は非対応）
-      fetch("/api/workspace/preview-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: filePath }),
-      })
-        .then(async (res) => {
-          if (!res.ok) throw new Error();
-          const blob = await res.blob();
-          setBlobUrl(URL.createObjectURL(blob) + "#toolbar=1&navpanes=0&view=FitH");
-        })
-        .catch(() => setTextContent("プレビューに失敗しました"))
-        .finally(() => setLoading(false));
-    } else if (isExcel) {
-      // Excel → LibreOfficeでHTML変換
+      setState({ kind: "loading" });
       fetch("/api/workspace/preview-html", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: filePath }),
+        body: JSON.stringify({ path: filePath, docxBase64, fileName }),
       })
         .then(r => r.json())
         .then(data => {
-          if (data.html) setBlobUrl("html:" + data.html);
-          else setTextContent(data.error || "読み取れませんでした");
+          if (cancelled) return;
+          if (data?.html) {
+            if (key) setCached(key, data.html);
+            setState({ kind: "html", html: data.html });
+          } else {
+            setState({ kind: "error", message: data?.error || "プレビュー生成に失敗しました" });
+          }
         })
-        .catch(() => setTextContent("プレビューに失敗しました"))
-        .finally(() => setLoading(false));
-    } else {
-      // テキスト系
+        .catch(e => {
+          if (!cancelled) setState({ kind: "error", message: e instanceof Error ? e.message : "通信エラー" });
+        });
+      return () => { cancelled = true; };
+    }
+
+    // -- PDF / 画像 / HTML → raw blob --
+    const rawMime: "pdf" | "image" | "html" | null =
+      PDF_EXTS.has(ext) ? "pdf"
+      : IMAGE_EXTS.has(ext) ? "image"
+      : HTML_EXTS.has(ext) ? "html"
+      : null;
+    if (rawMime && filePath) {
+      setState({ kind: "loading" });
+      fetch("/api/workspace/raw-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: filePath }),
+      })
+        .then(async r => {
+          if (!r.ok) throw new Error("ファイルを読み取れませんでした");
+          const blob = await r.blob();
+          revokeObjectUrl();
+          const url = URL.createObjectURL(blob);
+          objectUrlRef.current = url;
+          if (cancelled) { revokeObjectUrl(); return; }
+          const suffix = rawMime === "pdf" ? "#toolbar=1&navpanes=0&view=FitH" : "";
+          setState({ kind: "url", url: url + suffix, mime: rawMime });
+        })
+        .catch(e => {
+          if (!cancelled) setState({ kind: "error", message: e instanceof Error ? e.message : "読込エラー" });
+        });
+      return () => { cancelled = true; revokeObjectUrl(); };
+    }
+
+    // -- テキスト系 → read-file route --
+    if (filePath && !OFFICE_EXTS.has(ext)) {
+      setState({ kind: "loading" });
       fetch("/api/workspace/read-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: filePath }),
       })
         .then(r => r.json())
-        .then(data => setTextContent(data.content || data.error || "読み取れませんでした"))
-        .catch(() => setTextContent("読み取りに失敗しました"))
-        .finally(() => setLoading(false));
+        .then(data => {
+          if (cancelled) return;
+          if (typeof data?.content === "string") {
+            setState({ kind: "text", text: data.content });
+          } else {
+            setState({ kind: "unsupported", ext });
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setState({ kind: "unsupported", ext });
+        });
+      return () => { cancelled = true; };
     }
 
-    return () => {
-      setBlobUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
-    };
-  }, [filePath, fileName, docxBase64, isRawViewable, isBrowserDocx, isServerDocx, isExcel, renderDocxInBrowser]);
+    // ここまで来たら表示できない (filePath も無いし上の判定に該当しない)
+    setState({ kind: "unsupported", ext });
+    return () => { cancelled = true; };
+  }, [filePath, docxBase64, fileName]);
 
+  // unmount で objectURL 解放
+  useEffect(() => () => { revokeObjectUrl(); }, []);
+
+  // ダウンロード
   const handleDownload = async () => {
     if (docxBase64) {
-      const mime = isExcel
-        ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      const ext = getExt(fileName);
+      const mime = (ext === ".xls" || ext === ".xlsx" || ext === ".xlsm") ? XLSX_MIME : DOCX_MIME;
       const blob = new Blob([base64ToUint8(docxBase64)], { type: mime });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -315,18 +201,9 @@ col{min-width:60px}
     }
   };
 
-  // docx-preview 用コンテナを表示するケース:
-  // - filePath 経由の .docx / .docm
-  // - docxBase64 経由で、かつ Excel ではないもの（Excel は HTML iframe で表示）
-  const showDocxContainer = isBrowserDocx || (!!docxBase64 && !isExcel);
-
+  // ---- レンダー ----
   return (
-    <>
-    <div
-      onMouseDown={handleDragStart}
-      className="w-1.5 shrink-0 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors bg-gray-200"
-    />
-    <div className="flex flex-col border-l border-[var(--color-border)]" style={{ width: `${width}%` }}>
+    <div className="flex flex-col border-l border-[var(--color-border)] flex-1 min-w-0">
       <div className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-2 bg-[var(--color-hover)]">
         <span className="text-xs text-[var(--color-fg-muted)] truncate font-medium">{fileName}</span>
         <div className="flex items-center gap-2 shrink-0">
@@ -338,49 +215,16 @@ col{min-width:60px}
       </div>
       {canEdit && (
         <div className="flex items-center gap-0 border-b border-[var(--color-border-soft)] bg-[var(--color-panel)] px-2">
-          <button
-            onClick={() => setActiveTab("preview")}
-            className={`px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
-              activeTab === "preview"
-                ? "border-[var(--color-accent)] text-[var(--color-fg)]"
-                : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
-            }`}
-          >
-            プレビュー
-          </button>
-          <button
-            onClick={() => setActiveTab("edit")}
-            className={`px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
-              activeTab === "edit"
-                ? "border-[var(--color-accent)] text-[var(--color-fg)]"
-                : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
-            }`}
-          >
-            修正
-          </button>
+          <TabButton active={activeTab === "preview"} onClick={() => setActiveTab("preview")}>プレビュー</TabButton>
+          <TabButton active={activeTab === "edit"} onClick={() => setActiveTab("edit")}>修正</TabButton>
         </div>
       )}
-      {/* プレビューと修正タブの両方を常にマウントして display で切替（unmount すると docx-preview が消える） */}
+      {/* プレビューと修正は両方とも常にマウントしておき display で切替 */}
       <div
         className="flex-1 overflow-hidden bg-[var(--color-hover)]"
         style={{ display: canEdit && activeTab === "edit" ? "none" : "block" }}
       >
-        {showDocxContainer ? (
-          <div className="relative w-full h-full">
-            {loading && (
-              <p className="absolute left-4 top-4 z-10 animate-pulse text-sm text-[var(--color-fg-subtle)]">読込中...</p>
-            )}
-            <div ref={docxContainerRef} className="w-full h-full overflow-auto bg-[var(--color-panel)] p-4" />
-          </div>
-        ) : loading ? (
-          <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse p-4">読込中...</p>
-        ) : blobUrl?.startsWith("html:") ? (
-          <iframe srcDoc={blobUrl.slice(5)} className="w-full h-full border-0 bg-[var(--color-panel)]" />
-        ) : blobUrl ? (
-          <iframe src={blobUrl} className="w-full h-full border-0" />
-        ) : (
-          <pre className="text-xs text-[var(--color-fg)] whitespace-pre-wrap font-mono leading-relaxed p-4 overflow-y-auto h-full bg-[var(--color-panel)]">{textContent}</pre>
-        )}
+        <PreviewBody state={state} />
       </div>
       {canEdit && (
         <div
@@ -402,6 +246,48 @@ col{min-width:60px}
         </div>
       )}
     </div>
-    </>
   );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 text-[11px] font-medium border-b-2 transition-colors ${
+        active
+          ? "border-[var(--color-accent)] text-[var(--color-fg)]"
+          : "border-transparent text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)]"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PreviewBody({ state }: { state: ViewState }) {
+  switch (state.kind) {
+    case "loading":
+      return <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse p-4">読込中...</p>;
+    case "html":
+      return <iframe srcDoc={state.html} className="w-full h-full border-0 bg-[var(--color-panel)]" />;
+    case "url":
+      if (state.mime === "image") {
+        return (
+          <div className="w-full h-full overflow-auto bg-[var(--color-panel)] flex items-center justify-center p-4">
+            <img src={state.url} alt="" className="max-w-full max-h-full object-contain" />
+          </div>
+        );
+      }
+      return <iframe src={state.url} className="w-full h-full border-0 bg-[var(--color-panel)]" />;
+    case "text":
+      return (
+        <pre className="text-xs text-[var(--color-fg)] whitespace-pre-wrap font-mono leading-relaxed p-4 overflow-y-auto h-full bg-[var(--color-panel)]">
+          {state.text}
+        </pre>
+      );
+    case "error":
+      return <p className="text-sm text-[var(--color-danger-fg)] p-4">エラー: {state.message}</p>;
+    case "unsupported":
+      return <p className="text-sm text-[var(--color-fg-subtle)] p-4">プレビュー非対応の形式です ({state.ext || "拡張子なし"})</p>;
+  }
 }

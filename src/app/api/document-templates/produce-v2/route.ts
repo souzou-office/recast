@@ -31,6 +31,8 @@ import {
 } from "@/lib/produce-edits";
 import type { ChatThread, Phase2DocumentDecision } from "@/types";
 
+// self-review は廃止 (横断的チェックは verify に集約)
+
 // 旧 produce 互換の出力シェイプ
 interface DocOut {
   name: string;
@@ -198,7 +200,59 @@ export async function POST(request: NextRequest) {
         if (decisionDoc.officeCommands && decisionDoc.officeCommands.length > 0) {
           const { copyToTemp, applyCommands } = await import("@/lib/officecli");
           const workCopy = await copyToTemp(f.path, decisionDoc.outputLabel);
-          const execResults = await applyCommands(workCopy, decisionDoc.officeCommands);
+
+          // AI のブレ対策: 強制補完。
+          // - docx 段落への set: props.highlight が無ければ "none" 補完 (マーカー除去忘れ防止)
+          // - xlsx セルへの set: props.fill が無ければ "FFFFFF" 補完 (塗りつぶし除去忘れ防止)
+          const sanitizedCommands = decisionDoc.officeCommands.map((cmd) => {
+            if (cmd.command !== "set" || !cmd.path) return cmd;
+            const isDocxPara = /\/body\/p\[/.test(cmd.path);
+            const isXlsxCell = /^\/[^/]+\/[A-Z]+\d+/.test(cmd.path); // /SheetName/CellAddr
+            if (!isDocxPara && !isXlsxCell) return cmd;
+            const props: Record<string, string> = { ...(cmd.props || {}) };
+            if (isDocxPara && props.find && !("highlight" in props)) {
+              props.highlight = "none";
+            }
+            if (isXlsxCell) {
+              // xlsx セルへの find/replace は run 分割で 0 マッチ失敗しやすい。
+              // replace 値があれば value= に変換 (セル丸ごと上書き、確実)。
+              // (analyze プロンプトでも value 指定を指示済みだが、AI が find/replace を出した時の保険)
+              if (props.find && props.replace !== undefined && props.value === undefined) {
+                console.warn(`[produce-v2 officecli] ${f.name} xlsx cell ${cmd.path}: find/replace → value 変換`);
+                props.value = props.replace;
+                delete props.find;
+                delete props.replace;
+              }
+              if (!("fill" in props)) props.fill = "FFFFFF";
+            }
+            return { ...cmd, props };
+          });
+
+          // 同じ `after` で連続する add は逆順に並べ替える。
+          // officecli の `add --after X` 仕様: 同じ位置に連続 add すると LIFO で積まれる
+          // (後に add したものが先頭に来る)。AI が「A → B → C」の順で書いても
+          // 結果は「C → B → A」になる事故 (Deep30 組合の同意欄が逆順になった原因)。
+          // recast が逆順に並べ替えることで、AI の出力順 = 結果順に揃える。
+          const reordered: typeof sanitizedCommands = [];
+          let idx = 0;
+          while (idx < sanitizedCommands.length) {
+            const c = sanitizedCommands[idx];
+            if (c.command === "add" && c.after) {
+              const group = [c];
+              let j = idx + 1;
+              while (j < sanitizedCommands.length && sanitizedCommands[j].command === "add" && sanitizedCommands[j].after === c.after) {
+                group.push(sanitizedCommands[j]);
+                j++;
+              }
+              // 逆順で push (LIFO 対策)
+              for (let k = group.length - 1; k >= 0; k--) reordered.push(group[k]);
+              idx = j;
+            } else {
+              reordered.push(c);
+              idx++;
+            }
+          }
+          const execResults = await applyCommands(workCopy, reordered);
           const failed = execResults.filter((r) => !r.ok);
           if (failed.length > 0) {
             console.warn(
@@ -212,11 +266,19 @@ export async function POST(request: NextRequest) {
               `applied ${execResults.length} commands`
             );
           }
+
+          // self-review は廃止。
+          // 横断的な整合性チェックは verify (produce 後) に集約 (生成書類だけを入力に絞り、
+          // 全書類間の整合性 + 明らかな誤りを 1 回の LLM 呼び出しで指摘する設計)。
+          // 旧設計: 書類ごとに 1-2 回 LLM 呼び出し → 14 書類で $1+ かかってた。
+
           const resultBuf = await fs.readFile(workCopy);
           const baseName = f.name.replace(/\.[^.]+$/, "");
           const ext0 = f.name.split(".").pop() || "docx";
           const labelSuffix = decisionDoc.outputLabel ? `_${sanitizeFsName(decisionDoc.outputLabel)}` : "";
-          // PoC 段階では previewHtml は空 (フロント側プレビュー or 後段の view html 呼び出しで対応)。
+
+          // プレビュー HTML はフロント側 docx-preview に任せる (CLAUDE.md 方針)。
+          // officecli view html はブラウザを自動起動する副作用があるため使わない。
           return {
             name: `${baseName}${labelSuffix}`,
             fileName: `${baseName}${labelSuffix}.${ext0}`,

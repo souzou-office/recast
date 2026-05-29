@@ -11,7 +11,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@tailwindcss/typography": "^0.5.19",
-    "docx-preview": "^0.3.7",
     "docxtemplater": "^3.68.3",
     "lucide-react": "^1.8.0",
     "mammoth": "^1.12.0",

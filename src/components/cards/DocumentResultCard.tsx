@@ -3,17 +3,21 @@
 import type { DocumentResultCard, DocumentResultItem, CheckIssue, FilledSlot } from "@/types";
 import { Icon } from "@/components/ui/Icon";
 
+type PreviewFile = {
+  filePath?: string;
+  docxBase64?: string;
+  fileName: string;
+  templatePath?: string;
+  filledSlots?: FilledSlot[];
+  issues?: CheckIssue[];
+  docName?: string;
+};
+
 interface Props {
   card: DocumentResultCard;
-  onPreview?: (file: {
-    filePath?: string;
-    docxBase64?: string;
-    fileName: string;
-    templatePath?: string;
-    filledSlots?: FilledSlot[];
-    issues?: CheckIssue[];
-    docName?: string;
-  }) => void;
+  onPreview?: (file: PreviewFile) => void;
+  // 全書類を 1 度に開く (active = 最初の書類)。指定があれば onPreview ループより優先
+  onPreviewAll?: (files: PreviewFile[]) => void;
   // 編集タブで保存された変更を一括で再生成する
   onBulkRegenerate?: () => void;
 }
@@ -107,19 +111,7 @@ function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: 
             <Icon name="Clock" size={10} /> 更新待ち
           </span>
         )}
-        <button
-          onClick={() => onPreview?.({
-            docxBase64: doc.docxBase64,
-            fileName: doc.fileName,
-            templatePath: doc.templatePath,
-            filledSlots: doc.filledSlots,
-            docName: doc.name,
-          })}
-          className="inline-flex items-center gap-1 text-[11px] text-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
-          title="プレビュー"
-        >
-          <Icon name="Eye" size={12} />
-        </button>
+        {/* プレビューは書類生成時に全タブ自動オープンする設計に変更。個別プレビューボタンは廃止。 */}
         <button
           onClick={() => downloadDocx(doc.docxBase64, doc.fileName)}
           className="inline-flex items-center gap-1 text-[11px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
@@ -132,7 +124,7 @@ function DocumentRow({ doc, onPreview }: { doc: DocumentResultItem; onPreview?: 
   );
 }
 
-export default function DocumentResultCardUI({ card, onPreview, onBulkRegenerate }: Props) {
+export default function DocumentResultCardUI({ card, onPreview, onPreviewAll, onBulkRegenerate }: Props) {
   // 編集タブで保存されたが未反映の書類数
   const pendingCount = card.documents.filter(d => d.pendingChanges).length;
 
@@ -150,6 +142,31 @@ export default function DocumentResultCardUI({ card, onPreview, onBulkRegenerate
               title={`${pendingCount}件の書類を一括再生成`}
             >
               <Icon name="RefreshCcw" size={11} /> 更新待ち {pendingCount} 件を再生成
+            </button>
+          )}
+          {/* 全書類をプレビュータブとして再オープン (生成時は自動だが、閉じた後の再展開用)。
+              onPreviewAll があれば一括 API で開く (active = 最初の書類)。
+              無ければフォールバックで onPreview を順に呼ぶ (active は最後の書類になる旧挙動) */}
+          {(onPreviewAll || onPreview) && card.documents.length > 0 && (
+            <button
+              onClick={() => {
+                const files: PreviewFile[] = card.documents.map(d => ({
+                  docxBase64: d.docxBase64,
+                  fileName: d.fileName,
+                  templatePath: d.templatePath,
+                  filledSlots: d.filledSlots,
+                  docName: d.name,
+                }));
+                if (onPreviewAll) {
+                  onPreviewAll(files);
+                } else {
+                  for (const f of files) onPreview!(f);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-border)] bg-white px-3 py-1 text-[10px] font-medium text-[var(--color-fg)] hover:bg-[var(--color-hover)]"
+              title="全書類をプレビュータブで開く (1 番目をアクティブに)"
+            >
+              <Icon name="Eye" size={11} /> 全プレビュー
             </button>
           )}
           {card.documents.length > 1 && (
