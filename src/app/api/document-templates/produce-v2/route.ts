@@ -252,6 +252,39 @@ export async function POST(request: NextRequest) {
               idx++;
             }
           }
+
+          // add で段落を足すとき、隣 (after=) の行の書式 (字下げ・行間・配置) を自動コピーする。
+          // officecli の add は default 書式で段落を作るので、足した行だけ左端に飛んで字下げが崩れる
+          // (組合の同意欄で発生)。after 段落を get して layout 系プロパティを add の props に注入。
+          // 値の継承は recast が機械的にやる → AI に書式判断させない (決定論的)。
+          {
+            const { runOfficeCli } = await import("@/lib/officecli");
+            // after paraId → 書式プロパティ のキャッシュ (同じ after に複数 add がぶら下がる)
+            const fmtCache = new Map<string, Record<string, string>>();
+            const LAYOUT_KEYS = ["indent", "firstLineIndent", "hangingIndent", "lineSpacing", "lineRule", "align", "spaceBefore", "spaceAfter"];
+            for (const c of reordered) {
+              if (c.command !== "add" || !c.after) continue;
+              const m = c.after.match(/paraId=([0-9A-Fa-f]+)/);
+              if (!m) continue;
+              const afterId = m[1];
+              if (!fmtCache.has(afterId)) {
+                try {
+                  const r = await runOfficeCli(["get", workCopy, `/body/p[@paraId=${afterId}]`, "--json"], { timeoutMs: 10_000 });
+                  const parsed = JSON.parse(r.stdout || "{}");
+                  const fmt = parsed?.data?.results?.[0]?.format || {};
+                  const picked: Record<string, string> = {};
+                  for (const k of LAYOUT_KEYS) {
+                    if (fmt[k] !== undefined && fmt[k] !== null) picked[k] = String(fmt[k]);
+                  }
+                  fmtCache.set(afterId, picked);
+                } catch { fmtCache.set(afterId, {}); }
+              }
+              const inherited = fmtCache.get(afterId)!;
+              // AI が既に指定してるプロパティは尊重、未指定のものだけ継承
+              c.props = { ...inherited, ...(c.props || {}) };
+            }
+          }
+
           const execResults = await applyCommands(workCopy, reordered);
           const failed = execResults.filter((r) => !r.ok);
           if (failed.length > 0) {
