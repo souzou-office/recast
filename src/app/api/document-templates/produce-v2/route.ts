@@ -300,6 +300,35 @@ export async function POST(request: NextRequest) {
             );
           }
 
+          // 書き換えた段落の fitText (文字幅固定) をクリアする。
+          // 日本語テンプレは列揃えのため fitText (均等割り付け的に文字を固定幅に収める) を使うことがあり、
+          // 元より長い文字に書き換えると同じ幅に押し込まれて極小・潰れた表示になる
+          // (組合の「無限責任組合員」行で発生。get ではフォント 10.5pt と出るのに描画が潰れる)。
+          // recast が書き換えた段落の fitText だけ外して自然な幅で流す (テンプレ未変更部分は維持)。
+          try {
+            const { runOfficeCli } = await import("@/lib/officecli");
+            const rewrittenParaIds = new Set<string>();
+            for (const c of reordered) {
+              if (c.command === "set" && c.path && (c.props?.find !== undefined || c.props?.replace !== undefined)) {
+                const m = c.path.match(/paraId=([0-9A-Fa-f]+)/);
+                if (m) rewrittenParaIds.add(m[1]);
+              }
+            }
+            if (rewrittenParaIds.size > 0) {
+              const q = await runOfficeCli(["query", workCopy, "r[fitText.val]", "--json"], { timeoutMs: 10_000 });
+              const fitRuns = (JSON.parse(q.stdout || "{}")?.data?.results || []) as { path?: string }[];
+              for (const run of fitRuns) {
+                const rp = run.path || "";
+                const m = rp.match(/paraId=([0-9A-Fa-f]+)/);
+                if (m && rewrittenParaIds.has(m[1])) {
+                  await runOfficeCli(["set", workCopy, rp, "--prop", "fitText=0"], { timeoutMs: 8_000 });
+                }
+              }
+            }
+          } catch (e) {
+            console.warn(`[produce-v2 officecli] fitText クリア失敗:`, e instanceof Error ? e.message : e);
+          }
+
           // self-review は廃止。
           // 横断的な整合性チェックは verify (produce 後) に集約 (生成書類だけを入力に絞り、
           // 全書類間の整合性 + 明らかな誤りを 1 回の LLM 呼び出しで指摘する設計)。
