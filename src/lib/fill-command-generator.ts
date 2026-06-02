@@ -90,15 +90,44 @@ function generateForOneOutput(
   const commands: OfficeCliCommandPayload[] = [];
   const unresolvedLabels: string[] = [];
 
-  // --- docx: slot 単位で find/replace ---
+  // --- docx: 段落 (paraId) 単位でまとめて処理 ---
+  // 1 段落に複数 slot があることがあるので paraId でグループ化。
+  // ある段落の slot が「全部 空値」になったら、その段落は不要 (取締役2人目/3人目の未使用枠など)
+  // → 空文字に置換するとスキマが残るので、段落ごと remove して詰める。
+  const docxByPara = new Map<string, ResolvedSlot[]>();
+  const docxNoPara: ResolvedSlot[] = [];
   for (const slot of slots) {
     if (!slot.docx) continue;
-    const value = resolveValue(slot.label, valueTable, entity);
-    if (value === undefined) { unresolvedLabels.push(slot.label); continue; }
-    const cmd = docxSlotToCommand(slot, value);
-    if (cmd) commands.push(cmd);
-    else unresolvedLabels.push(`${slot.label}(位置不明)`);
+    if (slot.docx.paraId) {
+      const id = slot.docx.paraId;
+      if (!docxByPara.has(id)) docxByPara.set(id, []);
+      docxByPara.get(id)!.push(slot);
+    } else {
+      docxNoPara.push(slot);
+    }
   }
+  for (const [paraId, paraSlots] of docxByPara) {
+    // 各 slot の値を解決
+    const resolved = paraSlots.map((s) => ({ slot: s, value: resolveValue(s.label, valueTable, entity) }));
+    const known = resolved.filter((r) => r.value !== undefined);
+    for (const r of resolved) if (r.value === undefined) unresolvedLabels.push(r.slot.label);
+    if (known.length === 0) continue; // 全部 未解決 → 触らない (前値のまま)
+
+    // 既存テキストのある slot が全部「空値」になる → 段落ごと削除 (スキマ防止)
+    const allEmpty = known.every((r) => r.value === "" && r.slot.oldValue.trim() !== "");
+    if (allEmpty) {
+      commands.push({ command: "remove", path: `/body/p[@paraId=${paraId}]` });
+      continue;
+    }
+    // それ以外は slot ごとに find/replace
+    for (const r of known) {
+      const cmd = docxSlotToCommand(r.slot, r.value!);
+      if (cmd) commands.push(cmd);
+      else unresolvedLabels.push(`${r.slot.label}(位置不明)`);
+    }
+  }
+  // paraId が取れなかった docx slot は従来通り (位置不明として記録)
+  for (const slot of docxNoPara) unresolvedLabels.push(`${slot.label}(位置不明)`);
 
   // --- xlsx: セル単位で再構築 (同一セルの複数 slot を 1 つの value= にまとめる) ---
   const xlsxSlots = slots.filter((s) => s.xlsx);
