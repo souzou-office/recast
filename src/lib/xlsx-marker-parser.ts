@@ -72,6 +72,35 @@ function findDateStyleIndexes(stylesXml: string): Set<number> {
   return dateStyles;
 }
 
+// パーセント書式 (formatCode に % を含む) のセルスタイル index を集める。
+// %書式セルは「0.784」を入れると 78.4% と表示される (×100)。値に % を付けて入れる必要がある。
+// 組み込み: 9 ("0%"), 10 ("0.00%")。
+function findPercentStyleIndexes(stylesXml: string): Set<number> {
+  const pctNumFmtIds = new Set<number>([9, 10]);
+  const numFmtsMatch = stylesXml.match(/<numFmts[^>]*>([\s\S]*?)<\/numFmts>/);
+  if (numFmtsMatch) {
+    const re = /<numFmt\b([^/>]*)\/>/g;
+    let m;
+    while ((m = re.exec(numFmtsMatch[1])) !== null) {
+      const idMatch = m[1].match(/numFmtId="(\d+)"/);
+      const codeMatch = m[1].match(/formatCode="([^"]*)"/);
+      if (!idMatch || !codeMatch) continue;
+      if (codeMatch[1].includes("%")) pctNumFmtIds.add(parseInt(idMatch[1]));
+    }
+  }
+  const xfsMatch = stylesXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/);
+  if (!xfsMatch) return new Set();
+  const pctStyles = new Set<number>();
+  const xfRe = /<xf\b([^>]*)(?:\/>|>[\s\S]*?<\/xf>)/g;
+  let xm; let xi = 0;
+  while ((xm = xfRe.exec(xfsMatch[1])) !== null) {
+    const numFmtMatch = xm[1].match(/numFmtId="(\d+)"/);
+    if (numFmtMatch && pctNumFmtIds.has(parseInt(numFmtMatch[1]))) pctStyles.add(xi);
+    xi++;
+  }
+  return pctStyles;
+}
+
 // Excel シリアル日付 (1 = 1900-01-01 as per Lotus-compat) → "YYYY-MM-DD"
 // 基準: 1899-12-30 UTC。Excel は 1900 年の閏年バグのため 60 を跨ぐと 1 日ずれるが、
 // 46062 等の現代の日付では影響しないため簡易実装で OK。
@@ -1039,12 +1068,15 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
   // 1 セルに複数 slot (赤 run 等) がある場合、value= の上書き事故を防ぐため
   // このテンプレに全 slot の値を埋め込んで 1 回で書き込む。
   cellTexts: Map<string, string>;
+  // % 書式のセル ref 集合。値に % を付けて入れないと 78.4 → 7840% になる。
+  percentRefs: Set<string>;
 } {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
   const yellowStyles = findYellowStyleIndexes(stylesXml);
   const redFontStyles = findRedFontStyleIndexes(stylesXml);
   const dateStyles = findDateStyleIndexes(stylesXml);
+  const percentStyles = findPercentStyleIndexes(stylesXml);
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
   const redSiMap = ssXml ? findRedSharedStrings(ssXml) : new Map<number, SiRun[]>();
@@ -1053,6 +1085,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
   const slots = new Map<number, string>();
   const slotPositions = new Map<number, XlsxSlotPosition>();
   const cellTexts = new Map<string, string>();
+  const percentRefs = new Set<string>();
   let slotId = 0;
   const lines: string[] = [];
 
@@ -1098,6 +1131,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
         const sMatch = attrs.match(/\bs="(\d+)"/);
         const vMatch = inner.match(/<v>([^<]*)<\/v>/);
         const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
+        if (ref && styleIdx >= 0 && percentStyles.has(styleIdx)) percentRefs.add(ref);
 
         // 値を抽出 (なければ空)
         let val = "";
@@ -1156,7 +1190,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
       if (rowTexts.some(t => t.trim())) lines.push(rowTexts.join("\t"));
     }
   }
-  return { text: lines.join("\n"), slots, slotPositions, cellTexts };
+  return { text: lines.join("\n"), slots, slotPositions, cellTexts, percentRefs };
 }
 
 // Excelの全体テキストを★マーク付きで返す（旧方式、後方互換用）

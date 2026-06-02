@@ -62,11 +62,24 @@ function docxSlotToCommand(slot: SlotInfo, newValue: string): OfficeCliCommandPa
 // 1 書類分のコマンドを生成する。
 // slotValues: slotId → 入れる値。空文字 "" は「その行は不要 → 段落削除」。
 // xlsxCellTexts: xlsx のセルテンプレ (1 セルに複数 slot の場合の再構築用)。
+// % 書式セルの値を正規化。officecli は "78.40%" を 0.784 として格納し 78.40% と表示する。
+// AI が % 無しの裸の数字 "78.40" を出すと ×100 されて 7840% になるので、% を補う。
+// 既に % 付き、または小数 (0〜1) や非数値はそのまま。
+function normalizePercentValue(value: string): string {
+  const v = value.trim();
+  if (v === "" || v.includes("%")) return v;            // 空 or 既に % 付き → そのまま
+  const num = Number(v.replace(/,/g, ""));
+  if (!Number.isFinite(num)) return v;                  // 数値でない → そのまま
+  if (num > 0 && num < 1) return v;                     // 0〜1 の小数 → 既に格納形式 → そのまま
+  return `${v}%`;                                       // 裸の数字 (78.40 等) → % を補う
+}
+
 function generateForOneOutput(
   slots: SlotInfo[],
   slotValues: Map<number, string>,
   outputLabel: string | undefined,
-  xlsxCellTexts?: Map<string, string>
+  xlsxCellTexts?: Map<string, string>,
+  percentRefs?: Set<string>
 ): GeneratedDoc {
   const commands: OfficeCliCommandPayload[] = [];
   const skippedSlotIds: number[] = [];
@@ -119,6 +132,8 @@ function generateForOneOutput(
       } else {
         newCellValue = slotValues.get(cellSlots[0].slotId)!;
       }
+      // % 書式のセルは値を正規化 (78.40 → 78.40%) して ×100 事故を防ぐ
+      if (percentRefs?.has(ref)) newCellValue = normalizePercentValue(newCellValue);
       // value=中身、fill=FFFFFF=黄色背景クリア、font.color=000000=赤文字マーカークリア
       commands.push({ command: "set", path: `/${sheetName}/${ref}`, props: { value: newCellValue, fill: "FFFFFF", "font.color": "000000" } });
     }
@@ -140,11 +155,12 @@ export function generateFillCommands(args: {
   plan: TemplatePlan;
   slots: SlotInfo[];
   xlsxCellTexts?: Map<string, string>;
+  percentRefs?: Set<string>;
 }): GeneratedDoc[] {
-  const { plan, slots, xlsxCellTexts } = args;
+  const { plan, slots, xlsxCellTexts, percentRefs } = args;
 
   if (plan.mode === "fill") {
-    return [generateForOneOutput(slots, fillsToMap(plan.slotFills), undefined, xlsxCellTexts)];
+    return [generateForOneOutput(slots, fillsToMap(plan.slotFills), undefined, xlsxCellTexts, percentRefs)];
   }
 
   if (plan.mode === "loop") {
@@ -152,13 +168,13 @@ export function generateFillCommands(args: {
     const entities = plan.entities || [];
     if (entities.length === 0) {
       // エンティティ無し → 共通分だけで 1 通
-      return [generateForOneOutput(slots, shared, undefined, xlsxCellTexts)];
+      return [generateForOneOutput(slots, shared, undefined, xlsxCellTexts, percentRefs)];
     }
     return entities.map((ent) => {
       // 共通 slot + この人固有 slot をマージ (固有が優先)
       const merged = new Map(shared);
       for (const f of ent.slotFills) merged.set(f.slotId, f.value);
-      return generateForOneOutput(slots, merged, ent.outputLabel, xlsxCellTexts);
+      return generateForOneOutput(slots, merged, ent.outputLabel, xlsxCellTexts, percentRefs);
     });
   }
 
