@@ -1,12 +1,13 @@
 // 仕分け式アーキテクチャの「判断」フェーズ (Step A)。
 //
 // AI を 1 回だけ呼んで、Phase2Plan を出す:
-//   1. valueTable     — 案件レベルの確定値 (label → 値)。全書類が共有 → 整合性保証
-//   2. entityGroups   — 株主ごとに変わる値 (個人/法人それぞれの label→値 表)
-//   3. templatePlans  — 各テンプレの仕分け (fill / loop / ai)
+//   - 各テンプレの扱いの仕分け (fill / loop / ai)
+//   - fill/loop は各 slot に値を割り当てる (slotId 直接指定。ラベル名照合は使わない)
 //
-// ここで「同じ報酬額を 75万円 に統一」「個人テンプレは loop、法人は ai」等の *判断* をする。
-// 実際の差し込み (機械作業) は fill-command-generator.ts が決定論的にやる。
+// ★slotId 直接指定にする理由★
+//   ラベル名はテンプレ間で表記が揺れる (報酬の支給開始時期 vs 報酬支給開始時期)。
+//   文字列照合だと 1 文字差で外れて古い値が残る。slotId は番号なので揺れない。
+//   AI は全テンプレを 1 回で見るので、同じ意味の slot に同じ値を入れて整合性も担保できる。
 
 import Anthropic from "@anthropic-ai/sdk";
 import { logTokenUsage } from "./token-logger";
@@ -15,49 +16,33 @@ import type { Phase2Plan } from "@/types";
 const client = new Anthropic();
 const MODEL = "claude-sonnet-4-6";
 
-// テンプレ 1 つ分の入力 (Step A に渡す)。
+// テンプレ 1 つ分の入力 (Step A に渡す)。各 slot に slotId が付く。
 export interface PlanTemplateInput {
   templateFile: string;
   markedText: string;                    // ★label★ 入りの本文 (構造把握用)
-  labels: { label: string; format?: string; sourceHint?: string; oldValue?: string }[];
+  slots: { slotId: number; label: string; format?: string; sourceHint?: string; oldValue?: string }[];
 }
+
+const SLOT_FILL_ITEM = {
+  type: "object" as const,
+  properties: {
+    slotId: { type: "number" as const, description: "対象 slot の番号 (提示された slotId)" },
+    value: { type: "string" as const, description: "その slot に入れる最終的な値。不要な行 (使わない取締役枠等) は空文字 \"\"" },
+  },
+  required: ["slotId", "value"],
+};
 
 const PHASE2_PLAN_TOOL: Anthropic.Tool = {
   name: "submit_phase2_plan",
   description:
-    "全テンプレを見て『確定値表 + エンティティ表 + 各テンプレの仕分け』を提出する。" +
-    "これは判断だけ。実際の差し込みは recast が機械的にやるので、ここでは値と方針を決めるだけ。",
+    "全テンプレを見て、各テンプレの扱い (fill/loop/ai) と、各 slot への値割り当てを提出する。" +
+    "値は slot 番号 (slotId) で指定する。ラベル名では指定しない。",
   input_schema: {
     type: "object",
     properties: {
-      valueTable: {
-        type: "object",
-        additionalProperties: { type: "string" },
-        description:
-          "案件レベルの確定値。キー = labels の label と完全一致、値 = 最終表記で確定した1つの値。" +
-          "★重要★ 同じ label は全書類で同じ値になる (例: 取締役の月額報酬額 は『75万円』で固定、" +
-          "ある書類で 750,000円 にしない)。株主ごとに変わる値はここに入れず entityGroups に入れる。",
-      },
-      entityGroups: {
-        type: "array",
-        description:
-          "株主ごとに値が変わるテンプレ用。同質なエンティティ (個人株主、法人株主) をグループ化。",
-        items: {
-          type: "object",
-          properties: {
-            groupId: { type: "string", description: "グループ識別 (例: '個人株主', '法人株主')。templatePlans が参照" },
-            entities: {
-              type: "array",
-              description: "各エンティティの label→値 表。キーは labels の label と一致させる",
-              items: { type: "object", additionalProperties: { type: "string" } },
-            },
-          },
-          required: ["groupId", "entities"],
-        },
-      },
       templatePlans: {
         type: "array",
-        description: "各テンプレの扱いの仕分け",
+        description: "各テンプレの仕分けと値割り当て",
         items: {
           type: "object",
           properties: {
@@ -66,35 +51,58 @@ const PHASE2_PLAN_TOOL: Anthropic.Tool = {
               type: "string",
               enum: ["fill", "loop", "ai"],
               description:
-                "fill=出力1通・全て valueTable から / " +
-                "loop=エンティティ数だけ出力 (個人提案書など、構造が全員同じ) / " +
-                "ai=構造が変わって機械化できない (組合の行挿入が混在する法人提案書など)",
+                "fill=出力1通・各 slot に値を入れる / " +
+                "loop=同質な複数出力 (株主ごと1通など。全員構造が同じ) / " +
+                "ai=構造が変わって機械化できない (組合で行挿入が要る等)",
             },
-            entityGroupId: { type: "string", description: "loop のとき必須: ループする EntityGroup の groupId" },
-            outputLabelField: { type: "string", description: "loop のとき: 出力名に使う label (例: '株主の氏名')" },
+            // fill 用
+            slotFills: {
+              type: "array",
+              description: "fill のとき: 各 slot への値割り当て [{slotId, value}]。埋めるべき全 slot を含める",
+              items: SLOT_FILL_ITEM,
+            },
+            // loop 用
+            sharedSlotFills: {
+              type: "array",
+              description: "loop のとき: 全出力で共通の slot 値 (報酬・日付・代表取締役等)。1 回だけ指定 → 全員に適用されて整合する",
+              items: SLOT_FILL_ITEM,
+            },
+            entities: {
+              type: "array",
+              description: "loop のとき: 出力 (株主等) ごとの固有 slot 値",
+              items: {
+                type: "object",
+                properties: {
+                  outputLabel: { type: "string", description: "出力の識別名 (氏名等)" },
+                  slotFills: { type: "array", description: "この出力固有の slot 値 (氏名/住所/株数等)", items: SLOT_FILL_ITEM },
+                },
+                required: ["outputLabel", "slotFills"],
+              },
+            },
+            // ai 用
             reason: { type: "string", description: "ai のとき: なぜ機械化できないか (短く)" },
           },
           required: ["templateFile", "mode"],
         },
       },
     },
-    required: ["valueTable", "entityGroups", "templatePlans"],
+    required: ["templatePlans"],
   },
 };
 
 function buildPrompt(caseContext: string, templates: PlanTemplateInput[]): string {
   const tplBlocks = templates
     .map((t) => {
-      const labelLines = t.labels
-        .map((l) => {
-          const parts = [`"${l.label}"`];
-          if (l.format) parts.push(`形式:${l.format}`);
-          if (l.sourceHint) parts.push(`出典:${l.sourceHint}`);
-          if (l.oldValue) parts.push(`前案件値:${l.oldValue.slice(0, 20)}`);
+      const slotLines = t.slots
+        .map((s) => {
+          const parts = [`slot ${s.slotId}: 「${s.label}」`];
+          if (s.format) parts.push(`形式:${s.format}`);
+          if (s.sourceHint) parts.push(`出典:${s.sourceHint}`);
+          if (s.oldValue) parts.push(`前案件値:${s.oldValue.slice(0, 24)}`);
           return `  - ${parts.join(" / ")}`;
         })
         .join("\n");
-      return `### ${t.templateFile}\n本文:\n${t.markedText}\n\nラベル:\n${labelLines}`;
+      return `### ${t.templateFile}\n本文:\n${t.markedText}\n\nslot 一覧 (この番号で値を割り当てる):\n${slotLines}`;
     })
     .join("\n\n---\n\n");
 
@@ -102,36 +110,30 @@ function buildPrompt(caseContext: string, templates: PlanTemplateInput[]): strin
 
 ${caseContext}
 
-## テンプレ一覧 (★label★ = 値を埋める箇所)
+## テンプレ一覧 (★label★ = 値を埋める箇所。各 slot に番号 slotId が振ってある)
 
 ${tplBlocks}
 
 ## あなたの仕事
 
-上記の事実をもとに、**判断だけ** してください。実際の差し込みは recast が機械的にやります。
+各テンプレを仕分けして、**各 slot に入れる値を slot 番号 (slotId) で指定**してください。
 
-### 1. valueTable (案件レベルの確定値)
-全テンプレのラベルのうち「案件で1つに決まる値」(代表取締役の氏名、月額報酬、各種日付、会社名等) を、
-**最終表記で確定**して valueTable に入れる。
-- ★最重要★ 同じ label は全書類で同じ値。「形式」ヒントに従い、表記を1つに統一する
-  (例: 月額報酬は「75万円」か「750,000円」のどちらか一方に決めて、全書類でそれを使う)
-- 値が決められない/資料に無いものは valueTable に入れない (空欄のまま = verify が拾う)
+### 値の入れ方 (重要)
+- 値は必ず **slotId** で指定する。ラベル名では指定しない (ラベルは slot を理解するためのヒント)
+- 「形式」ヒントに従って最終表記を決める (例: 形式「○月分より」なら「令和8年6月分より」)
+- **同じ意味の値は全テンプレ・全出力で同じにする** (例: 月額報酬は全書類で「75万円」に統一。
+  ある書類で 750,000円 にしない)。あなたは全テンプレを一度に見ているので統一できる
+- 資料から値が決まらない slot は slotFills に含めない (前案件値が残るが、それは別途チェックされる)
+- **使わない行の slot** (取締役3枠あるが1人だけ等、余る枠) は value を空文字 "" にする
+  → recast がその行を削除して詰める
 
-### 2. entityGroups (株主ごとに変わる値)
-「株主ごとに1通ずつ作る」テンプレ用。株主の氏名・住所・株式数のように人ごとに変わるラベルは、
-ここにエンティティ表として入れる。
-- 個人株主と法人株主は別グループにする (groupId: "個人株主" / "法人株主")
-- 各エンティティの label→値 はラベル名をキーに
-
-### 3. templatePlans (各テンプレの仕分け)
-各テンプレを 3 つに仕分け:
-- **fill**: 出力は1通。全 slot が valueTable で埋まる (取締役決定書、議事録、委任状 等)
-- **loop**: 株主ごとに1通 (個人提案書 等)。entityGroupId で対象グループ指定、outputLabelField で出力名指定。
-  ★条件: そのグループの全員が「値の差し替えだけ」で済む (構造が全員同じ) こと
-- **ai**: 構造が変わって機械化できない場合のみ (例: 法人提案書で『株式会社』と『組合』が混在し、
-  組合だけ行を挿入する必要がある等)。reason に理由を書く。**安易に ai にせず、迷ったら fill/loop を優先**
-
-迷ったら: 同質な複数出力 → loop、単一出力 → fill、構造差がある複数出力 → ai。`;
+### 仕分け (mode)
+- **fill**: 出力は1通。slotFills に各 slot の値を入れる (取締役決定書・議事録・委任状・株主リスト等)
+- **loop**: 株主ごとに1通 (個人提案書等、全員構造が同じ)。
+  - sharedSlotFills = 全員共通の slot 値 (報酬・日付・代取等) を1回指定
+  - entities = 株主ごとに { outputLabel(氏名等), slotFills(氏名/住所/株数等その人固有) }
+- **ai**: 構造が変わって機械化できない場合のみ (法人提案書で株式会社と組合が混在し組合だけ行挿入が要る等)。
+  reason に理由を書く。**迷ったら fill/loop を優先**`;
 }
 
 export async function runPhase2Planning(args: {
@@ -141,7 +143,7 @@ export async function runPhase2Planning(args: {
   const prompt = buildPrompt(args.caseContext, args.templates);
   const resp = await client.messages.create({
     model: MODEL,
-    max_tokens: 8192,
+    max_tokens: 16384,
     temperature: 0,
     tools: [PHASE2_PLAN_TOOL],
     tool_choice: { type: "tool", name: "submit_phase2_plan" },
@@ -152,13 +154,7 @@ export async function runPhase2Planning(args: {
   const block = resp.content.find(
     (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use" && b.name === "submit_phase2_plan"
   );
-  if (!block) {
-    return { valueTable: {}, entityGroups: [], templatePlans: [] };
-  }
+  if (!block) return { templatePlans: [] };
   const input = block.input as Partial<Phase2Plan>;
-  return {
-    valueTable: input.valueTable || {},
-    entityGroups: input.entityGroups || [],
-    templatePlans: input.templatePlans || [],
-  };
+  return { templatePlans: input.templatePlans || [] };
 }

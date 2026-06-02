@@ -1231,12 +1231,13 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             const { runPhase2Planning } = await import("@/lib/phase2-plan");
             const { resolveSlots, generateFillCommands } = await import("@/lib/fill-command-generator");
 
+            // 各テンプレの slot 一覧 (slotId + label ヒント + 形式 + 前値) を AI に渡す
             const planTemplates = classificationData.map((c) => ({
               templateFile: c.templateFile,
               markedText: c.starMarkedText,
-              labels: (c.labels?.slots || [])
+              slots: (c.labels?.slots || [])
                 .filter((s) => s.label && s.label !== "不明")
-                .map((s) => ({ label: s.label, format: s.format, sourceHint: s.sourceHint, oldValue: c.slots.get(s.slotId) })),
+                .map((s) => ({ slotId: s.slotId, label: s.label, format: s.format, sourceHint: s.sourceHint, oldValue: c.slots.get(s.slotId) })),
             }));
 
             const organizeForPlan = await loadOrganizeResult(company.id, threadId);
@@ -1246,36 +1247,49 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
               caseContextForPlan += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
             }
             const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates });
-            send(controller, {
-              type: "text",
-              text: `確定値 ${Object.keys(plan.valueTable).length}件 / エンティティ ${plan.entityGroups.map((g) => `${g.groupId}:${g.entities.length}`).join(", ")}\n`,
-            });
+            const planSummary = plan.templatePlans.map((tp) => `${tp.templateFile}:${tp.mode}`).join(", ");
+            send(controller, { type: "text", text: `仕分け: ${planSummary}\n` });
 
             const byFile = new Map(classificationData.map((c) => [c.templateFile, c]));
             const results: Phase2DocumentDecision[][] = [];
             const aiTemplates: { templateFile: string; body: string }[] = [];
 
+            // ai モードに渡す値ヒント (fill/loop で AI が決めた値を label→value で集約。整合性用のソフトヒント)
+            const valueHint: Record<string, string> = {};
             for (const tp of plan.templatePlans) {
               const cd = byFile.get(tp.templateFile);
-              if (!cd || !cd.labels) {
+              if (!cd?.labels) continue;
+              const labelById = new Map(cd.labels.slots.map((s) => [s.slotId, s.label]));
+              const allFills = [
+                ...(tp.slotFills || []),
+                ...(tp.sharedSlotFills || []),
+                ...(tp.entities || []).flatMap((e) => e.slotFills),
+              ];
+              for (const f of allFills) {
+                const lbl = labelById.get(f.slotId);
+                if (lbl && f.value) valueHint[lbl] = f.value;
+              }
+            }
+
+            for (const tp of plan.templatePlans) {
+              const cd = byFile.get(tp.templateFile);
+              if (!cd) {
                 send(controller, { type: "text", text: `  ${tp.templateFile}: メタ無し → skip\n` });
                 continue;
               }
               if (tp.mode === "ai") {
-                // 構造変化 (組合等) は従来 AI に委譲
                 send(controller, { type: "text", text: `  ${tp.templateFile}: [AI個別] ${tp.reason || ""}\n` });
                 const block = templateBlocks.find((b) => b.templateFile === tp.templateFile);
                 if (block) aiTemplates.push(block);
                 continue;
               }
-              // fill / loop → 機械生成
+              // fill / loop → 機械生成 (slotId 直接)
               const resolved = resolveSlots({
-                labels: cd.labels,
                 slots: cd.slots,
                 docxPositions: cd.docxPositions,
                 xlsxPositions: cd.xlsxPositions,
               });
-              const docs = generateFillCommands({ plan: tp, slots: resolved, valueTable: plan.valueTable, entityGroups: plan.entityGroups, xlsxCellTexts: cd.xlsxCellTexts });
+              const docs = generateFillCommands({ plan: tp, slots: resolved, xlsxCellTexts: cd.xlsxCellTexts });
               const decisionsForTpl: Phase2DocumentDecision[] = docs.map((d) => ({
                 templateFile: tp.templateFile,
                 outputLabel: d.outputLabel,
@@ -1283,18 +1297,18 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
               }));
               results.push(decisionsForTpl);
               const totalCmds = docs.reduce((s, d) => s + d.commands.length, 0);
-              const unresolved = [...new Set(docs.flatMap((d) => d.unresolvedLabels))];
+              const skipped = [...new Set(docs.flatMap((d) => d.skippedSlotIds))];
               send(controller, {
                 type: "text",
-                text: `  ${tp.templateFile}: ${tp.mode} ${docs.length}通 ${totalCmds}コマンド機械生成${unresolved.length ? ` (未解決: ${unresolved.slice(0, 3).join(", ")})` : ""}\n`,
+                text: `  ${tp.templateFile}: ${tp.mode} ${docs.length}通 ${totalCmds}コマンド機械生成${skipped.length ? ` (slot未処理: ${skipped.length})` : ""}\n`,
               });
             }
 
-            // ai モードのテンプレだけ従来 AI で生成。確定値表を渡して書類間の表記を統一。
+            // ai モードのテンプレだけ従来 AI で生成。値ヒントを渡して書類間の表記を統一。
             if (aiTemplates.length > 0) {
               send(controller, { type: "text", text: `AI個別生成 ${aiTemplates.length}件...\n` });
               const aiResults = await Promise.all(
-                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body, plan.valueTable))
+                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body, valueHint))
               );
               results.push(...aiResults);
             }

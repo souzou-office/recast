@@ -402,35 +402,30 @@ export interface OfficeCliCommandPayload {
 // これにより (1) コスト激減 (2) 書類間の整合性が構造的に保証される (3) 処理が可視化される。
 
 // Step A (AI 1回) の出力。
+// ★設計変更★: 値は「slotId 直接指定」で各 slot に割り当てる (ラベル名照合を廃止)。
+// 理由: ラベル名 (AI 生成) はテンプレ間で表記が揺れ (報酬の支給開始時期 vs 報酬支給開始時期)、
+//       文字列照合だと 1 文字差で外れて古い値が残る事故が起きた。slotId は番号なので揺れない。
+// AI は全テンプレを 1 回で見て各 slot に値を割り当てる → 書類間の整合性も AI が担保。
 export interface Phase2Plan {
-  // 案件レベルの確定値。label (labels.json の意味ラベル) → 確定した最終表記の値。
-  // 全書類がこの同じ表を引くので「ある書類は75万円、別は750,000円」が起きない。
-  valueTable: Record<string, string>;
-
-  // 人数分ループするテンプレ用の、エンティティ別データ。
-  entityGroups: EntityGroup[];
-
-  // 各テンプレの扱いの仕分け。
   templatePlans: TemplatePlan[];
 }
 
-// 同質な複数エンティティの集まり (例: 個人株主7人、法人株主2社)。
-export interface EntityGroup {
-  groupId: string;                       // "個人株主" など (templatePlan が参照)
-  // 各エンティティ = label → 値 の表。
-  // 例 (個人): { "株主の氏名": "徳永優也", "株主の住所": "東京都...", "株主の株式数": "24,756" }
-  entities: Record<string, string>[];
+// slot 1 つへの値割り当て。slotId はパーサーが振る番号 (テンプレ内で一意)。
+export interface SlotFill {
+  slotId: number;
+  value: string;   // この slot に入れる値。空文字 "" は「この行は不要 → 段落削除」を意味する
 }
 
 export interface TemplatePlan {
   templateFile: string;
   mode: "fill" | "loop" | "ai";
-  // fill: 出力1通。全 slot を valueTable から機械で埋める
-  // loop: entityGroupId のエンティティ数だけ出力。共通 slot は valueTable、
-  //       エンティティ固有 slot は各 entity から (差し込み印刷)
-  // ai:   構造変化等で機械化できない → 従来通り AI に officeCommands を出させる
-  entityGroupId?: string;                // loop のとき必須: どの EntityGroup をループするか
-  outputLabelField?: string;             // loop のとき: outputLabel に使う entity のフィールド (例: "株主の氏名")
+  // fill: 出力1通。slotFills の slotId → 値 を機械で埋める
+  slotFills?: SlotFill[];
+  // loop: 人数分の出力。sharedSlotFills は全員共通 (1回指定で整合)、
+  //       entities[].slotFills は各人固有 (氏名/住所/株数 等)
+  sharedSlotFills?: SlotFill[];
+  entities?: { outputLabel: string; slotFills: SlotFill[] }[];
+  // ai: 構造変化等で機械化できない → 従来通り AI に officeCommands を出させる (slotFills 無し)
   reason?: string;                       // ai のとき: なぜ機械化できないか (ログ・可視化用)
 }
 
