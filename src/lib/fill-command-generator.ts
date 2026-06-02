@@ -130,7 +130,9 @@ function generateForOneOutput(
         if (v === undefined) { unresolvedLabels.push(slot.label); continue; }
         newCellValue = v;
       }
-      commands.push({ command: "set", path: `/${sheetName}/${ref}`, props: { value: newCellValue, fill: "FFFFFF" } });
+      // value = セルの中身、fill=FFFFFF = 黄色マーカー背景を消す、font.color=000000 = 赤文字マーカーを消す。
+      // テンプレは「黄色背景」か「赤文字」でマーカーを示すので、両方リセットして通常の見た目にする。
+      commands.push({ command: "set", path: `/${sheetName}/${ref}`, props: { value: newCellValue, fill: "FFFFFF", "font.color": "000000" } });
     }
   }
 
