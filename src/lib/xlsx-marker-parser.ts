@@ -356,10 +356,13 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
           }
         }
 
-        if (isYellow || isRedFont) {
+        // 赤フォントは「赤い"文字"を差し替えて」の意味 → 空セルの赤フォント書式 (消し残り) はマーカーにしない。
+        // 黄色は「セルを埋めて」→ 空でもマーカー (株主リスト 2-10 位等の空欄行)。
+        const isWholeCellMarker = isYellow || (isRedFont && value.trim() !== "");
+        if (isWholeCellMarker) {
           // マージ内の非 top-left セルは装飾扱いで skip
           if (mergeSuppressed.has(ref)) continue;
-          // ① セル全体マーカー (空でも slot として登録 → 株主リスト 2-10 位等の空欄行が拾える)
+          // ① セル全体マーカー (黄色は空でも登録 → 株主リスト 2-10 位等の空欄行が拾える)
           cells.push({ ref, value, sheetName });
         } else if (value.trim() && siIndex >= 0 && redSiMap.has(siIndex)) {
           // ② 赤 run マーカー (値必須、赤い部分だけを順に push)
@@ -492,14 +495,18 @@ export function replaceXlsxMarkedCellsBySlot(
           const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
           const siIndex = (vMatch && tMatch?.[1] === "s") ? parseInt(vMatch[1]) : -1;
           const isRedSi = siIndex >= 0 && redSiMap.has(siIndex);
+          // 赤フォントは「赤い文字を差し替えて」の意味 → 空セルの赤フォント書式 (消し残り) はマーカーにしない。
+          // 黄色は空でもマーカー (株主リストの空欄行)。getXlsxMarkedTextWithSlots と同じ判定にして slot 順を揃える。
+          const cellVal = vMatch ? (tMatch?.[1] === "s" ? (sharedStrings[parseInt(vMatch[1])] || "") : vMatch[1]) : "";
+          const isWholeCellMarker = isYellow || (isRedFont && cellVal.trim() !== "");
 
-          if (!isYellow && !isRedFont && !isRedSi) return cellWhole;
+          if (!isWholeCellMarker && !isRedSi) return cellWhole;
 
           // マージ内の非 top-left は装飾扱いで slot に出さない
-          if ((isYellow || isRedFont) && mergeSuppressed.has(ref)) return cellWhole;
+          if (isWholeCellMarker && mergeSuppressed.has(ref)) return cellWhole;
 
-          if (isYellow || isRedFont) {
-            // セル全体マーカー = 1 slot (空セルでも OK = 株主リストの 2-10 位 空欄)
+          if (isWholeCellMarker) {
+            // セル全体マーカー = 1 slot (黄色は空でも OK = 株主リストの 2-10 位 空欄)
             const currentSlot = slotCounter++;
             const newValue = slotReplacements.get(currentSlot);
             if (newValue === undefined || newValue === "") return cellWhole;
@@ -1153,14 +1160,18 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
 
         const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
         const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
+        // 赤フォント = 「この赤い"文字"を差し替えて」の意味。空セルに赤フォント書式だけ残っている
+        // (テンプレ編集の消し残り) 場合は差し替える対象が無いのでマーカーにしない。
+        // 黄色 = 「このセルを埋めて」なので空でもマーカー (株主リストの空欄行で必要)。
+        const isWholeCellMarker = isYellow || (isRedFont && val.trim() !== "");
 
-        if (isYellow || isRedFont) {
+        if (isWholeCellMarker) {
           // マージ内の非 top-left は装飾セル扱いで skip
           if (mergeSuppressed.has(ref)) {
             if (val.trim()) rowTexts.push(val);
             continue;
           }
-          // セル全体が可変 (空でも slot として登録 → 株主リスト等の空欄行で重要)
+          // セル全体が可変 (黄色は空でも slot 登録 → 株主リスト等の空欄行で重要)
           slots.set(slotId, val);
           slotPositions.set(slotId, { ref, sheetName });
           const placeholder = `［要入力_${slotId}］`;
