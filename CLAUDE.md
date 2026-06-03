@@ -545,6 +545,41 @@ interface ChangeOp {
 - 大規模な実装変更 (副作用リスク)
 - 触ってないテンプレで動かす (未知の slot 名で AI が混乱する可能性)
 
+## 2026-06-03 セッション: 仕分け式アーキテクチャ (feat/classification-fill) + 清書クリーンアップ
+
+### 仕分け式アーキテクチャ (slotId 直接方式) — feat/classification-fill ブランチ
+
+**核心思想**: 「AI 判断 vs コピペ (機械)」。AI は「各 slot に入れる値」と「テンプレの扱い (fill/loop/ai)」だけ決め、配置は recast が機械的に行う。ラベル名照合 (表記揺れで外れる) を**廃止**し slotId (番号) で直接割り当て。
+
+**フロー**:
+1. パーサー (`docx-marker-parser` / `xlsx-marker-parser`) が ★マーカー★ に slotId (連番) を振り、位置 (docx=paraId / xlsx=セル) を `slotPositions` に記録
+2. Step A (`src/lib/phase2-plan.ts`): AI を 1 回呼んで `Phase2Plan` を出す。各テンプレを fill/loop/ai に仕分け、各 slot に `{slotId, value}` を割当。**全テンプレを一度に見るので同じ意味の値は全書類で統一できる** (75万円問題の解決)
+3. ルール生成 (`src/lib/fill-command-generator.ts`): slotId→位置 と AI の値割当から officecli の set コマンドを機械生成
+   - docx: paraId 単位でまとめ、全 slot が空値なら段落ごと remove (未使用の取締役枠を詰める)
+   - xlsx: セル単位で再構築 (1 セル複数 slot の上書き事故防止)、% 書式は `normalizePercentValue` で 78.40→78.40% (7840% 事故防止)
+4. ai モードのみ AI に officeCommands を直接書かせる (組合で行挿入が要る等、機械化できない場合)
+5. produce-v2 officeCommands パスが exec
+
+**有効化**: `RECAST_ENGINE=officecli` (かつ `RECAST_FILL_MODE !== "legacy"`)。`.env.local` に設定済み。
+
+### 清書クリーンアップ (`src/lib/docx-cleanup.ts`) — 本日追加
+
+**問題**: 組合の総数引受契約書「無限責任組合員」行 (7 文字) が `fitText` (文字幅固定=均等割り付け、`w:val="1540"`≈2-4 文字幅) に押し込まれ極小・潰れ表示。**この行は固定テンプレ文で AI/officecli が触らない**ため、生成側で fitText を外す以外に直せない。
+
+**解決**: `cleanupGeneratedDocx(buf)` で生成 docx の XML を直接編集 (PizZip):
+- `fitText` 全除去 → 可変長の値が自然な幅で流れる (列揃えは全角スペースが保つので崩れない)
+- `highlight` (黄色マーカー) 全除去 → 清書に目印を残さない (ユーザー方針「マーカーは清書に絶対残らないんだから全部消せ」)
+- 赤文字マーカー (FF0000) を既定色に戻す
+
+**★officecli ではなく XML 直接編集にした理由★**: officecli の後処理 (set/query) は高負荷時 (Word プロセス枯渇, exit 0xC0000142) に**無言で失敗**し「修正したのに直らない」事故の元凶だった。XML 直接編集なら Word/officecli 非依存・決定論的。produce-v2 の旧 officecli ベース fitText クリアは廃止。
+
+**検証済み**: `4.総数引受契約書.docx` で before/after レンダリング (officecli native screenshot)。fitText 17→0 / highlight 42→0、レイアウト崩れなし。
+
+### 未解決 / 次の候補
+- legacy (非 officeCommands) docx パスにも cleanup を適用するか (現状は classification mode のみ。低リスクだが未着手)
+- 組合専用テンプレの是非 (株式会社用テンプレを ai モードで組合化すると不安定。専用テンプレ化の方が堅牢という議論が継続中)
+- produce-v2 の 14 書類並列 (Promise.all) が Word を枯渇させる件 (concurrency 制限は未実装)
+
 ## 環境変数 / 起動の注意点
 
 - `.env.local` が読み込まれない事故あり: PowerShell で明示的に env を注入してから `npm run dev` する方が確実
@@ -560,4 +595,5 @@ interface ChangeOp {
 - `perf/sidebar-mtime-cache` — Close 済 (PR #92 → PR #94 に統合)
 - `feat/profile-manual-only` — Close 済 (PR #93 → PR #94 に統合)
 - `feat/unified-file-select` — **作業継続中** (PR #94 が紐づく、上記 3 PR の統合 + フォルダ統合カード + その他改修)
-- `feat/changes-schema` — **新スキーマ実装ブランチ** (feat/unified-file-select から派生、Phase 2 を changes 配列に刷新)
+- `feat/changes-schema` — 新スキーマ実装ブランチ (Phase 2 を changes 配列に刷新)
+- `feat/classification-fill` — **作業継続中** (仕分け式アーキテクチャ = slotId 直接方式 + 清書クリーンアップ。OfficeCLI ベース)
