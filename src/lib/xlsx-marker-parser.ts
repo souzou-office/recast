@@ -1193,6 +1193,46 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
   return { text: lines.join("\n"), slots, slotPositions, cellTexts, percentRefs };
 }
 
+// テンプレ xlsx の「数式セル」の位置を集める。
+// 用途: produce 側で「数式セルは AI コマンドで上書きしない」ガードに使う。
+//   合計・割合などの**計算結果セル**をテンプレで =SUM 等にしておくと、スプレッドシートが
+//   自動計算して常に正しい値になる。ところが ai モードでは AI が同じセルに set コマンドを
+//   出すことがあり (例: 合計% に "1%" を書く)、それが数式を潰すと 100% が 1% に化ける。
+//   このセル集合を produce が参照して該当 set を捨てれば、数式が守られる。
+// 戻り値: "シート名/セル参照" の集合 (例: "株主リスト（承認決議）（包括）/F24")。
+//         officecli の xlsx path (/シート名/セル) と同形式なので produce 側で突き合わせやすい。
+export function getXlsxFormulaCells(buffer: Buffer): Set<string> {
+  const result = new Set<string>();
+  let zip;
+  try { zip = new PizZip(buffer); } catch { return result; }
+  const wbXml = zip.file("xl/workbook.xml")?.asText() || "";
+  for (const fileName of Object.keys(zip.files)) {
+    if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
+    const sheetXml = zip.file(fileName)?.asText();
+    if (!sheetXml) continue;
+    // シート名解決 (getXlsxMarkedTextWithSlots と同じロジック)
+    const sheetNum = fileName.match(/sheet(\d+)/)?.[1] || "1";
+    let sheetName = `Sheet${sheetNum}`;
+    if (wbXml) {
+      const sheetRe = /<sheet\s+name="([^"]*)"[^>]*r:id="rId(\d+)"/g;
+      let sm;
+      while ((sm = sheetRe.exec(wbXml)) !== null) {
+        if (sm[2] === sheetNum) { sheetName = sm[1]; break; }
+      }
+    }
+    // 数式セル: <c r="F24" ...><f>...</f>...</c> (prefix 無し / x: prefix 両対応)
+    const cellRe = /<(?:x:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:x:)?c>)/g;
+    let cm;
+    while ((cm = cellRe.exec(sheetXml)) !== null) {
+      const inner = cm[2] || "";
+      if (!/<(?:x:)?f\b/.test(inner)) continue;
+      const ref = (cm[1].match(/\br="([A-Z]+\d+)"/) || [])[1];
+      if (ref) result.add(`${sheetName}/${ref}`);
+    }
+  }
+  return result;
+}
+
 // Excelの全体テキストを★マーク付きで返す（旧方式、後方互換用）
 export function getXlsxMarkedText(buffer: Buffer): string {
   const cells = extractXlsxMarkedCells(buffer);

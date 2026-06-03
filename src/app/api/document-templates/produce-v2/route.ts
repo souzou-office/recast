@@ -201,10 +201,36 @@ export async function POST(request: NextRequest) {
           const { copyToTemp, applyCommands } = await import("@/lib/officecli");
           const workCopy = await copyToTemp(f.path, decisionDoc.outputLabel);
 
+          // 数式セル保護 (xlsx): テンプレで =SUM 等になっている「計算結果セル」(合計・割合など) への
+          // AI set コマンドをドロップする。計算結果はスプレッドシートが自動計算するのが正しく、
+          // ai モードで AI が同じセルに値を書くと数式を潰して事故る (合計% が 100%→1% に化けた件)。
+          // 「AI は判断、計算は spreadsheet」の切り分け。docx には数式が無いので xlsx のみ対象。
+          let sourceCommands = decisionDoc.officeCommands;
+          if (/\.(xlsx|xlsm|xls)$/i.test(f.name)) {
+            try {
+              const { getXlsxFormulaCells } = await import("@/lib/xlsx-marker-parser");
+              const formulaCells = getXlsxFormulaCells(await fs.readFile(f.path));
+              if (formulaCells.size > 0) {
+                const before = sourceCommands.length;
+                sourceCommands = sourceCommands.filter((cmd) => {
+                  if (cmd.command !== "set" || !cmd.path) return true;
+                  const key = cmd.path.replace(/^\//, ""); // "/Sheet/F24" → "Sheet/F24"
+                  return !formulaCells.has(key);
+                });
+                const dropped = before - sourceCommands.length;
+                if (dropped > 0) {
+                  console.log(`[produce-v2 officecli] ${f.name}: 数式セルへの set を ${dropped} 件スキップ (合計・割合などの計算結果を保護)`);
+                }
+              }
+            } catch (e) {
+              console.warn(`[produce-v2 officecli] 数式セル保護スキップ:`, e instanceof Error ? e.message : e);
+            }
+          }
+
           // AI のブレ対策: 強制補完。
           // - docx 段落への set: props.highlight が無ければ "none" 補完 (マーカー除去忘れ防止)
           // - xlsx セルへの set: props.fill が無ければ "FFFFFF" 補完 (塗りつぶし除去忘れ防止)
-          const sanitizedCommands = decisionDoc.officeCommands.map((cmd) => {
+          const sanitizedCommands = sourceCommands.map((cmd) => {
             if (cmd.command !== "set" || !cmd.path) return cmd;
             const isDocxPara = /\/body\/p\[/.test(cmd.path);
             const isXlsxCell = /^\/[^/]+\/[A-Z]+\d+/.test(cmd.path); // /SheetName/CellAddr
