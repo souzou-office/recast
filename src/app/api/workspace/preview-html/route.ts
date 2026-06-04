@@ -1,7 +1,9 @@
 // OfficeCLI screenshot を使って docx / xlsx を PNG レンダリング → HTML (data URL 埋め込み) を返す。
 //
 // 設計:
-//   - docx は `--render native` (Word 経由) — verify が書き込んだコメントが本文右側に表示される
+//   - docx はコメントがあれば `--render native` (Word 経由・コメント表示)、無ければ `--render html`
+//     (Chromium・Word 非依存)。生成直後の書類はコメント無しなので html → Word を起動しない。
+//     ★native を多用すると Word プロセス枯渇で 0xC0000142 が頻発しプレビュー全滅したため html 既定にした★
 //   - xlsx はデフォルト (Excel ライクな見た目)
 //   - その他の拡張子はエラー
 //
@@ -27,7 +29,7 @@ const RENDER_TIMEOUT_MS = 60_000;
 const SCREENSHOT_WIDTH = "1600";
 const DOCX_MAX_PAGES = "1-30";  // 存在しないページは officecli が無視する (stats 呼び出し不要)
 // レンダリング設定のバージョン。render args 変更時にここを bump するとキャッシュ無効化される。
-const RENDER_VERSION = "v5-xlsx-noruby";
+const RENDER_VERSION = "v6-docx-html-unless-comments";
 
 // ---- サーバ側 PNG キャッシュ (process 内のみ、再起動で消える) ----
 const htmlCache = new Map<string, string>();
@@ -169,6 +171,23 @@ async function renderToHtml(args: {
     }
   }
 
+  // docx の描画エンジンを決める。
+  //   - コメントがある docx → native (Word)。verify が付けたコメントを本文右に表示するため。
+  //   - コメントが無い docx (生成直後の書類など) → html (Chromium)。
+  // ★なぜ html を既定にするか★: native は描画のたびに Word プロセスを起動する。大量プレビューを
+  // 繰り返すと dev サーバーのプロセスが疲弊し、やがて Word を起動できなくなって (exit 0xC0000142)
+  // プレビューが全滅 → サーバー再起動が必要、という事故が頻発した。html は Word 非依存なので起きない
+  // (docx の描画品質も html で十分。コメントが要る時だけ native に切り替える)。
+  let docxRender: "native" | "html" = "html";
+  if (isDocx) {
+    try {
+      const PizZip = (await import("pizzip")).default;
+      const zip = new PizZip(await fs.readFile(inputPath));
+      const commentsXml = zip.file("word/comments.xml")?.asText();
+      if (commentsXml && /<w:comment\b/.test(commentsXml)) docxRender = "native";
+    } catch { /* 判定失敗時は html (Word 非依存・安全側) */ }
+  }
+
   // 出力 PNG path
   const pngDir = nodePath.join(os.tmpdir(), "recast-preview-png");
   await fs.mkdir(pngDir, { recursive: true });
@@ -188,7 +207,7 @@ async function renderToHtml(args: {
       "view", inputPath, "screenshot",
       "-o", pngPath,
       "--screenshot-width", isDocx ? SCREENSHOT_WIDTH : "800",
-      ...(isDocx ? ["--page", DOCX_MAX_PAGES, "--render", "native"] : []),
+      ...(isDocx ? ["--page", DOCX_MAX_PAGES, "--render", docxRender] : []),
       ...(!isDocx ? ["--cols", "A,B,C,D,E,F"] : []),
     ];
     const result = await runOfficeCli(cliArgs, { timeoutMs: RENDER_TIMEOUT_MS });
