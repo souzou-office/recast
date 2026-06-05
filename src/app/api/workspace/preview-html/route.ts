@@ -1,9 +1,10 @@
 // OfficeCLI screenshot を使って docx / xlsx を PNG レンダリング → HTML (data URL 埋め込み) を返す。
 //
 // 設計:
-//   - docx はコメントがあれば `--render native` (Word 経由・コメント表示)、無ければ `--render html`
-//     (Chromium・Word 非依存)。生成直後の書類はコメント無しなので html → Word を起動しない。
-//     ★native を多用すると Word プロセス枯渇で 0xC0000142 が頻発しプレビュー全滅したため html 既定にした★
+//   - docx は常に `--render html` (Chromium・Word 非依存)。
+//     ★native (Word) は使わない理由★: ① 大量プレビューで Word プロセスが枯渇し 0xC0000142 で
+//     プレビューが全滅する ② コメントがあると右側に灰色のマークアップ枠が出て見栄えが悪い。
+//     verify の指摘はチェックリストに全部出るので、プレビュー内にコメントを出す必要はない。
 //   - xlsx はデフォルト (Excel ライクな見た目)
 //   - その他の拡張子はエラー
 //
@@ -29,7 +30,7 @@ const RENDER_TIMEOUT_MS = 60_000;
 const SCREENSHOT_WIDTH = "1600";
 const DOCX_MAX_PAGES = "1-30";  // 存在しないページは officecli が無視する (stats 呼び出し不要)
 // レンダリング設定のバージョン。render args 変更時にここを bump するとキャッシュ無効化される。
-const RENDER_VERSION = "v6-docx-html-unless-comments";
+const RENDER_VERSION = "v7-docx-html-always";
 
 // ---- サーバ側 PNG キャッシュ (process 内のみ、再起動で消える) ----
 const htmlCache = new Map<string, string>();
@@ -171,22 +172,12 @@ async function renderToHtml(args: {
     }
   }
 
-  // docx の描画エンジンを決める。
-  //   - コメントがある docx → native (Word)。verify が付けたコメントを本文右に表示するため。
-  //   - コメントが無い docx (生成直後の書類など) → html (Chromium)。
-  // ★なぜ html を既定にするか★: native は描画のたびに Word プロセスを起動する。大量プレビューを
-  // 繰り返すと dev サーバーのプロセスが疲弊し、やがて Word を起動できなくなって (exit 0xC0000142)
-  // プレビューが全滅 → サーバー再起動が必要、という事故が頻発した。html は Word 非依存なので起きない
-  // (docx の描画品質も html で十分。コメントが要る時だけ native に切り替える)。
-  let docxRender: "native" | "html" = "html";
-  if (isDocx) {
-    try {
-      const PizZip = (await import("pizzip")).default;
-      const zip = new PizZip(await fs.readFile(inputPath));
-      const commentsXml = zip.file("word/comments.xml")?.asText();
-      if (commentsXml && /<w:comment\b/.test(commentsXml)) docxRender = "native";
-    } catch { /* 判定失敗時は html (Word 非依存・安全側) */ }
-  }
+  // docx は常に html (Chromium) で描画する。native (Word) は使わない。
+  //   ① native は描画のたびに Word を起動し、大量プレビューで Word プロセスが枯渇 → 0xC0000142 で
+  //      プレビューが全滅 → サーバー再起動が必要、という事故が頻発した。
+  //   ② native はコメントがあると右側に灰色のマークアップ枠が出て見栄えが悪い。
+  // verify の指摘はチェックリストに出るので、プレビュー内にコメントを表示する必要はない。
+  const docxRender = "html" as const;
 
   // 出力 PNG path
   const pngDir = nodePath.join(os.tmpdir(), "recast-preview-png");
