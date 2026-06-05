@@ -11,7 +11,7 @@ const MAX_CACHE = 30;
 const cache = new Map<string, string>();
 // レンダリング設定変更時にここを bump → 古い PNG を invalidate
 // (サーバ側の RENDER_VERSION と同じ値を入れること)
-const RENDER_VERSION = "v7-docx-html-always";
+const RENDER_VERSION = "v8-docx-htmlmode";
 
 export function getCacheKey(args: { filePath?: string; docxBase64?: string }): string | null {
   if (args.filePath) return `f:${RENDER_VERSION}:${args.filePath}`;

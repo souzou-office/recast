@@ -1,11 +1,11 @@
 // OfficeCLI screenshot を使って docx / xlsx を PNG レンダリング → HTML (data URL 埋め込み) を返す。
 //
 // 設計:
-//   - docx は常に `--render html` (Chromium・Word 非依存)。
-//     ★native (Word) は使わない理由★: ① 大量プレビューで Word プロセスが枯渇し 0xC0000142 で
-//     プレビューが全滅する ② コメントがあると右側に灰色のマークアップ枠が出て見栄えが悪い。
-//     verify の指摘はチェックリストに全部出るので、プレビュー内にコメントを出す必要はない。
-//   - xlsx はデフォルト (Excel ライクな見た目)
+//   - docx は officecli の `html` モード出力 (全ページ A4 の HTML、スクロール可) をそのまま返す。
+//     ★なぜ★: ① screenshot(PNG) はビューポート高さで 2 ページ目以降が切れる ② native(Word) は
+//     大量プレビューで Word 枯渇 (0xC0000142) + コメントの灰色枠が出る。html モードは Word 非依存・
+//     全文表示・スクロール可で、内容確認に最適。verify の指摘はチェックリストに出る。
+//   - xlsx は screenshot (Excel ライクな見た目)
 //   - その他の拡張子はエラー
 //
 // パフォーマンス対策 (Word プロセス起動 ~5s / 回 がボトルネック):
@@ -27,10 +27,8 @@ const DOCX_EXTS = [".docx", ".docm"];
 const XLSX_EXTS = [".xls", ".xlsx", ".xlsm"];
 const MAX_CACHE = 50;
 const RENDER_TIMEOUT_MS = 60_000;
-const SCREENSHOT_WIDTH = "1600";
-const DOCX_MAX_PAGES = "1-30";  // 存在しないページは officecli が無視する (stats 呼び出し不要)
-// レンダリング設定のバージョン。render args 変更時にここを bump するとキャッシュ無効化される。
-const RENDER_VERSION = "v7-docx-html-always";
+// レンダリング設定のバージョン。render 方式変更時にここを bump するとキャッシュ無効化される。
+const RENDER_VERSION = "v8-docx-htmlmode";
 
 // ---- サーバ側 PNG キャッシュ (process 内のみ、再起動で消える) ----
 const htmlCache = new Map<string, string>();
@@ -172,34 +170,35 @@ async function renderToHtml(args: {
     }
   }
 
-  // docx は常に html (Chromium) で描画する。native (Word) は使わない。
-  //   ① native は描画のたびに Word を起動し、大量プレビューで Word プロセスが枯渇 → 0xC0000142 で
-  //      プレビューが全滅 → サーバー再起動が必要、という事故が頻発した。
-  //   ② native はコメントがあると右側に灰色のマークアップ枠が出て見栄えが悪い。
-  // verify の指摘はチェックリストに出るので、プレビュー内にコメントを表示する必要はない。
-  const docxRender = "html" as const;
-
-  // 出力 PNG path
+  // 出力 PNG path (xlsx のスクショ用。docx は html モードなので png は使わないが、finally の掃除のため作る)
   const pngDir = nodePath.join(os.tmpdir(), "recast-preview-png");
   await fs.mkdir(pngDir, { recursive: true });
   const pngUniq = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const pngPath = nodePath.join(pngDir, `${pngUniq}.png`);
 
   try {
-    // officecli view <file> screenshot
-    // xlsx は viewport (--screenshot-width) も縮めないと右側に大きな空白が出る。
-    //   A〜F (6 列) に絞った上で --screenshot-width 800 にすると A4 縦長寄りの見た目になる。
-    //   1600 のままだと content 750px + 空白 850px で結局横長。
-    // 注: --cols A,B,C,D,E,F,G,H,I,J,K,L だと空列 G-L も render に含まれて結局横長になる
-    //     (officecli は空列を skip しない)。なので使用列だけを最初から指定する。
-    // docx は 1600 のまま (A4 横向き的な見た目で多くの帳票が綺麗に出る)。
-    //   --page 1-30 + --render native (Word 経由でコメント表示)。
+    // ★docx は officecli の html モードで「全ページ・スクロール可能」な HTML を返す★
+    //   screenshot(PNG) はビューポート高さで切れて 2 ページ目以降が見えなかった。html モードは
+    //   docx を A4 ページ単位でページ送りした完全な HTML (全文) を出すので、内容確認に最適。
+    //   Word を使わない (Chromium スクショですらない、純粋な HTML 変換) ので、枯渇クラッシュも
+    //   灰色のコメント枠も起きない。フロントは返した html をそのまま表示する。
+    if (isDocx) {
+      const result = await runOfficeCli(["view", inputPath, "html"], { timeoutMs: RENDER_TIMEOUT_MS });
+      if (result.exitCode !== 0 || !result.stdout.trim()) {
+        throw new Error(`officecli html failed (exit ${result.exitCode}): ${result.stderr || "empty output"}`);
+      }
+      return result.stdout;
+    }
+
+    // xlsx は screenshot (Excel ライクな見た目)。
+    //   viewport (--screenshot-width) を縮めないと右側に大きな空白が出る。A〜F (6 列) に絞った上で
+    //   --screenshot-width 800 にすると A4 縦長寄りになる (1600 だと content 750px + 空白 850px で横長)。
+    //   --cols は使用列だけ指定 (officecli は空列を skip しないので G-L まで出すと結局横長になる)。
     const cliArgs = [
       "view", inputPath, "screenshot",
       "-o", pngPath,
-      "--screenshot-width", isDocx ? SCREENSHOT_WIDTH : "800",
-      ...(isDocx ? ["--page", DOCX_MAX_PAGES, "--render", docxRender] : []),
-      ...(!isDocx ? ["--cols", "A,B,C,D,E,F"] : []),
+      "--screenshot-width", "800",
+      "--cols", "A,B,C,D,E,F",
     ];
     const result = await runOfficeCli(cliArgs, { timeoutMs: RENDER_TIMEOUT_MS });
     if (result.exitCode !== 0) {
