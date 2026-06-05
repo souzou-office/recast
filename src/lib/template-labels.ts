@@ -28,7 +28,11 @@ export interface TemplateSlotLabel {
 //   v5: ラベル生成モデルを Haiku 4.5 → Sonnet 4.6 に変更（精度向上）。
 //       旧 Haiku 生成のラベルは「99,500 が並んでる slot に『資金調達総額』」のような
 //       誤判定があり、verify の false alarm を引き起こしていた。
-const PARSER_VERSION = 6;
+//   v7: xlsx で「空セルに赤フォント書式だけ残った幻マーカー」を slot から除外する変更で
+//       slot の採番がズレた。labels.json (AI に渡す slot 一覧) と produce 側の位置 (live parser)
+//       の番号が食い違い、株主リストの値が列ズレ・行ズレする事故が起きたため再生成必須。
+//       ★パーサーの採番ロジックを変えたら必ずここを bump すること★ (labels.json は採番のキャッシュ)
+const PARSER_VERSION = 7;
 
 export interface TemplateLabels {
   templateHash: string;
