@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Company } from "@/types";
+import type { Company, SubfolderRole } from "@/types";
 import FilePreview from "./FilePreview";
 
 import { Icon } from "./ui/Icon";
@@ -15,15 +15,54 @@ interface Props {
   onUpdate: () => void;
 }
 
-interface SourceFileRow {
+interface SourceFile {
   path: string;
   name: string;
-  folder: string;
+}
+
+interface FolderRow {
+  id: string;
+  name: string;
+  role: SubfolderRole;
+  matchedPattern: string | null;
+  files: SourceFile[];
 }
 
 interface ProfileSection {
   title: string;
   rows: { key: string; value: string }[];
+}
+
+// フォルダの role バッジ
+function RoleBadge({ role }: { role: SubfolderRole }) {
+  const map: Record<SubfolderRole, { label: string; cls: string }> = {
+    common: { label: "共通", cls: "bg-[var(--color-ok-bg)] text-[var(--color-ok-fg)]" },
+    job: { label: "案件", cls: "bg-[var(--color-hover)] text-[var(--color-fg-muted)]" },
+    none: { label: "除外", cls: "bg-[var(--color-hover)] text-[var(--color-fg-subtle)]" },
+  };
+  const m = map[role];
+  return <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${m.cls}`}>{m.label}</span>;
+}
+
+// 「なぜこのフォルダがこの扱いなのか」を平易に説明（共通パターンとの関係を見える化）
+function folderReason(f: FolderRow): string {
+  if (f.role === "common") {
+    return f.matchedPattern ? `共通パターン「${f.matchedPattern}」に一致 → 自動で使用` : "手動で「共通」に設定 → 使用";
+  }
+  if (f.role === "job") {
+    return f.matchedPattern
+      ? `手動で「案件」に設定（パターン「${f.matchedPattern}」一致）／自動では未使用`
+      : "案件フォルダ（自動では未使用）";
+  }
+  return f.matchedPattern
+    ? `手動で「除外」に設定（パターン「${f.matchedPattern}」一致）／未使用`
+    : "除外フォルダ（基本情報には未使用）";
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
 }
 
 // AIの出力を項目ごとにパースしてセクション分け
@@ -192,11 +231,14 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [showJson, setShowJson] = useState(false);
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
-  const [availableSources, setAvailableSources] = useState<SourceFileRow[]>([]);
-  const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
+  const [folders, setFolders] = useState<FolderRow[]>([]);
+  const [autoPaths, setAutoPaths] = useState<string[]>([]);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [isAuto, setIsAuto] = useState(true);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sourcesLoading, setSourcesLoading] = useState(true);
 
-  // 共通フォルダの全ファイル一覧と選択状態をロード（会社が変わった時だけ）。
+  // 参照元フォルダ/ファイルと選択状態をロード（会社が変わった時だけ）。
   // dep を company?.id にしているのは、トグルの度に onUpdate() で company の参照が
   // 変わっても再フェッチ＝チェックのちらつきを起こさないため。会社切替時はそもそも
   // 親が key={companyId} で再マウントするので、id 依存で十分。
@@ -209,13 +251,23 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
         const res = await fetch(`/api/workspace/profile/sources?companyId=${encodeURIComponent(cid)}`);
         if (!res.ok) return;
         const data = await res.json();
-        const files: SourceFileRow[] = data.files || [];
-        setAvailableSources(files);
-        const fileSet = new Set(files.map(f => f.path));
-        // 保存済み選択のうち、現存ファイルだけに絞る（消えたファイルのゴミ掃除）。
-        // 未設定（空配列）または全滅した場合は「全選択」扱い。
-        const saved: string[] = (data.selected || []).filter((p: string) => fileSet.has(p));
-        setSelectedSources(saved.length > 0 ? new Set(saved) : new Set(fileSet));
+        const fs: FolderRow[] = data.folders || [];
+        const auto: string[] = data.autoPaths || [];
+        setFolders(fs);
+        setAutoPaths(auto);
+        // 共通フォルダは開いて見せる、それ以外（案件/除外）は折りたたみ
+        setExpanded(new Set(fs.filter(f => f.role === "common").map(f => f.id)));
+        // 保存済み選択（profileSources）を現存ファイルと突合（消えたパスを除外）
+        const allPaths = new Set(fs.flatMap(f => f.files.map(x => x.path)));
+        const saved: string[] = (data.selected || []).filter((p: string) => allPaths.has(p));
+        if (saved.length > 0) {
+          setChecked(new Set(saved));
+          setIsAuto(false);
+        } else {
+          // おまかせ: 共通フォルダのファイルを使う
+          setChecked(new Set(auto));
+          setIsAuto(true);
+        }
       } catch { /* ignore */ }
       finally { setSourcesLoading(false); }
     })();
@@ -223,11 +275,14 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   }, [company?.id]);
 
   // 選択を楽観的に反映してから1回だけ保存する。
-  // 全選択 = 未設定扱い（空配列で保存）→ 後で追加されたファイルも自動で対象になる。
-  const persistSources = async (next: Set<string>) => {
+  // おまかせ（= 選択が共通フォルダと完全一致）なら空配列で保存し、後で追加された
+  // 共通フォルダのファイルも自動的に対象になるようにする。
+  const persist = async (nextChecked: Set<string>, forceAuto: boolean) => {
     if (!company) return;
-    setSelectedSources(next);
-    const paths = next.size === availableSources.length ? [] : Array.from(next);
+    const autoNow = forceAuto || setsEqual(nextChecked, new Set(autoPaths));
+    setChecked(nextChecked);
+    setIsAuto(autoNow);
+    const paths = autoNow ? [] : Array.from(nextChecked);
     try {
       await fetch("/api/workspace", {
         method: "PATCH",
@@ -238,25 +293,31 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
     onUpdate();
   };
 
-  const toggleSource = (path: string) => {
-    const next = new Set(selectedSources);
+  const toggleFile = (path: string) => {
+    const next = new Set(checked);
     if (next.has(path)) next.delete(path);
     else next.add(path);
-    persistSources(next);
+    persist(next, false);
   };
 
-  const toggleFolder = (paths: string[], allSelected: boolean) => {
-    const next = new Set(selectedSources);
-    if (allSelected) for (const p of paths) next.delete(p);
-    else for (const p of paths) next.add(p);
-    persistSources(next);
+  const toggleFolder = (folder: FolderRow, allSelected: boolean) => {
+    const next = new Set(checked);
+    if (allSelected) for (const f of folder.files) next.delete(f.path);
+    else for (const f of folder.files) next.add(f.path);
+    persist(next, false);
   };
 
-  const toggleAll = () => {
-    const next = selectedSources.size === availableSources.length
-      ? new Set<string>()
-      : new Set(availableSources.map(f => f.path));
-    persistSources(next);
+  const resetToAuto = () => {
+    persist(new Set(autoPaths), true);
+  };
+
+  const toggleExpand = (id: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const downloadFile = async (filePath: string, name: string) => {
@@ -286,8 +347,6 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
       </div>
     );
   }
-
-  const commonSubs = company.subfolders.filter(s => s.role === "common");
 
   const generateProfile = async () => {
     setGenerating(true);
@@ -322,110 +381,116 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const profile = company.profile;
   const sections = profile?.summary ? parseProfile(profile.summary) : [];
 
-  // 参照元ファイルをサブフォルダごとにグループ化
-  const groupedSources: Record<string, SourceFileRow[]> = {};
-  for (const f of availableSources) {
-    (groupedSources[f.folder] ||= []).push(f);
-  }
-  const allSourcesSelected = availableSources.length > 0 && selectedSources.size === availableSources.length;
-  const noneSelected = availableSources.length > 0 && selectedSources.size === 0;
+  const visibleFolders = folders.filter(f => f.files.length > 0);
+  // 実際に基本情報生成で読まれる件数（おまかせ=共通フォルダ件数 / 手動=チェック件数）
+  const effectiveCount = isAuto ? autoPaths.length : checked.size;
 
-  // 「何が読まれるか」を直接見える化＆選べる参照元ファイル一覧。
-  // ここが基本情報の“真実のソース”。共通パターンや role を知らなくても、
-  // チェックの入ったファイルがそのまま生成対象になる。
+  // 「何が読まれるか」を見える化＆その場で選べる参照元パネル。
+  // 共通パターン/ロールは“初期の自動提案”。ここでのチェックが最終的な正。
   const sourceSelector = (
     <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
       <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">この資料から基本情報を作成します</h3>
-            <p className="text-xs text-[var(--color-fg-subtle)] mt-0.5">
-              チェックを入れたファイルだけを読み取って基本情報を生成します。
-            </p>
-          </div>
-          {availableSources.length > 0 && (
-            <div className="flex items-center gap-3 shrink-0 pt-0.5">
-              <span className="text-xs text-[var(--color-fg-subtle)] whitespace-nowrap">
-                {allSourcesSelected ? `全 ${availableSources.length} 件` : `${selectedSources.size} / ${availableSources.length} 件`}
+        <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">基本情報の作成に使うファイル</h3>
+        <p className="text-xs text-[var(--color-fg-subtle)] mt-1 leading-relaxed">
+          設定の「共通パターン」に名前が一致したフォルダが最初は自動で「共通」になり、その中のファイルが使われます。
+          下のチェックを変えれば、パターンやフォルダの種類に関係なく、好きなファイルを直接選べます。
+        </p>
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          {isAuto ? (
+            <span className="text-xs text-[var(--color-fg-muted)]">
+              現在: <span className="font-semibold text-[var(--color-fg)]">おまかせ</span>
+              （共通フォルダのファイルを自動使用・{autoPaths.length}件）
+            </span>
+          ) : (
+            <>
+              <span className="text-xs text-[var(--color-fg-muted)]">
+                現在: <span className="font-semibold text-[var(--color-fg)]">手動</span>で {checked.size} 件を選択中
               </span>
-              <button onClick={toggleAll} className="text-xs text-[var(--color-accent)] hover:underline whitespace-nowrap">
-                {allSourcesSelected ? "全解除" : "全選択"}
+              <button onClick={resetToAuto} className="text-xs text-[var(--color-accent)] hover:underline">
+                おまかせに戻す
               </button>
-            </div>
+            </>
           )}
         </div>
       </div>
-      <div className="px-4 py-3 max-h-[360px] overflow-y-auto">
+      <div className="px-3 py-3 max-h-[420px] overflow-y-auto space-y-2">
         {sourcesLoading ? (
-          <p className="text-sm text-[var(--color-fg-muted)]">読込中...</p>
-        ) : availableSources.length === 0 ? (
-          <p className="text-sm text-[var(--color-fg-muted)]">
-            {commonSubs.length === 0
-              ? "サイドバーでフォルダを「共通」に設定すると、ここに参照できるファイルが表示されます。"
-              : "共通フォルダに読み取り可能なファイルがありません。"}
+          <p className="text-sm text-[var(--color-fg-muted)] px-1">読込中...</p>
+        ) : visibleFolders.length === 0 ? (
+          <p className="text-sm text-[var(--color-fg-muted)] px-1">
+            このフォルダには読み取り可能なファイルがありません。サイドバーで会社のフォルダ構成を確認してください。
           </p>
         ) : (
-          <div className="space-y-3">
-            {noneSelected && (
-              <p className="text-xs text-[var(--color-warn-fg)]">
-                ファイルが1つも選択されていません。1つ以上選択してください（未選択のままだと全ファイルが対象になります）。
+          <>
+            {!isAuto && checked.size === 0 && (
+              <p className="text-xs text-[var(--color-warn-fg)] px-1">
+                ファイルが1つも選択されていません。1つ以上選ぶか「おまかせに戻す」を押してください。
               </p>
             )}
-            {Object.entries(groupedSources).map(([folder, rows]) => {
-              const folderPaths = rows.map(r => r.path);
-              const selCount = folderPaths.filter(p => selectedSources.has(p)).length;
-              const allInFolder = selCount === folderPaths.length;
-              const someInFolder = selCount > 0 && !allInFolder;
+            {visibleFolders.map(folder => {
+              const folderChecked = folder.files.filter(f => checked.has(f.path)).length;
+              const allIn = folderChecked === folder.files.length;
+              const someIn = folderChecked > 0 && !allIn;
+              const isOpen = expanded.has(folder.id);
               return (
-                <div key={folder}>
-                  <label className="flex items-center gap-2 cursor-pointer px-1 py-1 rounded hover:bg-[var(--color-hover)]">
+                <div key={folder.id} className="rounded-lg border border-[var(--color-border-soft)] overflow-hidden">
+                  <div className="flex items-center gap-2 px-2 py-2 bg-[var(--color-hover)]/40">
                     <input
                       type="checkbox"
-                      checked={allInFolder}
-                      ref={el => { if (el) el.indeterminate = someInFolder; }}
-                      onChange={() => toggleFolder(folderPaths, allInFolder)}
-                      className="w-3.5 h-3.5"
+                      checked={allIn}
+                      ref={el => { if (el) el.indeterminate = someIn; }}
+                      onChange={() => toggleFolder(folder, allIn)}
+                      className="w-3.5 h-3.5 shrink-0"
                     />
-                    <Icon name="Folder" size={13} className="text-[var(--color-fg-subtle)] shrink-0" />
-                    <span className="text-[12px] font-medium text-[var(--color-fg-muted)] truncate">{folder}</span>
-                    <span className="text-[11px] text-[var(--color-fg-subtle)] shrink-0">({selCount}/{folderPaths.length})</span>
-                  </label>
-                  <div className="space-y-0.5 ml-6 mt-0.5">
-                    {rows.map(r => {
-                      const checked = selectedSources.has(r.path);
-                      return (
-                        <div
-                          key={r.path}
-                          className={`flex items-center gap-2 px-1 py-1 rounded hover:bg-[var(--color-hover)] ${checked ? "" : "opacity-50"}`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleSource(r.path)}
-                            className="w-3.5 h-3.5 shrink-0"
-                          />
-                          <Icon name="FileText" size={12} className="text-[var(--color-fg-subtle)] shrink-0" />
-                          <button
-                            onClick={() => setViewerFile({ id: r.path, name: r.name })}
-                            className="min-w-0 flex-1 truncate text-left text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] hover:underline"
-                            title={r.name}
-                          >
-                            {r.name}
-                          </button>
-                          <button
-                            onClick={() => downloadFile(r.path, r.name)}
-                            className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] shrink-0"
-                          >
-                            DL
-                          </button>
-                        </div>
-                      );
-                    })}
+                    <button
+                      onClick={() => toggleExpand(folder.id)}
+                      className="min-w-0 flex-1 flex items-center gap-2 text-left"
+                    >
+                      <Icon name={isOpen ? "ChevronDown" : "ChevronRight"} size={13} className="text-[var(--color-fg-subtle)] shrink-0" />
+                      <RoleBadge role={folder.role} />
+                      <span className="text-[13px] font-medium text-[var(--color-fg)] truncate">{folder.name}</span>
+                      <span className="text-[11px] text-[var(--color-fg-subtle)] shrink-0">{folderChecked}/{folder.files.length}</span>
+                    </button>
                   </div>
+                  <p className="text-[11px] text-[var(--color-fg-subtle)] px-2 pl-9 py-1">{folderReason(folder)}</p>
+                  {isOpen && (
+                    <div className="space-y-0.5 px-2 pb-2 pl-9">
+                      {folder.files.map(f => {
+                        const ck = checked.has(f.path);
+                        return (
+                          <div
+                            key={f.path}
+                            className={`flex items-center gap-2 px-1 py-1 rounded hover:bg-[var(--color-hover)] ${ck ? "" : "opacity-50"}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={ck}
+                              onChange={() => toggleFile(f.path)}
+                              className="w-3.5 h-3.5 shrink-0"
+                            />
+                            <Icon name="FileText" size={12} className="text-[var(--color-fg-subtle)] shrink-0" />
+                            <button
+                              onClick={() => setViewerFile({ id: f.path, name: f.name })}
+                              className="min-w-0 flex-1 truncate text-left text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] hover:underline"
+                              title={f.name}
+                            >
+                              {f.name}
+                            </button>
+                            <button
+                              onClick={() => downloadFile(f.path, f.name)}
+                              className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] shrink-0"
+                            >
+                              DL
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -480,8 +545,8 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
               )}
               <button
                 onClick={generateProfile}
-                disabled={generating || commonSubs.length === 0 || noneSelected}
-                title={noneSelected ? "参照するファイルを1つ以上選択してください" : undefined}
+                disabled={generating || effectiveCount === 0}
+                title={effectiveCount === 0 ? "参照するファイルがありません（下でファイルを選ぶか、サイドバーでフォルダを共通にしてください）" : undefined}
                 className="shrink-0 rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
                            hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
@@ -570,14 +635,12 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             <div className="rounded-xl border border-dashed border-[var(--color-border)] p-6 text-center bg-[var(--color-panel)]">
               <Icon name="ClipboardList" size={32} className="mx-auto mb-2 text-[var(--color-fg-subtle)]" />
               <p className="text-sm text-[var(--color-fg-muted)]">
-                {commonSubs.length === 0
-                  ? "サイドバーでフォルダを「共通」に設定してください"
-                  : "下の参照ファイルを確認して「基本情報を生成」を押してください"}
+                下の参照ファイルを確認して「基本情報を生成」を押してください
               </p>
             </div>
           )}
 
-          {/* 参照元ファイル（“何が読まれるか”を直接選べる一覧） */}
+          {/* 参照元ファイル（“何が読まれるか”を見える化＋直接選択） */}
           {sourceSelector}
         </div>
       </div>

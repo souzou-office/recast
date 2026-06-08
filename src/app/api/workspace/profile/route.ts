@@ -5,6 +5,7 @@ import path from "path";
 import { getWorkspaceConfig, saveWorkspaceConfig } from "@/lib/folders";
 import { readAllFilesInFolder, readFileContent, listFiles } from "@/lib/files";
 import { isPathDisabled } from "@/lib/disabled-filter";
+import { MAX_BINARY_SIZE } from "@/lib/file-parsers";
 
 // 鮮度チェック用の軽量 walk。listFiles は readdir のみで中身パースなし。
 async function walkPathsOnly(dir: string, out: string[]): Promise<void> {
@@ -114,17 +115,27 @@ export async function GET(request: NextRequest) {
     ? new Set(company.profileSources)
     : null;
   const currentFiles: { path: string; mtime: string }[] = [];
-  const allPaths: string[] = [];
-  await Promise.all(commonSubs.map(sub => walkPathsOnly(sub.id, allPaths)));
-  for (const filePath of allPaths) {
-    // どの subfolder 配下かを判定して disabledFiles をチェック
-    const sub = commonSubs.find(s => filePath.startsWith(s.id));
-    if (sub && isPathDisabled(filePath, sub.disabledFiles || [])) continue;
-    if (profileSourcesSet && !profileSourcesSet.has(filePath)) continue;
-    try {
-      const st = await fs.stat(filePath);
-      currentFiles.push({ path: filePath, mtime: st.mtime.toISOString() });
-    } catch { /* ignore */ }
+  if (profileSourcesSet) {
+    // 手動選択あり → そのファイルだけを鮮度チェック（フォルダの role を問わない）
+    for (const filePath of company.profileSources!) {
+      try {
+        const st = await fs.stat(filePath);
+        currentFiles.push({ path: filePath, mtime: st.mtime.toISOString() });
+      } catch { /* ignore */ }
+    }
+  } else {
+    // おまかせ → 共通フォルダの全ファイル（disabled 除外）
+    const allPaths: string[] = [];
+    await Promise.all(commonSubs.map(sub => walkPathsOnly(sub.id, allPaths)));
+    for (const filePath of allPaths) {
+      // どの subfolder 配下かを判定して disabledFiles をチェック
+      const sub = commonSubs.find(s => filePath.startsWith(s.id));
+      if (sub && isPathDisabled(filePath, sub.disabledFiles || [])) continue;
+      try {
+        const st = await fs.stat(filePath);
+        currentFiles.push({ path: filePath, mtime: st.mtime.toISOString() });
+      } catch { /* ignore */ }
+    }
   }
 
   // profile.sourceFiles とのmtime比較
@@ -166,37 +177,56 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
   }
 
-  // 共通フォルダのファイルをローカルファイルシステムから読む
+  // 基本情報の生成に使うファイルを読む。
+  // - profileSources が設定されていれば「それが最終的な正」。フォルダの role を問わず、
+  //   選択されたファイルを直接パスで読む（共通フォルダ外のファイルも使える）。
+  // - 未設定（おまかせ）なら共通フォルダの全ファイル（従来動作）。
   const commonSubs = company.subfolders.filter(s => s.role === "common");
   const profileSourcesSet = company.profileSources && company.profileSources.length > 0
     ? new Set(company.profileSources)
-    : null; // null = 未設定 → 全ファイル使用（既存動作）
+    : null; // null = おまかせ → 共通フォルダ全ファイル使用
 
   const textFiles: { path: string; name: string; content: string }[] = [];
   const pdfFiles: { path: string; name: string; base64: string; mimeType: string }[] = [];
 
-  for (const sub of commonSubs) {
-    const allContents = await readAllFilesInFolder(sub.id);
-    const disabled = sub.disabledFiles || [];
+  const pushContent = (content: { path: string; name: string; content: string; base64?: string; mimeType?: string }) => {
+    if (content.base64) {
+      pdfFiles.push({
+        path: content.path,
+        name: content.name,
+        base64: content.base64,
+        mimeType: content.mimeType || "application/pdf",
+      });
+    } else {
+      textFiles.push({
+        path: content.path,
+        name: content.name,
+        content: content.content,
+      });
+    }
+  };
 
-    for (const content of allContents) {
-      if (isPathDisabled(content.path, disabled)) continue;
-      // profileSources が設定されていれば、そこに含まれるものだけ使う
-      if (profileSourcesSet && !profileSourcesSet.has(content.path)) continue;
-
-      if (content.base64) {
-        pdfFiles.push({
-          path: content.path,
-          name: content.name,
-          base64: content.base64,
-          mimeType: content.mimeType || "application/pdf",
-        });
-      } else {
-        textFiles.push({
-          path: content.path,
-          name: content.name,
-          content: content.content,
-        });
+  if (profileSourcesSet) {
+    // 手動選択: 選ばれたファイルをパスで直接読む（role 不問）
+    for (const filePath of company.profileSources!) {
+      try {
+        const st = await fs.stat(filePath);
+        if (st.size > MAX_BINARY_SIZE) {
+          console.warn(`[profile] skip ${filePath}: サイズ上限超過`);
+          continue;
+        }
+      } catch { continue; } // 存在しないパスはスキップ
+      const content = await readFileContent(filePath);
+      if (content) pushContent(content);
+    }
+  } else {
+    // おまかせ: 共通フォルダの全ファイル
+    for (const sub of commonSubs) {
+      const allContents = await readAllFilesInFolder(sub.id);
+      const disabled = sub.disabledFiles || [];
+      for (const content of allContents) {
+        if (isPathDisabled(content.path, disabled)) continue;
+        pushContent(content);
       }
     }
   }
