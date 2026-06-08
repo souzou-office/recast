@@ -231,6 +231,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const [showJson, setShowJson] = useState(false);
   const [profileJson, setProfileJson] = useState("");
   const [profileJsonDirty, setProfileJsonDirty] = useState(false);
+  const [showSourceModal, setShowSourceModal] = useState(false);
   const [folders, setFolders] = useState<FolderRow[]>([]);
   const [autoPaths, setAutoPaths] = useState<string[]>([]);
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -337,6 +338,12 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
     }
   };
 
+  // モーダル内でファイル名クリック → プレビューを開く（モーダルは閉じて分割表示を見せる）
+  const openPreview = (path: string, name: string) => {
+    setShowSourceModal(false);
+    setViewerFile({ id: path, name });
+  };
+
   if (!company) {
     return (
       <div className="flex h-full items-center justify-center bg-[var(--color-hover)]">
@@ -382,116 +389,193 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
   const sections = profile?.summary ? parseProfile(profile.summary) : [];
 
   const visibleFolders = folders.filter(f => f.files.length > 0);
-  // 実際に基本情報生成で読まれる件数（おまかせ=共通フォルダ件数 / 手動=チェック件数）
-  const effectiveCount = isAuto ? autoPaths.length : checked.size;
+  // パス → {name, folder} の対応表（参照中ファイルの表示名解決に使う）
+  const fileMeta = new Map<string, { name: string; folder: string }>();
+  for (const f of folders) for (const x of f.files) fileMeta.set(x.path, { name: x.name, folder: f.name });
+  // 実際に基本情報生成で読まれるファイル（おまかせ=共通フォルダ / 手動=選択分）
+  const effectivePaths = isAuto ? autoPaths : Array.from(checked);
+  const effectiveFiles = effectivePaths
+    .map(p => {
+      const m = fileMeta.get(p);
+      return { path: p, name: m?.name || p.split(/[\\/]/).pop() || p, folder: m?.folder || "" };
+    })
+    .sort((a, b) => a.folder.localeCompare(b.folder) || a.name.localeCompare(b.name));
+  const effectiveCount = effectiveFiles.length;
 
-  // 「何が読まれるか」を見える化＆その場で選べる参照元パネル。
-  // 共通パターン/ロールは“初期の自動提案”。ここでのチェックが最終的な正。
-  const sourceSelector = (
+  // 参照しているファイル（下に置く読み取り専用リスト）
+  const referencedFiles = (
     <div className="rounded-2xl bg-[var(--color-panel)] border border-[var(--color-border)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-hidden">
-      <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-3">
-        <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">基本情報の作成に使うファイル</h3>
-        <p className="text-xs text-[var(--color-fg-subtle)] mt-1 leading-relaxed">
-          設定の「共通パターン」に名前が一致したフォルダが最初は自動で「共通」になり、その中のファイルが使われます。
-          下のチェックを変えれば、パターンやフォルダの種類に関係なく、好きなファイルを直接選べます。
-        </p>
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
-          {isAuto ? (
-            <span className="text-xs text-[var(--color-fg-muted)]">
-              現在: <span className="font-semibold text-[var(--color-fg)]">おまかせ</span>
-              （共通フォルダのファイルを自動使用・{autoPaths.length}件）
-            </span>
+      <div className="bg-[var(--color-hover)] border-b border-[var(--color-border)] px-4 py-2.5 flex items-center justify-between gap-3">
+        <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">参照しているファイル</h3>
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="text-xs text-[var(--color-fg-subtle)] whitespace-nowrap">
+            {isAuto ? `おまかせ・${effectiveCount}件` : `手動・${effectiveCount}件`}
+          </span>
+          <button onClick={() => setShowSourceModal(true)} className="text-xs text-[var(--color-accent)] hover:underline whitespace-nowrap">
+            変更
+          </button>
+        </div>
+      </div>
+      <div className="px-4 py-3">
+        {sourcesLoading ? (
+          <p className="text-sm text-[var(--color-fg-muted)]">読込中...</p>
+        ) : effectiveFiles.length === 0 ? (
+          <p className="text-sm text-[var(--color-fg-muted)]">
+            参照ファイルがありません。右上の「参照ファイル」から使うファイルを選んでください。
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {effectiveFiles.map(f => (
+              <li key={f.path} className="text-sm flex items-center gap-2">
+                <Icon name="FileText" size={12} className="text-[var(--color-fg-subtle)] shrink-0" />
+                <button
+                  onClick={() => setViewerFile({ id: f.path, name: f.name })}
+                  className="min-w-0 flex-1 truncate text-left text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] hover:underline"
+                  title={f.name}
+                >
+                  {f.name}
+                </button>
+                {f.folder && <span className="text-[10px] text-[var(--color-fg-subtle)] shrink-0">{f.folder}</span>}
+                <button
+                  onClick={() => downloadFile(f.path, f.name)}
+                  className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] shrink-0"
+                >
+                  DL
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+
+  // ファイル指定モーダル（“何が読まれるか”を見える化＋直接選択）。ヘッダーの「参照ファイル」から開く。
+  const sourceModal = showSourceModal && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowSourceModal(false)}>
+      <div
+        className="w-[680px] max-w-[94vw] max-h-[86vh] flex flex-col bg-[var(--color-panel)] rounded-2xl shadow-xl overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-[var(--color-border)] flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="font-serif text-[16px] font-semibold text-[var(--color-fg)]">基本情報に使うファイル</h3>
+            <p className="text-xs text-[var(--color-fg-subtle)] mt-1 leading-relaxed">
+              設定の「共通パターン」に名前が一致したフォルダが最初は自動で「共通」になり、その中のファイルが使われます。
+              下のチェックを変えれば、パターンやフォルダの種類に関係なく好きなファイルを選べます。
+            </p>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              {isAuto ? (
+                <span className="text-xs text-[var(--color-fg-muted)]">
+                  現在: <span className="font-semibold text-[var(--color-fg)]">おまかせ</span>
+                  （共通フォルダのファイルを自動使用・{autoPaths.length}件）
+                </span>
+              ) : (
+                <>
+                  <span className="text-xs text-[var(--color-fg-muted)]">
+                    現在: <span className="font-semibold text-[var(--color-fg)]">手動</span>で {checked.size} 件を選択中
+                  </span>
+                  <button onClick={resetToAuto} className="text-xs text-[var(--color-accent)] hover:underline">
+                    おまかせに戻す
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          <button onClick={() => setShowSourceModal(false)} className="shrink-0 text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] text-xl leading-none">
+            ×
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+          {sourcesLoading ? (
+            <p className="text-sm text-[var(--color-fg-muted)] px-1">読込中...</p>
+          ) : visibleFolders.length === 0 ? (
+            <p className="text-sm text-[var(--color-fg-muted)] px-1">
+              このフォルダには読み取り可能なファイルがありません。サイドバーで会社のフォルダ構成を確認してください。
+            </p>
           ) : (
             <>
-              <span className="text-xs text-[var(--color-fg-muted)]">
-                現在: <span className="font-semibold text-[var(--color-fg)]">手動</span>で {checked.size} 件を選択中
-              </span>
-              <button onClick={resetToAuto} className="text-xs text-[var(--color-accent)] hover:underline">
-                おまかせに戻す
-              </button>
+              {!isAuto && checked.size === 0 && (
+                <p className="text-xs text-[var(--color-warn-fg)] px-1">
+                  ファイルが1つも選択されていません。1つ以上選ぶか「おまかせに戻す」を押してください。
+                </p>
+              )}
+              {visibleFolders.map(folder => {
+                const folderChecked = folder.files.filter(f => checked.has(f.path)).length;
+                const allIn = folderChecked === folder.files.length;
+                const someIn = folderChecked > 0 && !allIn;
+                const isOpen = expanded.has(folder.id);
+                return (
+                  <div key={folder.id} className="rounded-lg border border-[var(--color-border-soft)] overflow-hidden">
+                    <div className="flex items-center gap-2 px-2 py-2 bg-[var(--color-hover)]/40">
+                      <input
+                        type="checkbox"
+                        checked={allIn}
+                        ref={el => { if (el) el.indeterminate = someIn; }}
+                        onChange={() => toggleFolder(folder, allIn)}
+                        className="w-3.5 h-3.5 shrink-0"
+                      />
+                      <button
+                        onClick={() => toggleExpand(folder.id)}
+                        className="min-w-0 flex-1 flex items-center gap-2 text-left"
+                      >
+                        <Icon name={isOpen ? "ChevronDown" : "ChevronRight"} size={13} className="text-[var(--color-fg-subtle)] shrink-0" />
+                        <RoleBadge role={folder.role} />
+                        <span className="text-[13px] font-medium text-[var(--color-fg)] truncate">{folder.name}</span>
+                        <span className="text-[11px] text-[var(--color-fg-subtle)] shrink-0">{folderChecked}/{folder.files.length}</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-[var(--color-fg-subtle)] px-2 pl-9 py-1">{folderReason(folder)}</p>
+                    {isOpen && (
+                      <div className="space-y-0.5 px-2 pb-2 pl-9">
+                        {folder.files.map(f => {
+                          const ck = checked.has(f.path);
+                          return (
+                            <div
+                              key={f.path}
+                              className={`flex items-center gap-2 px-1 py-1 rounded hover:bg-[var(--color-hover)] ${ck ? "" : "opacity-50"}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={ck}
+                                onChange={() => toggleFile(f.path)}
+                                className="w-3.5 h-3.5 shrink-0"
+                              />
+                              <Icon name="FileText" size={12} className="text-[var(--color-fg-subtle)] shrink-0" />
+                              <button
+                                onClick={() => openPreview(f.path, f.name)}
+                                className="min-w-0 flex-1 truncate text-left text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] hover:underline"
+                                title={f.name}
+                              >
+                                {f.name}
+                              </button>
+                              <button
+                                onClick={() => downloadFile(f.path, f.name)}
+                                className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] shrink-0"
+                              >
+                                DL
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </>
           )}
         </div>
-      </div>
-      <div className="px-3 py-3 max-h-[420px] overflow-y-auto space-y-2">
-        {sourcesLoading ? (
-          <p className="text-sm text-[var(--color-fg-muted)] px-1">読込中...</p>
-        ) : visibleFolders.length === 0 ? (
-          <p className="text-sm text-[var(--color-fg-muted)] px-1">
-            このフォルダには読み取り可能なファイルがありません。サイドバーで会社のフォルダ構成を確認してください。
-          </p>
-        ) : (
-          <>
-            {!isAuto && checked.size === 0 && (
-              <p className="text-xs text-[var(--color-warn-fg)] px-1">
-                ファイルが1つも選択されていません。1つ以上選ぶか「おまかせに戻す」を押してください。
-              </p>
-            )}
-            {visibleFolders.map(folder => {
-              const folderChecked = folder.files.filter(f => checked.has(f.path)).length;
-              const allIn = folderChecked === folder.files.length;
-              const someIn = folderChecked > 0 && !allIn;
-              const isOpen = expanded.has(folder.id);
-              return (
-                <div key={folder.id} className="rounded-lg border border-[var(--color-border-soft)] overflow-hidden">
-                  <div className="flex items-center gap-2 px-2 py-2 bg-[var(--color-hover)]/40">
-                    <input
-                      type="checkbox"
-                      checked={allIn}
-                      ref={el => { if (el) el.indeterminate = someIn; }}
-                      onChange={() => toggleFolder(folder, allIn)}
-                      className="w-3.5 h-3.5 shrink-0"
-                    />
-                    <button
-                      onClick={() => toggleExpand(folder.id)}
-                      className="min-w-0 flex-1 flex items-center gap-2 text-left"
-                    >
-                      <Icon name={isOpen ? "ChevronDown" : "ChevronRight"} size={13} className="text-[var(--color-fg-subtle)] shrink-0" />
-                      <RoleBadge role={folder.role} />
-                      <span className="text-[13px] font-medium text-[var(--color-fg)] truncate">{folder.name}</span>
-                      <span className="text-[11px] text-[var(--color-fg-subtle)] shrink-0">{folderChecked}/{folder.files.length}</span>
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-[var(--color-fg-subtle)] px-2 pl-9 py-1">{folderReason(folder)}</p>
-                  {isOpen && (
-                    <div className="space-y-0.5 px-2 pb-2 pl-9">
-                      {folder.files.map(f => {
-                        const ck = checked.has(f.path);
-                        return (
-                          <div
-                            key={f.path}
-                            className={`flex items-center gap-2 px-1 py-1 rounded hover:bg-[var(--color-hover)] ${ck ? "" : "opacity-50"}`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={ck}
-                              onChange={() => toggleFile(f.path)}
-                              className="w-3.5 h-3.5 shrink-0"
-                            />
-                            <Icon name="FileText" size={12} className="text-[var(--color-fg-subtle)] shrink-0" />
-                            <button
-                              onClick={() => setViewerFile({ id: f.path, name: f.name })}
-                              className="min-w-0 flex-1 truncate text-left text-sm text-[var(--color-accent)] hover:text-[var(--color-accent-fg)] hover:underline"
-                              title={f.name}
-                            >
-                              {f.name}
-                            </button>
-                            <button
-                              onClick={() => downloadFile(f.path, f.name)}
-                              className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg-muted)] shrink-0"
-                            >
-                              DL
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </>
-        )}
+
+        <div className="px-4 py-3 border-t border-[var(--color-border)] flex items-center justify-end">
+          <button
+            onClick={() => setShowSourceModal(false)}
+            className="rounded-lg bg-[var(--color-fg)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90"
+          >
+            閉じる
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -516,6 +600,12 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
               )}
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowSourceModal(true)}
+                className="shrink-0 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] transition-colors"
+              >
+                参照ファイル
+              </button>
               {profile?.structured && (
                 <button
                   onClick={() => {
@@ -546,7 +636,7 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
               <button
                 onClick={generateProfile}
                 disabled={generating || effectiveCount === 0}
-                title={effectiveCount === 0 ? "参照するファイルがありません（下でファイルを選ぶか、サイドバーでフォルダを共通にしてください）" : undefined}
+                title={effectiveCount === 0 ? "参照するファイルがありません（「参照ファイル」から選んでください）" : undefined}
                 className="shrink-0 rounded-lg bg-[var(--color-fg)] px-4 py-2 text-sm font-medium text-white
                            hover:opacity-90 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
@@ -635,38 +725,37 @@ export default function CompanyProfile({ company, onUpdate }: Props) {
             <div className="rounded-xl border border-dashed border-[var(--color-border)] p-6 text-center bg-[var(--color-panel)]">
               <Icon name="ClipboardList" size={32} className="mx-auto mb-2 text-[var(--color-fg-subtle)]" />
               <p className="text-sm text-[var(--color-fg-muted)]">
-                下の参照ファイルを確認して「基本情報を生成」を押してください
+                右上の「参照ファイル」で使うファイルを確認して「基本情報を生成」を押してください
               </p>
             </div>
           )}
 
-          {/* 参照元ファイル（“何が読まれるか”を見える化＋直接選択） */}
-          {sourceSelector}
+          {/* 参照しているファイル（読み取り専用の一覧） */}
+          {referencedFiles}
         </div>
       </div>
     </div>
   );
 
-  // ビューワーなし → 基本情報を中央に
-  if (!viewerFile) {
-    return (
-      <div className="h-full">
-        {profileContent}
-      </div>
-    );
-  }
-
-  // ビューワーあり → 左右分割
   return (
-    <div className="flex h-full">
-      <div className="min-w-0 flex-1 overflow-hidden">
-        {profileContent}
-      </div>
-      <FilePreview
-        filePath={viewerFile.id}
-        fileName={viewerFile.name}
-        onClose={() => setViewerFile(null)}
-      />
-    </div>
+    <>
+      {viewerFile ? (
+        <div className="flex h-full">
+          <div className="min-w-0 flex-1 overflow-hidden">
+            {profileContent}
+          </div>
+          <FilePreview
+            filePath={viewerFile.id}
+            fileName={viewerFile.name}
+            onClose={() => setViewerFile(null)}
+          />
+        </div>
+      ) : (
+        <div className="h-full">
+          {profileContent}
+        </div>
+      )}
+      {sourceModal}
+    </>
   );
 }
