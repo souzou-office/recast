@@ -122,6 +122,13 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
 
   const [selectedPaths, setSelectedPaths] = useState<string[]>(config?.basePaths || []);
 
+  // config が後から読み込まれた場合に selectedPaths を追従させる。
+  // これが無いと、マウント時に config が null だと selectedPaths が [] のままになり、
+  // 「保存(スキャン)」が空の basePaths を送って 400 → スキャンが効かない不具合になる。
+  useEffect(() => {
+    setSelectedPaths(config?.basePaths || []);
+  }, [config?.basePaths]);
+
   // パスを追加
   const handleAddPath = (dirPath: string) => {
     if (!selectedPaths.includes(dirPath)) {
