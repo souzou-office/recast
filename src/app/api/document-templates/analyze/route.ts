@@ -938,6 +938,7 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
 
 会話履歴の Phase 1 (案件整理) + Phase 2-A (確認 Q&A) + 統一ルールを踏まえて、
 **submit_phase2_officecli** で **${templateFile}** の OfficeCLI commands を提出。他書類は無視。
+${qaBlock}
 ${valueTableBlock}
 
 ## 株主の振り分けルール (重要)
@@ -1010,7 +1011,14 @@ ${bodyForThisDoc}
 **元の情報項目 (本店/商号/代取/議決権 等) を新ラベル群で 1 つも省略せず表現する**。
 remove より少ない add は **ほぼ確実に省略バグ**。op 数を減らす最適化を勝手にやるな。
 
-例: 元 4 行 (本店/商号/代取/議決権) → 新 6 行 (主たる事務所/名称/無限責任組合員/組合員/代取/議決権)`;
+例: 元 4 行 (本店/商号/代取/議決権) → 新 6 行 (主たる事務所/名称/無限責任組合員/組合員/代取/議決権)
+
+## ⚠ 議案などのブロック削除 (確認回答で「議案◯を丸ごと削除」と指定された場合)
+- その議案の **見出し段落から、次の議案の見出しの直前まで** の全段落を remove する。
+  見出しも明細 (記・ア・イ・ウ 等) も **1 段落残さず** remove せよ (paraId は本文に全部書いてある)。
+- 削除したら **後続の議案番号を繰り上げる**: 「議案３…の件」→「議案２…の件」を、その見出し段落の
+  set find/replace で直す (例: {command:"set", path:"/body/p[@paraId=YYY]", props:{find:"議案３", replace:"議案２"}})。
+- 「削除」と確定しているのに remove を出さない / 見出しだけ残すのは誤り。`;
 
             try {
               // OfficeCLI モード: 会話履歴全部を送るのは無駄 (添付 PDF/画像、tool_use 往復、
@@ -1247,6 +1255,9 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             if (globalRulesText.trim()) {
               caseContextForPlan += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
             }
+            // 確認回答 (議案削除の要否等) を分類AI(Step A)にも渡す。これが無いと「削除が要る→ai」の
+            // 判断ができず、削除が要る書類まで fill に振り分けられて削除指示が落ちる (議案2不具合の根因)。
+            if (qaBlock) caseContextForPlan += `\n${qaBlock}`;
             const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates });
             const planSummary = plan.templatePlans.map((tp) => `${tp.templateFile}:${tp.mode}`).join(", ");
             send(controller, { type: "text", text: `仕分け: ${planSummary}\n` });
