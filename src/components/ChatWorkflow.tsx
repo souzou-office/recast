@@ -515,6 +515,25 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   // 案件整理+書類生成を実行
   const runWorkflow = async (currentThread: ChatThread, templatePath: string) => {
     if (!company) return;
+
+    // 基本情報が無ければ案件整理を始めず、先に基本情報の作成を促す。
+    // 案件整理は会社の基本情報(定款・登記・株主構成など)を前提に行うため。
+    const hasProfile = !!(company.profile && (company.profile.summary || company.profile.structured));
+    if (!hasProfile) {
+      const guardMsg: ThreadMessage = {
+        id: `msg_${Date.now()}_noprofile`,
+        role: "assistant",
+        content:
+          "⚠️ **先に「基本情報」を作成してください**\n\n" +
+          "案件整理は、会社の基本情報（定款・登記・株主構成など）を前提に行います。" +
+          "この会社にはまだ基本情報がありません。\n\n" +
+          "上部の「**基本情報**」タブで基本情報を作成してから、もう一度お試しください。",
+        timestamp: new Date().toISOString(),
+      };
+      setThread(prev => (prev ? { ...prev, messages: [...prev.messages, guardMsg] } : prev));
+      return;
+    }
+
     setLoading(true);
 
     // 1. 案件整理（SSE）
