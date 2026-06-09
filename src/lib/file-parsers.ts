@@ -120,10 +120,30 @@ function fixExcelDates(csv: string): string {
   });
 }
 
+// パスワード保護/暗号化PDFの判定用マーカー。暗号化PDFはトレーラー辞書に /Encrypt を持つ。
+const PDF_ENCRYPT_MARKER = Buffer.from("/Encrypt");
+
+/**
+ * パスワード保護（暗号化）PDFかどうかを判定する。
+ * 暗号化PDFを base64 のまま Claude に渡すと "The PDF specified is password protected"
+ * で API が 400 を返し、案件整理など PDF を読む処理が丸ごと落ちる。事前に弾くために使う。
+ * 判定は /Encrypt 参照の有無（暗号化PDFの標準的な指標）。
+ */
+function isEncryptedPdf(buffer: Buffer): boolean {
+  return buffer.includes(PDF_ENCRYPT_MARKER);
+}
+
 /** PDF Buffer → FileContent */
 export async function parsePdf(buffer: Buffer, name: string, filePath: string): Promise<FileContent> {
   if (buffer.length > MAX_BINARY_SIZE) {
     return { name, path: filePath, content: `[ファイルサイズが大きすぎます: ${(buffer.length / 1024 / 1024).toFixed(1)}MB]` };
+  }
+
+  // パスワード保護PDFは Claude が読めず API が 400 を返す → PDF を読む処理が丸ごと落ちる。
+  // base64 を付けず、テキスト注記だけ返してスキップ（他ファイルで処理続行 + ログ警告）。
+  if (isEncryptedPdf(buffer)) {
+    console.warn(`[parsePdf] パスワード保護PDFをスキップ: ${name}`);
+    return { name, path: filePath, content: `[パスワード保護のPDFのため読み込めませんでした（スキップ）: ${name}]` };
   }
 
   // pdf-parse 1.x: pdfParse(buffer) → { text, numpages, ... }
