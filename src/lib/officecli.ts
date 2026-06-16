@@ -39,7 +39,12 @@ export async function runOfficeCli(
 ): Promise<OfficeCliResult> {
   const { cwd = process.cwd(), timeoutMs = 30_000 } = options;
   return new Promise((resolve, reject) => {
-    const proc = spawn(OFFICECLI_BIN, args, { cwd, shell: false });
+    const proc = spawn(OFFICECLI_BIN, args, {
+      cwd,
+      shell: false,
+      // batch を --input で渡すと「stdin も redirect されてる」警告が出るので抑止。
+      env: { ...process.env, OFFICECLI_BATCH_ALLOW_STDIN_REDIRECT: "1" },
+    });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -128,34 +133,61 @@ export async function applyCommands(
   file: string,
   commands: OfficeCliCommand[]
 ): Promise<CommandExecResult[]> {
-  const results: CommandExecResult[] = [];
-  for (const cmd of commands) {
-    const args = buildArgs(file, cmd);
-    try {
-      const result = await runOfficeCli(args);
-      const ok = result.exitCode === 0;
-      results.push({
-        command: cmd,
-        result,
-        ok,
-        error: ok ? undefined : `exit=${result.exitCode}: ${result.stderr.trim()}`,
-      });
-    } catch (e) {
-      results.push({
-        command: cmd,
-        result: { stdout: "", stderr: "", exitCode: -1 },
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-  // 最後に close でファイルに保存 (resident mode が動いてる場合の flush)
+  if (commands.length === 0) return [];
+
+  // officecli batch で「1 回の open/save cycle」にまとめて実行する。
+  // 旧実装はコマンドごとに officecli プロセスを起動 (+末尾 close) しており、produce-v2 の
+  // 14 書類並列と相まって Windows のプロセス資源を枯渇させ (exit 0xC0000142)、後段の
+  // verify コメント書き込み等が固まる原因だった。batch なら 1 書類 = 1 プロセス・1 開閉。
+  const batchInput = commands.map((c) => {
+    const o: Record<string, unknown> = { command: c.command };
+    if (c.path) o.path = c.path;
+    if (c.parent) o.parent = c.parent;
+    if (c.type) o.type = c.type;
+    if (c.after) o.after = c.after;
+    if (c.before) o.before = c.before;
+    if (c.props) o.props = c.props;
+    return o;
+  });
+
+  const fsp = await import("fs/promises");
+  const tmpDir = path.join(os.tmpdir(), "recast-officecli");
+  await fsp.mkdir(tmpDir, { recursive: true });
+  const tmp = path.join(tmpDir, `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`);
+  await fsp.writeFile(tmp, JSON.stringify(batchInput), "utf-8");
+
+  // 大量コマンドでも CLI 長制限に当たらないよう --input (ファイル) で渡す。
+  type BatchItem = { index: number; success: boolean; output?: string; error?: string };
+  let resultsArr: BatchItem[] = [];
+  let runErr = "";
   try {
-    await runOfficeCli(["close", file]);
-  } catch {
-    // resident が動いてなければ No resident running エラーが出るが、無視 OK
+    const r = await runOfficeCli(["batch", file, "--input", tmp, "--json"], { timeoutMs: 120_000 });
+    try {
+      const j = JSON.parse(r.stdout) as { data?: { results?: BatchItem[] } };
+      resultsArr = j.data?.results ?? [];
+      if (resultsArr.length === 0 && r.exitCode !== 0) runErr = r.stderr.trim() || `exit=${r.exitCode}`;
+    } catch {
+      runErr = (r.stderr || "batch 出力を JSON parse できません").trim();
+    }
+  } catch (e) {
+    runErr = e instanceof Error ? e.message : String(e);
+  } finally {
+    await fsp.unlink(tmp).catch(() => {});
   }
-  return results;
+
+  const byIndex = new Map(resultsArr.map((x) => [x.index, x]));
+  return commands.map((cmd, i) => {
+    const x = byIndex.get(i);
+    if (!x) {
+      return { command: cmd, result: { stdout: "", stderr: runErr, exitCode: -1 }, ok: false, error: runErr || "batch 結果なし" };
+    }
+    return {
+      command: cmd,
+      result: { stdout: x.output ?? "", stderr: x.error ?? "", exitCode: x.success ? 0 : -1 },
+      ok: x.success,
+      error: x.success ? undefined : x.error,
+    };
+  });
 }
 
 // ===== 読み取り系ヘルパー =====

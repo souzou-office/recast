@@ -373,7 +373,7 @@ paraId は **必ず実在するもの** を指定 (前の入力で渡した view
               const input = toolBlock.input as {
                 documents?: { fileName: string; comments: { paraId: string; severity: string; text: string }[] }[];
               };
-              const { runOfficeCli } = await import("@/lib/officecli");
+              const { applyCommands } = await import("@/lib/officecli");
               const fs = await import("fs/promises");
 
               let totalComments = 0;
@@ -394,26 +394,27 @@ paraId は **必ず実在するもの** を指定 (前の入力で渡した view
                   console.log(`[verify officecli] skip ${docSpec.comments.length} comments for xlsx ${docSpec.fileName} (markdown checklist で通知)`);
                   continue;
                 }
-                // 各コメントを officecli add で書き込む (docx のみ)
-                for (const c of docSpec.comments) {
-                  const paraPath = `/body/p[@paraId=${c.paraId}]`;
-                  const severityPrefix = c.severity === "error" ? "❌ " : c.severity === "warn" ? "⚠️ " : "ℹ️ ";
-                  const text = `${severityPrefix}${c.text}`;
-                  const r = await runOfficeCli([
-                    "add", workPath, paraPath,
-                    "--type", "comment",
-                    "--prop", `text=${text}`,
-                    "--prop", "author=recast verify",
-                  ]);
-                  if (r.exitCode === 0) {
-                    totalComments++;
-                  } else {
-                    totalFailed++;
-                    console.warn(`[verify officecli] add comment failed for ${docSpec.fileName} @${c.paraId}: ${r.stderr}`);
-                  }
-                }
-                // close で flush
-                await runOfficeCli(["close", workPath]).catch(() => {});
+                // docx のみ: 1 書類分のコメントを officecli batch で一括追加。
+                // 旧実装はコメント 1 件ごとに officecli を起動していたため、produce-v2 の
+                // 14 書類並列直後で Word プロセスが枯渇し「コメントを書き込んでいます」で固まっていた。
+                // batch なら 1 書類 = 1 プロセス・1 開閉で済む。
+                if (!docSpec.comments || docSpec.comments.length === 0) continue;
+                const commentCommands = docSpec.comments.map((c) => {
+                  const prefix = c.severity === "error" ? "❌ " : c.severity === "warn" ? "⚠️ " : "ℹ️ ";
+                  return {
+                    command: "add" as const,
+                    path: `/body/p[@paraId=${c.paraId}]`,
+                    type: "comment",
+                    props: { text: `${prefix}${c.text}`, author: "recast verify" },
+                  };
+                });
+                const cmdResults = await applyCommands(workPath, commentCommands);
+                const okCount = cmdResults.filter((r) => r.ok).length;
+                totalComments += okCount;
+                totalFailed += commentCommands.length - okCount;
+                cmdResults
+                  .filter((r) => !r.ok)
+                  .forEach((r) => console.warn(`[verify officecli] add comment failed for ${docSpec.fileName}: ${r.error}`));
                 // 結果 docx を base64 で読み戻して generatedDocuments を更新する候補に
                 try {
                   const newBuf = await fs.default.readFile(workPath);
