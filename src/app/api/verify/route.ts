@@ -182,6 +182,27 @@ export async function POST(request: NextRequest) {
           .join("\n");
     }
 
+    // xlsx の数式セル (=SUM 等) は、表示値が「前回計算時のキャッシュ」。officecli はセル値を書き換える
+    // だけで再計算しないので、合計・割合が古い値 (前テンプレ案件の数字) のまま残る。ただし生成 xlsx には
+    // fullCalcOnLoad を立ててあり (xlsx-cleanup)、Excel で開けば自動再計算されて正しくなる。
+    // verify は Excel で開かず生の値を読むため、このキャッシュ値が個別値と合わず「合計が違う」と誤検知して
+    // いた (株主リストの合計 24,756 問題)。どのセルが数式かはファイルに <f> として明記されているので機械的に
+    // 特定でき、AI に「これらは指摘するな」と渡せる。個別値のチェックは従来どおり残るので安全。
+    if (/\.(xlsx|xlsm|xls)$/i.test(doc.fileName)) {
+      try {
+        const { getXlsxFormulaCells } = await import("@/lib/xlsx-marker-parser");
+        const formulaCells = getXlsxFormulaCells(Buffer.from(doc.docxBase64, "base64"));
+        if (formulaCells.size > 0) {
+          docBlock += `\n\n[★数式セル（自動計算）= 指摘しないこと★]\n` +
+            `次のセルは =SUM 等の数式で、表示されている値は前回計算時のキャッシュにすぎない。` +
+            `この xlsx は Excel で開くと全数式が自動再計算される設定 (fullCalcOnLoad) なので、開けば正しい値になる。` +
+            `したがって、これらのセルの合計・割合が個別の値と一致しなくても誤りではない。` +
+            `**これらの数式セルについては差異を指摘・コメントしないこと**:\n` +
+            [...formulaCells].map((k) => `- ${k}`).join("\n");
+        }
+      } catch { /* 数式セル特定に失敗しても続行 (誤検知が残るだけ) */ }
+    }
+
     // OfficeCLI モードでは追加情報を本文末尾に付与
     if (useOfficeCli) {
       try {
