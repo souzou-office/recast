@@ -1258,7 +1258,34 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             // 確認回答 (議案削除の要否等) を分類AI(Step A)にも渡す。これが無いと「削除が要る→ai」の
             // 判断ができず、削除が要る書類まで fill に振り分けられて削除指示が落ちる (議案2不具合の根因)。
             if (qaBlock) caseContextForPlan += `\n${qaBlock}`;
-            const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates });
+
+            // 案件フォルダの画像 (マイナンバーカード等) を穴埋め AI に添付する。
+            // 生年月日・住所などは本人確認書類の画像にしか無く、整理結果(テキスト)に出てこないことがある。
+            // 穴埋め時にその画像を直接読めるようにして「データが無い→元データ(原本)を見る」を成立させる
+            // (これが無いと生年月日が <UNKNOWN> のまま出る)。analyze は案件ファイルを body で受け取らないので
+            // ここで案件フォルダ(thread.folderPath)を読み込む。
+            let casePlanImages: { base64: string; mimeType: string; name: string }[] = [];
+            try {
+              const fsLib = await import("fs/promises");
+              const nodePath = await import("path");
+              // eslint-disable-next-line @typescript-eslint/no-require-imports
+              const crypto = require("crypto");
+              const companyHash = crypto.createHash("md5").update(company.id).digest("hex");
+              const threadFile = nodePath.default.join(process.cwd(), "data", "chat-threads", companyHash, `${threadId}.json`);
+              const threadData = JSON.parse(await fsLib.default.readFile(threadFile, "utf-8")) as { folderPath?: string };
+              if (threadData.folderPath) {
+                const IMG = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+                const caseFiles = await readAllFilesInFolder(threadData.folderPath);
+                casePlanImages = caseFiles
+                  .filter((cf) => cf.mimeType && IMG.has(cf.mimeType) && cf.base64)
+                  .map((cf) => ({ base64: cf.base64 as string, mimeType: cf.mimeType as string, name: cf.name }));
+                if (casePlanImages.length > 0) {
+                  send(controller, { type: "text", text: `案件画像 ${casePlanImages.length} 件を穴埋め時の原本参照に添付\n` });
+                }
+              }
+            } catch { /* 案件画像が読めなくても続行 */ }
+
+            const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates, caseImages: casePlanImages });
             const planSummary = plan.templatePlans.map((tp) => `${tp.templateFile}:${tp.mode}`).join(", ");
             send(controller, { type: "text", text: `仕分け: ${planSummary}\n` });
 

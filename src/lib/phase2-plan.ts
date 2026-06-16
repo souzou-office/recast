@@ -123,7 +123,11 @@ ${tplBlocks}
 - 「形式」ヒントに従って最終表記を決める (例: 形式「○月分より」なら「令和8年6月分より」)
 - **同じ意味の値は全テンプレ・全出力で同じにする** (例: 月額報酬は全書類で「75万円」に統一。
   ある書類で 750,000円 にしない)。あなたは全テンプレを一度に見ているので統一できる
-- 資料から値が決まらない slot は slotFills に含めない (前案件値が残るが、それは別途チェックされる)
+- **案件フォルダの画像 (マイナンバーカード・運転免許証・印鑑証明書等) が添付されている場合**、
+  整理結果・確認回答のテキストに無い値 (生年月日・住所・氏名の正確な表記など) は、その添付画像から
+  **読み取って埋める**こと。生年月日はまさにこれらの画像に写っている。
+  「資料から値が決まらない」と諦める前に、必ず添付画像を確認する (UNKNOWN 等の placeholder を残さない)。
+- それでも本当に決まらない slot だけ slotFills に含めない (前案件値が残るが、それは別途チェックされる)
 - **使わない行の slot** (取締役3枠あるが1人だけ等、余る枠) は value を空文字 "" にする
   → recast がその行を削除して詰める
 
@@ -144,15 +148,29 @@ ${tplBlocks}
 export async function runPhase2Planning(args: {
   caseContext: string;
   templates: PlanTemplateInput[];
+  caseImages?: { base64: string; mimeType: string; name: string }[];
 }): Promise<Phase2Plan> {
   const prompt = buildPrompt(args.caseContext, args.templates);
+  // 案件フォルダの画像 (マイナンバーカード等) を添付。整理結果テキストに無い値 (生年月日・住所など、
+  // 画像にしか無い情報) を穴埋め AI が原本から直接読み取れるようにする。画像が無ければ従来どおり文字のみ。
+  const imgMimes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+  const images = (args.caseImages || []).filter((im) => im.base64 && imgMimes.has(im.mimeType));
+  const content: string | Anthropic.ContentBlockParam[] = images.length > 0
+    ? [
+        ...images.map((im) => ({
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: im.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: im.base64 },
+        })),
+        { type: "text" as const, text: prompt },
+      ]
+    : prompt;
   const resp = await client.messages.create({
     model: MODEL,
     max_tokens: 16384,
     temperature: 0,
     tools: [PHASE2_PLAN_TOOL],
     tool_choice: { type: "tool", name: "submit_phase2_plan" },
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content }],
   });
   logTokenUsage("/api/document-templates/analyze (Step A: plan)", MODEL, resp.usage);
 
