@@ -358,6 +358,20 @@ export async function POST(request: NextRequest) {
             } catch (e) {
               console.warn(`[produce-v2 officecli] cleanup 失敗:`, e instanceof Error ? e.message : e);
             }
+          } else if (/^xls[xm]/i.test(ext0)) {
+            // xlsx/xlsm: 数式 (合計・割合) を Excel 開封時に必ず再計算させる。
+            // officecli はセル値を書き換えるが数式を再計算しないため、放置すると古いキャッシュ値
+            // (例: 合計 24756 のまま、実データは 105263) が残る。fullCalcOnLoad で開封時に強制再計算。
+            try {
+              const { ensureXlsxRecalc } = await import("@/lib/xlsx-cleanup");
+              const { buf: recalced, changed } = ensureXlsxRecalc(resultBuf);
+              resultBuf = recalced;
+              if (changed) {
+                console.log(`[produce-v2 officecli] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""}: xlsx fullCalcOnLoad 設定 (数式を開封時に再計算)`);
+              }
+            } catch (e) {
+              console.warn(`[produce-v2 officecli] xlsx recalc 設定失敗:`, e instanceof Error ? e.message : e);
+            }
           }
 
           const baseName = f.name.replace(/\.[^.]+$/, "");
