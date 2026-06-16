@@ -588,6 +588,59 @@ interface ChangeOp {
   ```
 - port 3000 が他プロセスで使われてると 3001/3002 にフォールバックする。古いプロセス (PID) を kill して 3000 を空けるとブラウザ URL が変わらず楽
 
+## 2026-06-16 セッション: officecli の致命的な落とし穴 + 質問生成の改善 (fix/agenda-block-removal)
+
+### ★★★ 最重要: officecli は「get/view したファイルへの直後の batch」を無言で握り潰す ★★★
+
+**症状**: `officecli get`/`view`/`validate` (read 系) したファイルに、その直後 **同じファイル** へ
+`batch` (編集) すると、**全コマンドを success と報告するのに保存が一切反映されない**。
+exit 0 で「成功」と返るので気付けない。resident process がファイルを掴むのが原因らしい。
+
+**再現 (実機確認済み)**:
+```
+cp tpl work.docx; officecli get work.docx /body/p[@paraId=X]; officecli batch work.docx (18cmd)
+  → batch は success=18/18。だが work.docx は 1 文字も変わらない ❌
+cp tpl work.docx; officecli batch work.docx (18cmd)   # get 無し
+  → 全部正しく反映される ✓
+cp tpl work.docx; officecli get OTHER.docx ...; officecli batch work.docx (18cmd)  # get は別ファイル
+  → 正しく反映される ✓ (汚染はパス固有)
+```
+
+**回避策 (鉄則)**: **batch する予定のファイルは、その前に get/view しない。**
+読み取りが必要なら **別ファイル (テンプレ原本や使い捨てコピー) に対して** やる。
+
+**これが原因だった 2 つの実バグ (本セッションで修正, commit c40cadf)**:
+1. **組合の提案書兼同意書が丸ごとテンプレのまま出力** (ユーザー報告「DEEP30と投資事業有限責任
+   組合の書類がまったく変わってない」)。produce-v2 は add コマンド付き書類 (組合の同意欄に
+   無限責任組合員等の行を足す) だけ、add の書式継承で **workCopy を get** していた → 直後の
+   batch が汚染 → 組合株主の書類だけ会社名・代表・議案・日付・株主すべて未置換 (前テンプレ案件
+   = Polaris.AI のデータ) のまま出ていた。個人株主は add 無し=get 無しで正常だった。
+   → 修正: 書式 get を `workCopy` → `f.path` (テンプレ原本、batch しない) に変更。
+2. **verify のコメントが 1 件も保存されていなかった**。「コメント書き込み完了: 成功 N 件」と
+   表示するのに comments.xml は空。view (text/issues/validate) 済みの workPath に batch して
+   いたため汚染。→ 修正: view していない新コピー (原本 base64 から作成) にコメントを batch。
+
+**教訓**: officecli の後処理 (set/query/batch) は「成功と言いつつ効いてない」事故を起こす。
+docx-cleanup.ts / xlsx-cleanup.ts を PizZip 直接編集にしたのと同じ理由。read と write を
+同じファイルで混ぜない。疑わしい時は「生成物を読み戻して実際に変わったか」を必ず確認する。
+
+### 質問生成 (analyze-questions) の改善
+- **画像 (マイナンバーカード等) を聞く前に必ず読む** (commit 57c33a8): 生年月日・住所は本人確認
+  書類の JPG に写っている。read_common_file の対象を共通だけ→**案件フォルダも追加**、profileSources
+  での絞りを撤廃。JPG は image block で渡る (スキャン PDF は tool_result に入れられず未対応=既知制約)。
+- **突き合わせをユーザーに代行させない** (commit b71e073): 「カードの住所は登記と一致してますか?」
+  のような確認質問を禁止。AI が両方読んで照合し、実際に食い違った時だけ両方の実値で質問する。
+
+### 生成 xlsx の数式再計算 (commit 1f97eaf)
+- officecli は数式セルを再計算しないので、合計・割合が古いキャッシュのまま出る事故があった。
+  `src/lib/xlsx-cleanup.ts` で workbook.xml の calcPr に `fullCalcOnLoad="1"` を立て、Excel で
+  開いた瞬間に強制再計算させる (PizZip 直接編集)。
+
+### コメント書き込みの batch 化 (commit f03aa94)
+- 旧: コメント 1 件ごとに officecli 起動 → 14 書類並列直後で Word 枯渇し固まる。
+  新: 1 書類 = 1 batch (applyCommands を batch 実装に書き換え)。※ ただし上記 #2 の汚染で
+  保存自体が効いていなかった。c40cadf で両方解決。
+
 ## 現在のブランチ
 
 - `main` — 最新 (PR #90 までマージ済み)
