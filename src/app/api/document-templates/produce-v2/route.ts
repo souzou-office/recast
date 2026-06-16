@@ -283,6 +283,15 @@ export async function POST(request: NextRequest) {
           // officecli の add は default 書式で段落を作るので、足した行だけ左端に飛んで字下げが崩れる
           // (組合の同意欄で発生)。after 段落を get して layout 系プロパティを add の props に注入。
           // 値の継承は recast が機械的にやる → AI に書式判断させない (決定論的)。
+          //
+          // ★致命的な落とし穴 (実機で再現確認済み)★
+          //   get の対象は workCopy では「絶対に」なく、テンプレ原本 (f.path) にすること。
+          //   officecli は get したファイルを resident process で掴むらしく、同じファイルを直後に
+          //   batch すると【全コマンドを success と報告するのに保存が一切反映されない】無言失敗を起こす。
+          //   → add を持つ書類 (組合の提案書兼同意書など) だけがこの get を通るため、組合書類だけが
+          //     丸ごとテンプレのまま出力される (Deep30 組合の提案書が Polaris テンプレのまま出た原因)。
+          //   get(別ファイル) + batch(workCopy) なら汚染されないことを確認済み。afterId 段落はコピー
+          //   直後の workCopy とテンプレで同一なので、f.path から読んでも書式は同じ。
           {
             const { runOfficeCli } = await import("@/lib/officecli");
             // after paraId → 書式プロパティ のキャッシュ (同じ after に複数 add がぶら下がる)
@@ -295,7 +304,8 @@ export async function POST(request: NextRequest) {
               const afterId = m[1];
               if (!fmtCache.has(afterId)) {
                 try {
-                  const r = await runOfficeCli(["get", workCopy, `/body/p[@paraId=${afterId}]`, "--json"], { timeoutMs: 10_000 });
+                  // ★workCopy ではなく f.path (テンプレ原本) から読む。理由は上のコメント参照★
+                  const r = await runOfficeCli(["get", f.path, `/body/p[@paraId=${afterId}]`, "--json"], { timeoutMs: 10_000 });
                   const parsed = JSON.parse(r.stdout || "{}");
                   const fmt = parsed?.data?.results?.[0]?.format || {};
                   const picked: Record<string, string> = {};

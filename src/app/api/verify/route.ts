@@ -408,7 +408,16 @@ paraId は **必ず実在するもの** を指定 (前の入力で渡した view
                     props: { text: `${prefix}${c.text}`, author: "recast verify" },
                   };
                 });
-                const cmdResults = await applyCommands(workPath, commentCommands);
+                // ★view 済みの workPath ではなく、原本から作った「view していない新コピー」に batch する★
+                // verify は前段 (line ~200) で workPath を officecli view (text/issues/validate) 済み。
+                // officecli は view/get したファイルを resident process で掴み、同一ファイルへの batch を
+                // 【全コマンド success と報告するのに保存が一切反映されない】無言失敗を起こす (実機で再現確認。
+                //  produce-v2 で組合書類が丸ごとテンプレのまま出た件と同根)。このため従来の
+                //  「コメント書き込み完了: 成功 N 件」は嘘で、コメントは 1 つも保存されていなかった。
+                // → view していない新しいファイルに原本 base64 を書き出し、それに batch する。
+                const freshPath = `${workPath}.cmt.docx`;
+                await fs.default.writeFile(freshPath, Buffer.from(origDoc.docxBase64, "base64"));
+                const cmdResults = await applyCommands(freshPath, commentCommands);
                 const okCount = cmdResults.filter((r) => r.ok).length;
                 totalComments += okCount;
                 totalFailed += commentCommands.length - okCount;
@@ -417,7 +426,7 @@ paraId は **必ず実在するもの** を指定 (前の入力で渡した view
                   .forEach((r) => console.warn(`[verify officecli] add comment failed for ${docSpec.fileName}: ${r.error}`));
                 // 結果 docx を base64 で読み戻して generatedDocuments を更新する候補に
                 try {
-                  const newBuf = await fs.default.readFile(workPath);
+                  const newBuf = await fs.default.readFile(freshPath);
                   updatedDocs.push({
                     ...origDoc,
                     docxBase64: newBuf.toString("base64"),
