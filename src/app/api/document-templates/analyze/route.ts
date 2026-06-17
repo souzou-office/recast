@@ -1286,6 +1286,26 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             } catch { /* 案件画像が読めなくても続行 */ }
 
             const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates, caseImages: casePlanImages });
+
+            // ★組合の安全網 (分類ブレ対策・実機で再発確認)★
+            // 株主/当事者に「組合」(◯◯投資事業有限責任組合 等) を含む 提案書兼同意書・総数引受契約書 は、
+            // 同意/引受欄に「主たる事務所・名称・無限責任組合員・組合員(代表者法人)・代表取締役」の複数行が
+            // 必要 (統一ルール④で定義)。これは fill/loop の穴埋めでは作れず、組合株主が個人と同じ1行氏名に
+            // なって代表取締役・組合員が丸ごと抜ける。分類AI(Step A)は本来 ai に振るべきだが loop に振れる
+            // ブレがあり、その時だけ組合構造が落ちていた (ユーザー報告「何回目か分からない」)。
+            // → エンティティ名に「組合」を含む per-party 書類は、ここで決定論的に ai へ矯正する。
+            //   ai は統一ルール④を適用して組合構造を生成できる (前回 18 コマンド/add 行で生成実績あり)。
+            //   値照合ではなく「当事者が組合かどうか」での確実な振り分けなので、分類のブレに依存しない。
+            for (const tp of plan.templatePlans) {
+              if (tp.mode === "ai") continue;
+              if (!/提案書兼同意書|総数引受|引受契約/.test(tp.templateFile)) continue;
+              const hasKumiaiEntity = (tp.entities || []).some((e) => /組合/.test(e.outputLabel || ""));
+              if (hasKumiaiEntity) {
+                tp.mode = "ai";
+                send(controller, { type: "text", text: `  ${tp.templateFile}: 組合株主を検出 → ai に矯正 (組合の構造行を作るため)\n` });
+              }
+            }
+
             const planSummary = plan.templatePlans.map((tp) => `${tp.templateFile}:${tp.mode}`).join(", ");
             send(controller, { type: "text", text: `仕分け: ${planSummary}\n` });
 
