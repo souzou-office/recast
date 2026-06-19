@@ -539,6 +539,39 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // テンプレ群のメモ (選択テンプレフォルダ内の .txt/.md) + 案件フォルダのメモ (.txt/.md) を読んで、
+  // 生成 AI (Step A の穴埋め判断 / ai モードの commands 生成) に「作成者・担当者の指示」として渡す。
+  // ★これまで一切読まれていなかった★ (analyze/analyze-questions は .txt をスキップ、produce-v2 は
+  // docx/xlsx のみ処理) ため、メモに書いた指示が生成に効いていなかった。共通ルール(統一ルール.txt)とは別。
+  let memoBlock = "";
+  try {
+    const notes: string[] = [];
+    const pickNotes = (files: { name: string; content?: string }[], label: string) => {
+      for (const f of files) {
+        if (!/\.(txt|md)$/i.test(f.name)) continue;
+        const c = (f.content || "").trim();
+        if (!c || c.startsWith("[")) continue; // 空 / base64 等は除外
+        notes.push(`### ${label}: ${f.name}\n${c}`);
+      }
+    };
+    if (templateFolderPath) {
+      try { pickNotes(await readAllFilesInFolder(templateFolderPath), "テンプレ群メモ"); } catch { /* ignore */ }
+    }
+    try {
+      const fsLib = await import("fs/promises");
+      const nodePath = await import("path");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const crypto = require("crypto");
+      const companyHash = crypto.createHash("md5").update(company.id).digest("hex");
+      const threadFile = nodePath.default.join(process.cwd(), "data", "chat-threads", companyHash, `${threadId}.json`);
+      const threadData = JSON.parse(await fsLib.default.readFile(threadFile, "utf-8")) as { folderPath?: string };
+      if (threadData.folderPath) pickNotes(await readAllFilesInFolder(threadData.folderPath), "案件フォルダメモ");
+    } catch { /* ignore */ }
+    if (notes.length > 0) {
+      memoBlock = `\n\n## メモ・注意事項 (テンプレ作成者/案件担当者がファイルに残した指示。反映すること)\n${notes.join("\n\n")}`;
+    }
+  } catch { /* メモが読めなくても続行 */ }
+
   // Phase 1 (organize) 完了が前提
   let aiMessages = await loadAiMessages(company.id, threadId);
   if (!hasStage(aiMessages, "organize")) {
@@ -1042,6 +1075,7 @@ remove より少ない add は **ほぼ確実に省略バグ**。op 数を減ら
               if (globalRulesText.trim()) {
                 essentialContext += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
               }
+              essentialContext += memoBlock; // テンプレ群/案件フォルダのメモ (notes が無ければ空文字)
               const response = await client.messages.create({
                 model: JSON_MODEL,
                 max_tokens: 16384,
@@ -1267,6 +1301,7 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             if (globalRulesText.trim()) {
               caseContextForPlan += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
             }
+            caseContextForPlan += memoBlock; // テンプレ群/案件フォルダのメモ (notes が無ければ空文字)
             // 確認回答 (議案削除の要否等) を分類AI(Step A)にも渡す。これが無いと「削除が要る→ai」の
             // 判断ができず、削除が要る書類まで fill に振り分けられて削除指示が落ちる (議案2不具合の根因)。
             if (qaBlock) caseContextForPlan += `\n${qaBlock}`;
