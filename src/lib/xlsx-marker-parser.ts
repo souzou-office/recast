@@ -72,6 +72,35 @@ function findDateStyleIndexes(stylesXml: string): Set<number> {
   return dateStyles;
 }
 
+// パーセント書式 (formatCode に % を含む) のセルスタイル index を集める。
+// %書式セルは「0.784」を入れると 78.4% と表示される (×100)。値に % を付けて入れる必要がある。
+// 組み込み: 9 ("0%"), 10 ("0.00%")。
+function findPercentStyleIndexes(stylesXml: string): Set<number> {
+  const pctNumFmtIds = new Set<number>([9, 10]);
+  const numFmtsMatch = stylesXml.match(/<numFmts[^>]*>([\s\S]*?)<\/numFmts>/);
+  if (numFmtsMatch) {
+    const re = /<numFmt\b([^/>]*)\/>/g;
+    let m;
+    while ((m = re.exec(numFmtsMatch[1])) !== null) {
+      const idMatch = m[1].match(/numFmtId="(\d+)"/);
+      const codeMatch = m[1].match(/formatCode="([^"]*)"/);
+      if (!idMatch || !codeMatch) continue;
+      if (codeMatch[1].includes("%")) pctNumFmtIds.add(parseInt(idMatch[1]));
+    }
+  }
+  const xfsMatch = stylesXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/);
+  if (!xfsMatch) return new Set();
+  const pctStyles = new Set<number>();
+  const xfRe = /<xf\b([^>]*)(?:\/>|>[\s\S]*?<\/xf>)/g;
+  let xm; let xi = 0;
+  while ((xm = xfRe.exec(xfsMatch[1])) !== null) {
+    const numFmtMatch = xm[1].match(/numFmtId="(\d+)"/);
+    if (numFmtMatch && pctNumFmtIds.has(parseInt(numFmtMatch[1]))) pctStyles.add(xi);
+    xi++;
+  }
+  return pctStyles;
+}
+
 // Excel シリアル日付 (1 = 1900-01-01 as per Lotus-compat) → "YYYY-MM-DD"
 // 基準: 1899-12-30 UTC。Excel は 1900 年の閏年バグのため 60 を跨ぐと 1 日ずれるが、
 // 46062 等の現代の日付では影響しないため簡易実装で OK。
@@ -327,10 +356,13 @@ export function extractXlsxMarkedCells(buffer: Buffer): XlsxMarkedCell[] {
           }
         }
 
-        if (isYellow || isRedFont) {
+        // 赤フォントは「赤い"文字"を差し替えて」の意味 → 空セルの赤フォント書式 (消し残り) はマーカーにしない。
+        // 黄色は「セルを埋めて」→ 空でもマーカー (株主リスト 2-10 位等の空欄行)。
+        const isWholeCellMarker = isYellow || (isRedFont && value.trim() !== "");
+        if (isWholeCellMarker) {
           // マージ内の非 top-left セルは装飾扱いで skip
           if (mergeSuppressed.has(ref)) continue;
-          // ① セル全体マーカー (空でも slot として登録 → 株主リスト 2-10 位等の空欄行が拾える)
+          // ① セル全体マーカー (黄色は空でも登録 → 株主リスト 2-10 位等の空欄行が拾える)
           cells.push({ ref, value, sheetName });
         } else if (value.trim() && siIndex >= 0 && redSiMap.has(siIndex)) {
           // ② 赤 run マーカー (値必須、赤い部分だけを順に push)
@@ -463,14 +495,18 @@ export function replaceXlsxMarkedCellsBySlot(
           const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
           const siIndex = (vMatch && tMatch?.[1] === "s") ? parseInt(vMatch[1]) : -1;
           const isRedSi = siIndex >= 0 && redSiMap.has(siIndex);
+          // 赤フォントは「赤い文字を差し替えて」の意味 → 空セルの赤フォント書式 (消し残り) はマーカーにしない。
+          // 黄色は空でもマーカー (株主リストの空欄行)。getXlsxMarkedTextWithSlots と同じ判定にして slot 順を揃える。
+          const cellVal = vMatch ? (tMatch?.[1] === "s" ? (sharedStrings[parseInt(vMatch[1])] || "") : vMatch[1]) : "";
+          const isWholeCellMarker = isYellow || (isRedFont && cellVal.trim() !== "");
 
-          if (!isYellow && !isRedFont && !isRedSi) return cellWhole;
+          if (!isWholeCellMarker && !isRedSi) return cellWhole;
 
           // マージ内の非 top-left は装飾扱いで slot に出さない
-          if ((isYellow || isRedFont) && mergeSuppressed.has(ref)) return cellWhole;
+          if (isWholeCellMarker && mergeSuppressed.has(ref)) return cellWhole;
 
-          if (isYellow || isRedFont) {
-            // セル全体マーカー = 1 slot (空セルでも OK = 株主リストの 2-10 位 空欄)
+          if (isWholeCellMarker) {
+            // セル全体マーカー = 1 slot (黄色は空でも OK = 株主リストの 2-10 位 空欄)
             const currentSlot = slotCounter++;
             const newValue = slotReplacements.get(currentSlot);
             if (newValue === undefined || newValue === "") return cellWhole;
@@ -1025,17 +1061,38 @@ export function expandYellowRowBlock(buffer: Buffer, desiredRows: number): Buffe
 //   C) 赤いテキスト run    → セル内の赤い部分だけ ［要入力_N］、他は固定で残す
 // AIは前案件の値に引きずられず文脈だけで判断できる。
 // slots: N → セルの元値（originalValue）。produce 側で {origValue → newValue} の置換マップを作る用。
-export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
+// slot ごとのセル位置。ルールベース fill コマンド生成で officecli path=/SheetName/CellAddr を作るのに使う。
+export interface XlsxSlotPosition {
+  ref: string;        // "B14"
+  sheetName: string;  // "株主リスト（承認決議）（包括）"
+}
+
+export function getXlsxMarkedTextWithSlots(buffer: Buffer): {
+  text: string;
+  slots: Map<number, string>;
+  slotPositions: Map<number, XlsxSlotPosition>;
+  // ref (例: "A26") → そのセルの完全テンプレ。固定文 + ［要入力_N］ プレースホルダ入り。
+  // 1 セルに複数 slot (赤 run 等) がある場合、value= の上書き事故を防ぐため
+  // このテンプレに全 slot の値を埋め込んで 1 回で書き込む。
+  cellTexts: Map<string, string>;
+  // % 書式のセル ref 集合。値に % を付けて入れないと 78.4 → 7840% になる。
+  percentRefs: Set<string>;
+} {
   const zip = new PizZip(buffer);
   const stylesXml = zip.file("xl/styles.xml")?.asText() || "";
   const yellowStyles = findYellowStyleIndexes(stylesXml);
   const redFontStyles = findRedFontStyleIndexes(stylesXml);
   const dateStyles = findDateStyleIndexes(stylesXml);
+  const percentStyles = findPercentStyleIndexes(stylesXml);
   const ssXml = zip.file("xl/sharedStrings.xml")?.asText();
   const sharedStrings = ssXml ? getSharedStrings(ssXml) : [];
   const redSiMap = ssXml ? findRedSharedStrings(ssXml) : new Map<number, SiRun[]>();
+  const wbXml = zip.file("xl/workbook.xml")?.asText() || "";
 
   const slots = new Map<number, string>();
+  const slotPositions = new Map<number, XlsxSlotPosition>();
+  const cellTexts = new Map<string, string>();
+  const percentRefs = new Set<string>();
   let slotId = 0;
   const lines: string[] = [];
 
@@ -1043,6 +1100,17 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
     if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
     const sheetXml = zip.file(fileName)?.asText();
     if (!sheetXml) continue;
+
+    // シート名を解決 (extractXlsxMarkedCells と同じロジック)
+    const sheetNum = fileName.match(/sheet(\d+)/)?.[1] || "1";
+    let sheetName = `Sheet${sheetNum}`;
+    if (wbXml) {
+      const sheetRe = /<sheet\s+name="([^"]*)"[^>]*r:id="rId(\d+)"/g;
+      let sm;
+      while ((sm = sheetRe.exec(wbXml)) !== null) {
+        if (sm[2] === sheetNum) { sheetName = sm[1]; break; }
+      }
+    }
 
     // マージ内の非 top-left は装飾扱いで skip (extractXlsxMarkedCells と同じ)
     const mergeSuppressed = findMergeSuppressedRefs(sheetXml);
@@ -1070,6 +1138,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
         const sMatch = attrs.match(/\bs="(\d+)"/);
         const vMatch = inner.match(/<v>([^<]*)<\/v>/);
         const styleIdx = sMatch ? parseInt(sMatch[1]) : -1;
+        if (ref && styleIdx >= 0 && percentStyles.has(styleIdx)) percentRefs.add(ref);
 
         // 値を抽出 (なければ空)
         let val = "";
@@ -1091,16 +1160,23 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
 
         const isYellow = styleIdx >= 0 && yellowStyles.has(styleIdx);
         const isRedFont = styleIdx >= 0 && redFontStyles.has(styleIdx);
+        // 赤フォント = 「この赤い"文字"を差し替えて」の意味。空セルに赤フォント書式だけ残っている
+        // (テンプレ編集の消し残り) 場合は差し替える対象が無いのでマーカーにしない。
+        // 黄色 = 「このセルを埋めて」なので空でもマーカー (株主リストの空欄行で必要)。
+        const isWholeCellMarker = isYellow || (isRedFont && val.trim() !== "");
 
-        if (isYellow || isRedFont) {
+        if (isWholeCellMarker) {
           // マージ内の非 top-left は装飾セル扱いで skip
           if (mergeSuppressed.has(ref)) {
             if (val.trim()) rowTexts.push(val);
             continue;
           }
-          // セル全体が可変 (空でも slot として登録 → 株主リスト等の空欄行で重要)
+          // セル全体が可変 (黄色は空でも slot 登録 → 株主リスト等の空欄行で重要)
           slots.set(slotId, val);
-          rowTexts.push(`［要入力_${slotId}］`);
+          slotPositions.set(slotId, { ref, sheetName });
+          const placeholder = `［要入力_${slotId}］`;
+          rowTexts.push(placeholder);
+          cellTexts.set(ref, placeholder);  // セル全体 = この 1 placeholder
           slotId++;
         } else if (val.trim() && siIndex >= 0 && redSiMap.has(siIndex)) {
           // 赤 run 含むセル: 赤部分だけ slot 化、他は固定文字として残す
@@ -1109,6 +1185,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
           for (const run of runs) {
             if (run.isRed) {
               slots.set(slotId, run.text);
+              slotPositions.set(slotId, { ref, sheetName });
               cellText += `［要入力_${slotId}］`;
               slotId++;
             } else {
@@ -1116,6 +1193,7 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
             }
           }
           rowTexts.push(cellText);
+          cellTexts.set(ref, cellText);  // 固定文 + 複数 placeholder のテンプレ
         } else if (val.trim()) {
           rowTexts.push(val);
         }
@@ -1123,7 +1201,47 @@ export function getXlsxMarkedTextWithSlots(buffer: Buffer): { text: string; slot
       if (rowTexts.some(t => t.trim())) lines.push(rowTexts.join("\t"));
     }
   }
-  return { text: lines.join("\n"), slots };
+  return { text: lines.join("\n"), slots, slotPositions, cellTexts, percentRefs };
+}
+
+// テンプレ xlsx の「数式セル」の位置を集める。
+// 用途: produce 側で「数式セルは AI コマンドで上書きしない」ガードに使う。
+//   合計・割合などの**計算結果セル**をテンプレで =SUM 等にしておくと、スプレッドシートが
+//   自動計算して常に正しい値になる。ところが ai モードでは AI が同じセルに set コマンドを
+//   出すことがあり (例: 合計% に "1%" を書く)、それが数式を潰すと 100% が 1% に化ける。
+//   このセル集合を produce が参照して該当 set を捨てれば、数式が守られる。
+// 戻り値: "シート名/セル参照" の集合 (例: "株主リスト（承認決議）（包括）/F24")。
+//         officecli の xlsx path (/シート名/セル) と同形式なので produce 側で突き合わせやすい。
+export function getXlsxFormulaCells(buffer: Buffer): Set<string> {
+  const result = new Set<string>();
+  let zip;
+  try { zip = new PizZip(buffer); } catch { return result; }
+  const wbXml = zip.file("xl/workbook.xml")?.asText() || "";
+  for (const fileName of Object.keys(zip.files)) {
+    if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(fileName)) continue;
+    const sheetXml = zip.file(fileName)?.asText();
+    if (!sheetXml) continue;
+    // シート名解決 (getXlsxMarkedTextWithSlots と同じロジック)
+    const sheetNum = fileName.match(/sheet(\d+)/)?.[1] || "1";
+    let sheetName = `Sheet${sheetNum}`;
+    if (wbXml) {
+      const sheetRe = /<sheet\s+name="([^"]*)"[^>]*r:id="rId(\d+)"/g;
+      let sm;
+      while ((sm = sheetRe.exec(wbXml)) !== null) {
+        if (sm[2] === sheetNum) { sheetName = sm[1]; break; }
+      }
+    }
+    // 数式セル: <c r="F24" ...><f>...</f>...</c> (prefix 無し / x: prefix 両対応)
+    const cellRe = /<(?:x:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:x:)?c>)/g;
+    let cm;
+    while ((cm = cellRe.exec(sheetXml)) !== null) {
+      const inner = cm[2] || "";
+      if (!/<(?:x:)?f\b/.test(inner)) continue;
+      const ref = (cm[1].match(/\br="([A-Z]+\d+)"/) || [])[1];
+      if (ref) result.add(`${sheetName}/${ref}`);
+    }
+  }
+  return result;
 }
 
 // Excelの全体テキストを★マーク付きで返す（旧方式、後方互換用）

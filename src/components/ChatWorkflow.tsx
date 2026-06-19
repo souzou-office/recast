@@ -20,16 +20,69 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   // 校正モード (proofread) 実行中のメッセージ ID。同時に複数 card で動くことは想定しない。
-  const [previewFile, setPreviewFile] = useState<{
+  // プレビューはタブ式: 開いた書類をタブとして並べて、クリックで切替
+  type PreviewTab = {
     filePath?: string;
     docxBase64?: string;
     fileName: string;
-    // 値の編集タブを出すための追加情報（生成済み書類の場合のみ）
     filledSlots?: import("@/types").FilledSlot[];
     templatePath?: string;
     issues?: import("@/types").CheckIssue[];
     docName?: string;
-  } | null>(null);
+  };
+  const [previewTabs, setPreviewTabs] = useState<PreviewTab[]>([]);
+  const [activeTabIdx, setActiveTabIdx] = useState(0);
+  // 既存コードとの互換 wrapper (setPreviewFile 呼ばれたら同名タブを切替 or 追加)
+  // 関数版 (prev => next) はアクティブタブの内容を更新する用途
+  const setPreviewFile = (
+    tabOrUpdater: PreviewTab | null | ((prev: PreviewTab | null) => PreviewTab | null)
+  ) => {
+    if (typeof tabOrUpdater === "function") {
+      setPreviewTabs((prev) => {
+        const current = prev[activeTabIdx] || null;
+        const next = tabOrUpdater(current);
+        if (next === null) {
+          // アクティブタブだけ削除
+          const filtered = prev.filter((_, i) => i !== activeTabIdx);
+          if (activeTabIdx >= filtered.length) setActiveTabIdx(Math.max(0, filtered.length - 1));
+          return filtered;
+        }
+        const updated = [...prev];
+        updated[activeTabIdx] = next;
+        return updated;
+      });
+      return;
+    }
+    if (tabOrUpdater === null) {
+      setPreviewTabs([]);
+      setActiveTabIdx(0);
+      return;
+    }
+    setPreviewTabs((prev) => {
+      const existIdx = prev.findIndex((t) => t.fileName === tabOrUpdater.fileName);
+      if (existIdx >= 0) {
+        const updated = [...prev];
+        updated[existIdx] = tabOrUpdater;
+        setActiveTabIdx(existIdx);
+        return updated;
+      }
+      const next = [...prev, tabOrUpdater];
+      setActiveTabIdx(next.length - 1);
+      return next;
+    });
+  };
+  // 関数からも previewFile 的に参照したい時用
+  const previewFile = previewTabs[activeTabIdx] || null;
+
+  // 全書類を一括でタブとして開く (active = 最初の書類)。
+  // DocumentResultCard の「全プレビュー」ボタンが使う。
+  // setPreviewFile (旧 wrapper) は append のたびに active を最後に動かすので、
+  // ループで呼ぶと最後の書類がアクティブになる問題があった → これで解決。
+  const openAllPreviewTabs = (files: PreviewTab[]) => {
+    if (files.length === 0) return;
+    setPreviewTabs(files);
+    setActiveTabIdx(0);
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingTemplatePath = useRef<string | null>(null);
@@ -462,6 +515,25 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
   // 案件整理+書類生成を実行
   const runWorkflow = async (currentThread: ChatThread, templatePath: string) => {
     if (!company) return;
+
+    // 基本情報が無ければ案件整理を始めず、先に基本情報の作成を促す。
+    // 案件整理は会社の基本情報(定款・登記・株主構成など)を前提に行うため。
+    const hasProfile = !!(company.profile && (company.profile.summary || company.profile.structured));
+    if (!hasProfile) {
+      const guardMsg: ThreadMessage = {
+        id: `msg_${Date.now()}_noprofile`,
+        role: "assistant",
+        content:
+          "⚠️ **先に「基本情報」を作成してください**\n\n" +
+          "案件整理は、会社の基本情報（定款・登記・株主構成など）を前提に行います。" +
+          "この会社にはまだ基本情報がありません。\n\n" +
+          "上部の「**基本情報**」タブで基本情報を作成してから、もう一度お試しください。",
+        timestamp: new Date().toISOString(),
+      };
+      setThread(prev => (prev ? { ...prev, messages: [...prev.messages, guardMsg] } : prev));
+      return;
+    }
+
     setLoading(true);
 
     // 1. 案件整理（SSE）
@@ -969,6 +1041,28 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       messages: [...prev.messages, resultMsg],
       generatedDocuments: produceData.documents,
     } : prev);
+    // 全書類を プレビュータブとして自動オープン (ユーザーが個別にプレビュー押す手間を省く)
+    const newTabs: PreviewTab[] = produceData.documents.map((doc: {
+      name: string; fileName: string; docxBase64: string;
+      filledSlots?: import("@/types").FilledSlot[]; templatePath?: string;
+    }) => ({
+      docxBase64: doc.docxBase64,
+      fileName: doc.fileName,
+      filledSlots: doc.filledSlots,
+      templatePath: doc.templatePath,
+      docName: doc.name,
+    }));
+    setPreviewTabs(newTabs);
+    setActiveTabIdx(0);
+    // 裏で active 以外のタブを並列 prefetch
+    // (Word は複数プロセスを同時に動かせることを確認済み: 8 並列で 21s)
+    // ユーザーがタブを切り替える頃にはキャッシュヒットで瞬時表示
+    (async () => {
+      const { prefetch } = await import("@/lib/preview-cache");
+      await Promise.all(
+        newTabs.slice(1).map(tab => prefetch({ docxBase64: tab.docxBase64, fileName: tab.fileName }))
+      );
+    })();
     await fetch(`/api/chat-threads/${currentThread.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -1147,6 +1241,34 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyId: company.id, message: finalMsg, checkResult: trimmed }),
       });
+
+      // verify が docx に officecli add comment でコメント書き込み → thread.json 更新済み。
+      // フロントの previewTabs は古い docxBase64 を保持してるので、再 fetch して更新。
+      // 更新先の docxBase64 を裏で prefetch → サーバ/クライアントキャッシュに格納 →
+      // previewTabs を新 base64 に切替 → FilePreview がキャッシュヒットで瞬時にコメント付き画像に。
+      try {
+        const refreshed = await fetch(
+          `/api/chat-threads/${currentThread.id}?companyId=${encodeURIComponent(company.id)}`
+        ).then(r => r.json());
+        // GET レスポンスは { thread: {...} } でネストされてる
+        const updatedDocs: { fileName: string; docxBase64: string }[] = refreshed?.thread?.generatedDocuments || [];
+        console.log(`[runCheck] post-verify refresh: ${updatedDocs.length} docs found`);
+        if (updatedDocs.length > 0) {
+          // 新 base64 を裏で prefetch
+          const { prefetch } = await import("@/lib/preview-cache");
+          await Promise.all(
+            updatedDocs.map(d => prefetch({ docxBase64: d.docxBase64, fileName: d.fileName }))
+          );
+          // prefetch 完了 → previewTabs と thread.generatedDocuments を新 base64 で更新
+          setThread(prev => prev ? { ...prev, generatedDocuments: updatedDocs as typeof prev.generatedDocuments } : prev);
+          setPreviewTabs(prev => prev.map(tab => {
+            const updated = updatedDocs.find(d => d.fileName === tab.fileName);
+            return updated ? { ...tab, docxBase64: updated.docxBase64 } : tab;
+          }));
+        }
+      } catch (e) {
+        console.warn("[runCheck] post-verify thread refresh failed:", e);
+      }
     } catch { /* ignore */ }
     finally { setLoading(false); onThreadUpdate(); }
   };
@@ -1256,6 +1378,7 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
                         company={company}
                         thread={thread}
                         onPreview={setPreviewFile}
+                        onPreviewAll={openAllPreviewTabs}
                         onGoBackToFolder={goBack}
                         onBulkRegenerate={card.type === "document-result" ? () => handleBulkRegenerate(msg.id, ci) : undefined}
                       />
@@ -1312,13 +1435,64 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
       </div>
       </div>
 
-      {/* 右: プレビュー */}
-      {previewFile && (
+      {/* 右: プレビュー (上部ドロップダウンで書類切替、本体はフル幅) */}
+      {previewTabs.length > 0 && previewFile && (
+        <div className="flex flex-col w-[60%] min-w-0 border-l border-[var(--color-border-soft)] bg-[var(--color-panel)]">
+          {/* ドロップダウンヘッダー: 前へ / 選択 / 次へ / 全閉じる */}
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border-soft)] bg-[var(--color-panel-soft)] shrink-0">
+            <button
+              onClick={() => setActiveTabIdx(Math.max(0, activeTabIdx - 1))}
+              disabled={activeTabIdx === 0}
+              className="w-6 h-6 flex items-center justify-center rounded text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-30 disabled:cursor-default shrink-0"
+              title="前の書類"
+            ><Icon name="ChevronLeft" size={15} /></button>
+
+            <div className="relative flex-1 min-w-0">
+              <select
+                value={activeTabIdx}
+                onChange={(e) => setActiveTabIdx(Number(e.target.value))}
+                className="w-full appearance-none bg-[var(--color-panel)] border border-[var(--color-border-soft)] rounded-lg pl-3 pr-8 py-1.5 text-[12px] text-[var(--color-fg)] font-medium cursor-pointer hover:border-[var(--color-border)] focus:outline-none focus:border-[var(--color-accent)] truncate"
+              >
+                {previewTabs.map((tab, idx) => (
+                  <option key={tab.fileName + idx} value={idx}>
+                    {idx + 1}. {tab.docName || tab.fileName}
+                  </option>
+                ))}
+              </select>
+              <Icon name="ChevronsUpDown" size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--color-fg-subtle)] pointer-events-none" />
+            </div>
+
+            <span className="text-[11px] text-[var(--color-fg-subtle)] shrink-0 tabular-nums">{activeTabIdx + 1}/{previewTabs.length}</span>
+
+            <button
+              onClick={() => setActiveTabIdx(Math.min(previewTabs.length - 1, activeTabIdx + 1))}
+              disabled={activeTabIdx >= previewTabs.length - 1}
+              className="w-6 h-6 flex items-center justify-center rounded text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-fg)] disabled:opacity-30 disabled:cursor-default shrink-0"
+              title="次の書類"
+            ><Icon name="ChevronRight" size={15} /></button>
+
+            <button
+              onClick={() => { setPreviewTabs([]); setActiveTabIdx(0); }}
+              className="text-[10px] text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)] shrink-0 px-1"
+              title="プレビューを閉じる"
+            >閉じる</button>
+          </div>
+
+          {/* アクティブ書類の内容 (フル幅) */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="flex-1 min-h-0 flex">
         <FilePreview
           filePath={previewFile.filePath}
           docxBase64={previewFile.docxBase64}
           fileName={previewFile.fileName}
-          onClose={() => setPreviewFile(null)}
+          onClose={() => {
+            // 単一タブ閉じる動作: アクティブタブを削除
+            setPreviewTabs((prev) => {
+              const next = prev.filter((_, i) => i !== activeTabIdx);
+              if (activeTabIdx >= next.length) setActiveTabIdx(Math.max(0, next.length - 1));
+              return next;
+            });
+          }}
           filledSlots={previewFile.filledSlots}
           templatePath={previewFile.templatePath}
           companyId={company?.id}
@@ -1431,6 +1605,9 @@ export default function ChatWorkflow({ company, threadId, onThreadUpdate }: Prop
             }).catch(() => { /* ignore */ });
           }}
         />
+          </div>
+          </div>
+        </div>
       )}
     </div>
   );

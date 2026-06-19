@@ -39,10 +39,84 @@ import {
   toAnthropicMessages,
   hasStage,
 } from "@/lib/case-conversation";
-import type { Phase2Decisions, Phase2DocumentDecision } from "@/types";
+import type { Phase2Decisions, Phase2DocumentDecision, CaseAiMessage, CaseAiContentBlock } from "@/types";
 
 const client = new Anthropic();
 const REASONING_MODEL = "claude-sonnet-4-6";
+
+// === エンジン切替 ===
+// RECAST_ENGINE=officecli にすると Phase 2 が OfficeCLI コマンド出力モードに切り替わる。
+// デフォルト (未設定 or "changes") は既存の changes スキーマで動く (後方互換)。
+function useOfficeCliEngine(): boolean {
+  return process.env.RECAST_ENGINE === "officecli";
+}
+
+// 仕分け式アーキテクチャ (Step A 確定値表 + ルール機械生成 + ai 退避) を使うか。
+// officecli モード前提。RECAST_FILL_MODE=legacy で旧 (書類ごと AI 全生成) に戻せる。
+function useClassificationMode(): boolean {
+  return useOfficeCliEngine() && process.env.RECAST_FILL_MODE !== "legacy";
+}
+
+// === officecli モード用: 必要情報だけ抽出 ===
+// aiMessages 全体を送ると 30k+ トークン (添付 PDF/画像、tool_use 往復、テンプレ二度送り 等)。
+// Call 2 が必要なのは:
+//   - Phase 1 (organize) の整理結果 (案件構造・登場人物・日程・値)
+//   - Phase 2-A / 2-B (clarify) の Q&A 確定値 (表記揺れ等)
+// これだけ抽出して 5-7k に圧縮し、cache_control で並列 cacheRead を効かせる。
+function extractTextFromContent(content: string | CaseAiContentBlock[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .filter((b): b is Extract<CaseAiContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+function extractEssentialContext(
+  aiMessages: CaseAiMessage[],
+  organizeResult?: { markdown: string; structured: unknown } | null
+): string {
+  const blocks: string[] = [];
+
+  // organizeResult.structured (構造化 JSON、案件の値) + markdown (整理結果、変換ルールの言及含む)
+  // 両方渡す: structured は穴埋め値の参照用、markdown は「組合の本店→主たる事務所」みたいな
+  // 変換ルール参照用。markdown を省くと AI が共通ルール④等を知らずラベル変換失敗する。
+  if (organizeResult?.structured) {
+    blocks.push(
+      `## Phase 1 案件整理結果 (構造化 JSON)\n\n\`\`\`json\n${JSON.stringify(organizeResult.structured, null, 2)}\n\`\`\``
+    );
+  }
+  if (organizeResult?.markdown) {
+    blocks.push(
+      `## Phase 1 案件整理結果 (markdown、共通ルールの言及・変換指示を含む)\n\n${organizeResult.markdown}`
+    );
+  }
+  if (!organizeResult?.structured && !organizeResult?.markdown) {
+    // フォールバック: aiMessages から最終 organize の text を抽出 (旧式)
+    const organizeMsgs = aiMessages.filter((m) => m.stage === "organize" && m.role === "assistant");
+    if (organizeMsgs.length > 0) {
+      const last = organizeMsgs[organizeMsgs.length - 1];
+      const text = extractTextFromContent(last.content);
+      if (text.trim()) blocks.push(`## Phase 1 案件整理結果 (markdown)\n\n${text}`);
+    }
+  }
+
+  // Phase 2-A / 2-B 確認質問と回答
+  const qaMsgs = aiMessages.filter(
+    (m) => m.stage === "clarify-procedural" || m.stage === "clarify"
+  );
+  if (qaMsgs.length > 0) {
+    const qaText = qaMsgs
+      .map((m) => {
+        const text = extractTextFromContent(m.content);
+        return text.trim() ? `[${m.role}]\n${text}` : "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+    if (qaText) blocks.push(`## Phase 2-A / 2-B 確認質問と回答\n\n${qaText}`);
+  }
+
+  return blocks.join("\n\n---\n\n") || "(整理結果なし)";
+}
 // Call 2 も Sonnet を使う。Haiku は schema の semantic (blockDeletes anchor の意味、
 // rowInsertions の 1 行 1 entry ルール、afterSlot に slot 名のみ可、等) を誤解する傾向が
 // あり、推論メモを正しく構造化できないケースが頻発した (総数引受で blockDelete の endAnchor を
@@ -125,6 +199,123 @@ const PHASE2_CHANGES_TOOL: Anthropic.Tool = {
             },
           },
           required: ["templateFile", "changes"],
+        },
+      },
+    },
+    required: ["documents"],
+  },
+};
+
+// 最新スキーマ Tool (C 案): AI が officecli の用語そのままで commands を出す。
+// recast 側は --prop key=value に組み立てて exec するだけ。中間翻訳テーブル不要。
+//
+// AI に渡す情報:
+//   - officecli view text の出力 (各段落の @paraId と本文)
+//   - officecli query 'run[highlight=yellow]' の出力 (★label★ 相当の位置と内容)
+//   - Phase 1 案件整理 + Phase 2-A の Q&A
+//   - 統一ルール
+//
+// AI が出す commands の典型例:
+//   - set: 段落の find/replace でテキスト書き換え
+//   - remove: 段落削除
+//   - add: 段落 / コメント追加
+const PHASE2_OFFICECLI_TOOL: Anthropic.Tool = {
+  name: "submit_phase2_officecli",
+  description:
+    "各書類に対する OfficeCLI コマンドのリストを提出する。" +
+    "recast は AI が出したコマンドを officecli の CLI 引数に組み立てて順次実行するだけ。" +
+    "コマンドの構文は SKILL.md (https://officecli.ai/SKILL.md) に従う。" +
+    "段落の特定には @paraId を必ず使う (位置番号は使うな、insert/delete でズレる)。" +
+    "★label★ の書き換えは set + find/replace を使う。run 分割があっても find は run 境界を跨いで動く。" +
+    "【トークン節約】各 op に判断理由 (reason) は書くな。Call 1 で reasoning は済んでる。" +
+    "【docx の 1 op 集約】set は --prop を複数同時指定できる。" +
+    "  例: { find: '令和８年２月１１日', replace: '令和８年６月１日', highlight: 'none' } で " +
+    "text 置換 + 黄色ハイライト除去を 1 op で実行。" +
+    "【xlsx は構造が違う — 重要】" +
+    "  - パス: /SheetName/CellAddr 形式 (例: /株主リスト/B14)。シート名は実体に正確に従う" +
+    "  - ★ セルへの書き込みは **必ず value= でセル丸ごと上書き** する。find/replace は使うな ★" +
+    "    理由: セル内のマーカー (★label★) は run 分割されてることが多く、find が 0 マッチで失敗する" +
+    "    (実際に最下段の証明者セル等が『find pattern matched 0』で毎回スキップされる事故が起きている)" +
+    "  - 正: { command:'set', path:'/株主リスト/B26', props:{ value:'令和８年６月１日\\n株式会社○○\\n代表取締役 ○○' } }" +
+    "  - 誤: { command:'set', path:'/株主リスト/B26', props:{ find:'★証明書の作成日★', replace:'...' } } ← 0 マッチで失敗" +
+    "  - セル値に改行を含めたい時は value 内に \\n を入れる (officecli が改行セルとして扱う)" +
+    "  - 塗りつぶし除去: --prop fill=FFFFFF (白で潰す)。docx の highlight=none は xlsx で無効" +
+    "  - 各セルを個別の set op で書き換える (1 行 = 5 セルなら 5 op)。1 op = 1 セル = value 指定" +
+    "【★行数が変わる構造変更 (個人→組合 の同意欄 等) = 最重要・ダブり防止★】" +
+    "  個人の同意欄 (住所/氏名 の2行) を 組合の同意欄 (主たる事務所/名称/無限責任組合員/組合員/代表取締役 の" +
+    "  5行) に変えるような、**行数が変わる**変換では、その領域を『丸ごと書き直す』として扱う:" +
+    "    (1) まず完成形の全行を確定する → (2) 旧領域の段落を **1つ残らず remove** する → " +
+    "    (3) 新しい全行を add で作る。" +
+    "  - ★旧の個人行 (氏名 行 等) を、新の役割行 (代表取締役 等) に set find/replace で『流用』してはいけない★。" +
+    "    流用すると、その値が『氏　名　川上登福』と『代表取締役　川上登福』の2箇所に出て **ダブる** " +
+    "    (実際に起きた事故)。旧個人行は repurpose せず必ず remove、新役割行は add で別に作ること。" +
+    "  - add した行の **書式 (字下げ・行間・配置) は recast が隣の行から自動で継承する**ので、" +
+    "    style/align を気にせず text だけ入れてよい (列ずれの心配は不要)。" +
+    "【1対1のラベル変更 (行数が変わらない) は従来通り set find/replace でOK】" +
+    "  - 例: 『商　号　○○』→『名　称　○○』 のように 1行→1行 なら set でラベルごと書き換え (書式維持)。" +
+    "    行数が増減しないので remove+add は不要。",
+  input_schema: {
+    type: "object",
+    properties: {
+      documents: {
+        type: "array",
+        description: "書類ごとの OfficeCLI コマンド列。同じテンプレから複数出力する場合は outputLabel で区別",
+        items: {
+          type: "object",
+          properties: {
+            templateFile: {
+              type: "string",
+              description: "クリーンな物理テンプレファイル名 (例: '2-1.提案書兼同意書.docx')",
+            },
+            outputLabel: {
+              type: "string",
+              description: "同一テンプレから複数出力する場合の識別 (例: '藤崎用')。1 出力なら省略",
+            },
+            commands: {
+              type: "array",
+              description: "OfficeCLI コマンド列。順次実行される",
+              items: {
+                type: "object",
+                properties: {
+                  command: {
+                    type: "string",
+                    enum: ["set", "add", "remove", "get", "query", "view", "validate", "close"],
+                    description: "officecli の動詞。set=プロパティ変更/find-replace、add=要素追加、remove=削除",
+                  },
+                  path: {
+                    type: "string",
+                    description: "対象要素の XPath (例: '/body/p[@paraId=064BAB11]')。@paraId を必ず使う",
+                  },
+                  parent: {
+                    type: "string",
+                    description: "add のとき: 親要素のパス (例: '/body')",
+                  },
+                  type: {
+                    type: "string",
+                    description: "add のとき: 追加する要素タイプ (例: 'paragraph', 'comment')",
+                  },
+                  after: {
+                    type: "string",
+                    description: "add のとき: この要素の直後に挿入 (例: '/body/p[@paraId=xxx]')",
+                  },
+                  before: {
+                    type: "string",
+                    description: "add のとき: この要素の直前に挿入",
+                  },
+                  props: {
+                    type: "object",
+                    description:
+                      "--prop key=value 形式の引数。set なら find/replace、add なら text 等。" +
+                      "【重要】1 op で複数属性同時指定可。例: find + replace + highlight=none で " +
+                      "「text 置換 + 黄色ハイライト除去」を 1 op で実行できる。別 op に分けない (トークン無駄)。",
+                    additionalProperties: { type: "string" },
+                  },
+                },
+                required: ["command"],
+              },
+            },
+          },
+          required: ["templateFile", "commands"],
         },
       },
     },
@@ -282,6 +473,23 @@ async function savePhase2Decisions(companyId: string, threadId: string, decision
   }
 }
 
+// thread から organizeResult を取得 (Phase 1 で execute route が submit_organize_result で保存したもの)
+async function loadOrganizeResult(
+  companyId: string,
+  threadId: string
+): Promise<{ markdown: string; structured: unknown } | null> {
+  try {
+    const crypto = await import("crypto");
+    const hash = crypto.createHash("md5").update(companyId).digest("hex");
+    const filePath = path.join(process.cwd(), "data", "chat-threads", hash, `${threadId}.json`);
+    const raw = await fs.readFile(filePath, "utf-8");
+    const thread = JSON.parse(raw);
+    return thread.organizeResult || null;
+  } catch {
+    return null;
+  }
+}
+
 // rowInsertions の整合性検証: template の ★label★ が fills に対応 entry を持つか。
 // 無ければ空 fill を auto-add して produce-v2 で ★ がマーカー残骸として残らないようにする。
 function validateRowInsertions(decisions: Phase2Decisions): void {
@@ -318,6 +526,19 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  // 統一ルール (組合の構造変換 ④ 等) を 1 度だけ読む。Step A と ai モード両方で使う。
+  // Phase 1 整理結果は「共通ルール④に基づく」と番号参照のみで本体が無いため、
+  // Phase 2 にもルール本体を渡さないと組合変換 (名称/無限責任組合員/代表者) ができない。
+  let globalRulesText = "";
+  if (templateFolderPath && config.templateBasePath) {
+    try {
+      const { loadGlobalRules } = await import("@/lib/global-rules");
+      globalRulesText = await loadGlobalRules(config.templateBasePath, templateFolderPath);
+    } catch (e) {
+      console.warn("[analyze] loadGlobalRules failed:", e instanceof Error ? e.message : e);
+    }
+  }
+
   // Phase 1 (organize) 完了が前提
   let aiMessages = await loadAiMessages(company.id, threadId);
   if (!hasStage(aiMessages, "organize")) {
@@ -333,6 +554,21 @@ export async function POST(request: NextRequest) {
   // ファイル名と本文をペアで保持する。Call 1 では join、Call 2 では Map で引く。
   const templateBlocks: { templateFile: string; body: string }[] = [];
   const templateStructures: { templateFile: string; markedText: string }[] = [];
+  // 仕分け式アーキテクチャ用: テンプレごとに「パーサーの slots/位置 + labels + ★label★本文」を捕捉。
+  // Step A (確定値表+仕分け) → ルール生成器 に渡す材料。
+  type ClassData = {
+    templateFile: string;
+    filePath: string;
+    isXlsx: boolean;
+    labels: import("@/lib/template-labels").TemplateLabels | null;
+    slots: Map<number, string>;
+    docxPositions?: Map<number, import("@/lib/docx-marker-parser").DocxSlotPosition>;
+    xlsxPositions?: Map<number, import("@/lib/xlsx-marker-parser").XlsxSlotPosition>;
+    xlsxCellTexts?: Map<string, string>;   // xlsx セル単位再構築用
+    xlsxPercentRefs?: Set<string>;          // % 書式セル (値に % を付ける)
+    starMarkedText: string;   // ★label★ 入り本文 (Step A の文脈把握用)
+  };
+  const classificationData: ClassData[] = [];
   if (templateFolderPath) {
     try {
       const { getMarkedDocumentTextWithSlots } = await import("@/lib/docx-marker-parser");
@@ -359,7 +595,7 @@ export async function POST(request: NextRequest) {
         if (ext === "docx" || ext === "docm") {
           try {
             docBuf = await fs.readFile(f.path);
-            const { text } = getMarkedDocumentTextWithSlots(docBuf);
+            const { text, slots, slotPositions } = getMarkedDocumentTextWithSlots(docBuf);
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -373,13 +609,17 @@ export async function POST(request: NextRequest) {
               const lbl = labelById.get(id) || `要入力_${id}`;
               return `★${lbl}★`;
             });
+            classificationData.push({
+              templateFile: f.name, filePath: f.path, isXlsx: false,
+              labels: labels ?? null, slots, docxPositions: slotPositions, starMarkedText: markedText,
+            });
           } catch (e) {
             console.warn(`[analyze] docx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
           }
         } else if (isXlsx) {
           try {
             docBuf = await fs.readFile(f.path);
-            const { text } = getXlsxMarkedTextWithSlots(docBuf);
+            const { text, slots, slotPositions, cellTexts, percentRefs } = getXlsxMarkedTextWithSlots(docBuf);
             const labels = await ensureXlsxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -393,6 +633,10 @@ export async function POST(request: NextRequest) {
               const lbl = labelById.get(id) || `要入力_${id}`;
               return `★${lbl}★`;
             });
+            classificationData.push({
+              templateFile: f.name, filePath: f.path, isXlsx: true,
+              labels: labels ?? null, slots, xlsxPositions: slotPositions, xlsxCellTexts: cellTexts, xlsxPercentRefs: percentRefs, starMarkedText: markedText,
+            });
           } catch (e) {
             console.warn(`[analyze] xlsx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
           }
@@ -401,11 +645,45 @@ export async function POST(request: NextRequest) {
         if (!markedText && f.content) markedText = f.content;
         if (!markedText) continue;
 
-        // **重要**: produce-v2 と完全に同じ番号付けをする。
-        // ズレると AI の changes の idx が全部誤爆する (例: 「下記の者を取締役として選任すること」が消える)。
-        // 共通関数 addMarkedTextNumbering を使う。これで「段落N: 」/「行N: 」プレフィックスが付き、
-        // 空段落は番号付けされない (= produce-v2 の getContentParagraphs と一致)。
-        if (docBuf) {
+        if (useOfficeCliEngine()) {
+          // OfficeCLI モード: officecli view text の出力を markedText として使う。
+          // docx: 各段落の @paraId と本文が `[/body/p[@paraId=XXX]] 本文` 形式で取得できる。
+          // xlsx: 各セルが `[/SheetName/CellAddr]` 形式。シート名取得のため outline も併記する。
+          try {
+            const { runOfficeCli, viewText, query } = await import("@/lib/officecli");
+            const officeText = await viewText(f.path);
+            let extra = "";
+            if (isXlsx) {
+              // xlsx は実体のシート名を AI が知る必要がある (思い込みで存在しないシート名を使う事故防止)。
+              const outline = await runOfficeCli(["view", f.path, "outline"]);
+              extra += outline.exitCode === 0
+                ? `\n\n--- xlsx 構造 (実体のシート名はここから確認) ---\n${outline.stdout}`
+                : "";
+
+              // 黄色塗りつぶしセル一覧 (placeholder 相当 = 値を埋めるセル)
+              const yellowResult = await query(f.path, "cell[fill=#FFFF00]");
+              const yellow = typeof yellowResult === "string" ? yellowResult : JSON.stringify(yellowResult);
+              extra += `\n\n--- 黄色塗りつぶしセル (★label★ 相当、値を埋める対象) ---\n${yellow}`;
+
+              // 赤文字セル一覧 (もう 1 つの placeholder パターン)
+              const redResult = await query(f.path, "cell[font.color=#FF0000]");
+              const red = typeof redResult === "string" ? redResult : JSON.stringify(redResult);
+              extra += `\n\n--- 赤文字セル (もう 1 つの placeholder、値を埋める対象) ---\n${red}`;
+
+              extra += `\n\n⚠ xlsx のパスは /SheetName/CellAddr (例: /株主リスト/B14) 形式。docx と違って /body/p[...] は使えない。シート名は上記から正確にコピペ。row[N] レベルで一括 find/replace は無効、各セルを個別の set で書き換える。`;
+            } else {
+              const highlightsResult = await query(f.path, "run[highlight=yellow]");
+              const highlights = typeof highlightsResult === "string" ? highlightsResult : JSON.stringify(highlightsResult);
+              extra = `\n\n--- 黄色ハイライト run 一覧 (★label★ 相当) ---\n${highlights}`;
+            }
+            markedText = `${officeText}${extra}`;
+          } catch (e) {
+            console.warn(`[analyze officecli] view text failed (${f.name}):`, e instanceof Error ? e.message : e);
+            // フォールバック: 既存の番号付け markedText
+            if (docBuf) markedText = addMarkedTextNumbering(markedText, docBuf, isXlsx);
+          }
+        } else if (docBuf) {
+          // 既存 changes モード: produce-v2 の getContentParagraphs と一致する番号付け。
           markedText = addMarkedTextNumbering(markedText, docBuf, isXlsx);
         }
 
@@ -584,7 +862,12 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
 - **「ターン1:」「ターン2:」みたいな番号ラベルは出さない**。書類別の見出し (### 1.取締役決定書.docx 等) だけ書く
 - 推論の中身に集中する。会話番号付けは不要`;
 
-  const messagesWithUserTurn = appendUserTurn(aiMessages, reasoningPrompt, "analyze");
+  // OfficeCLI モードでは reasoningPrompt (全書類本文 + 統一ルール + 例文の長文) を Call 2 に渡す
+  // 必要は無い (Call 1 廃止、Call 2 は書類別に該当テンプレ本文だけ jsonPrompt に含める)。
+  // 各 Call 2 で reasoningPrompt 分のトークンが浮く = コスト・時間が大幅減。
+  const messagesWithUserTurn = useOfficeCliEngine()
+    ? aiMessages  // officecli: Phase 1 (organize) + 2-A (clarify) のみ
+    : appendUserTurn(aiMessages, reasoningPrompt, "analyze");  // changes: 既存通り
 
   try {
     const encoder = new TextEncoder();
@@ -600,25 +883,35 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           }
 
           // ============== Call 1: Sonnet 4.6 で推論 ==============
-          send(controller, { type: "stage", stage: "reasoning" });
-          const reasoningStream = client.messages.stream({
-            model: REASONING_MODEL,
-            max_tokens: 32000,
-            temperature: 0,
-            messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
-          });
-
+          // OfficeCLI モードでは Call 1 を廃止 (Call 2 が直接 commands を出すので二重推論不要)。
+          // changes モードは Call 1 で推論 → Call 2 で JSON 化、の 2 段階を維持。
           let reasoningText = "";
-          for await (const event of reasoningStream) {
-            if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-              reasoningText += event.delta.text;
-              send(controller, { type: "text", text: event.delta.text });
+          if (useOfficeCliEngine()) {
+            // officecli モード: Call 1 をスキップ。Phase 1 (organize) の整理結果と
+            // Phase 2-A (clarify) の Q&A が既に会話履歴 (messagesWithUserTurn) に入ってる。
+            // Call 2 で直接 commands を出させる。
+            send(controller, { type: "stage", stage: "reasoning" });
+            send(controller, { type: "text", text: "OfficeCLI モード: Call 1 (推論) はスキップ、Call 2 で直接 commands を生成します。\n" });
+          } else {
+            send(controller, { type: "stage", stage: "reasoning" });
+            const reasoningStream = client.messages.stream({
+              model: REASONING_MODEL,
+              max_tokens: 32000,
+              temperature: 0,
+              messages: toAnthropicMessages(messagesWithUserTurn) as Anthropic.MessageParam[],
+            });
+
+            for await (const event of reasoningStream) {
+              if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+                reasoningText += event.delta.text;
+                send(controller, { type: "text", text: event.delta.text });
+              }
             }
+            try {
+              const final = await reasoningStream.finalMessage();
+              logTokenUsage(`/api/document-templates/analyze (Call 1 reasoning)`, REASONING_MODEL, final.usage);
+            } catch { /* ignore */ }
           }
-          try {
-            const final = await reasoningStream.finalMessage();
-            logTokenUsage(`/api/document-templates/analyze (Call 1 reasoning)`, REASONING_MODEL, final.usage);
-          } catch { /* ignore */ }
 
           // ============== Call 2: Sonnet 4.6 で JSON 化 (Tool Use) ==============
           // 並列化: 書類ごとに Promise.all で Call 2 を呼び出す。
@@ -630,11 +923,183 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           //       Call 2 は書類ごとの「推論メモを構造化された JSON に転記する作業」のみ。
           send(controller, { type: "stage", stage: "structuring" });
 
-          // 書類ごとに Tool Use を呼ぶサブルーチン
+          // ===== OfficeCLI モード用サブルーチン =====
+          // env var RECAST_ENGINE=officecli のとき呼ばれる。
+          // AI に officecli の commands を出させる (C 案)。
+          // Call 1 (reasoning) は廃止 → Call 2 が直接 commands を作る。
+          // 必要な情報 (Phase 1 整理結果 + 2-A の Q&A + 統一ルール) は messagesWithUserTurn に
+          // 既に入ってるので、それと jsonPrompt を一緒に送る。
+          const runPhase2OfficeCliForDocument = async (
+            templateFile: string,
+            bodyForThisDoc: string,
+            valueTableHint?: Record<string, string>   // 仕分けモードの確定値表 (書類間で値を揃えるため)
+          ): Promise<Phase2DocumentDecision[]> => {
+            // 確定値表があれば「この値をそのまま使え」とプロンプトに明示 (書類間の表記統一)
+            const valueTableBlock = valueTableHint && Object.keys(valueTableHint).length > 0
+              ? `\n## ★確定済みの値 (他書類と統一済み。この表記をそのまま使い、勝手に再フォーマットするな)\n` +
+                Object.entries(valueTableHint).map(([k, v]) => `- ${k}: ${v}`).join("\n") + "\n"
+              : "";
+            const jsonPrompt = `## あなたの仕事
+
+会話履歴の Phase 1 (案件整理) + Phase 2-A (確認 Q&A) + 統一ルールを踏まえて、
+**submit_phase2_officecli** で **${templateFile}** の OfficeCLI commands を提出。他書類は無視。
+${qaBlock}
+${valueTableBlock}
+
+## 株主の振り分けルール (重要)
+
+organizeResult.parties は全株主が \`role: 株主\` で記録されている (個人/法人/組合の区別は無い)。
+**テンプレファイル名を見て、このテンプレに適用すべき株主を AI が判断する**:
+
+- **個人用テンプレ** (例: \`XX_個人.docx\`): 個人 (会社・組合じゃない自然人) の株主全員に適用
+- **法人用テンプレ** (例: \`XX_法人.docx\`): **法人格を持つ株主全員** (会社・組合・有限責任組合員 等 全部含む) に適用
+- **テンプレ名に個人/法人区別が無い** (例: \`XX.docx\`): 全株主に適用 (共通ルールで内部変換)
+
+判断材料: parties[].name + parties[].representative + parties[].note。
+- name に「株式会社」「合同会社」「組合」「会社」等が含まれる → 法人格あり
+- representative が設定されている → 法人格あり
+- note に「組合員」「無限責任組合員」等が書かれている → 組合 = 法人格あり
+
+**漏れチェック**: 法人用テンプレなら、parties から法人格を持つ株主を全員リストアップして、
+それぞれに outputLabel 別の entry を作る。1 件でも漏れると登記書類が揃わない。
+
+## organizeResult の値を改変するな
+
+organizeResult.structured に書かれた値 (氏名・住所・日付・株数 等) は **そのまま使う**。
+「より正式な表記に」「全部漢数字に」みたいな勝手な変換は禁止。Phase 1 で確定済み。
+統一ルールで明示的に変換が必要 (組合の本店→主たる事務所 等) な場合のみ変換する。
+
+## ⚠ 値の取り扱い - 必ず守れ
+
+- **Phase 1 整理結果 (organizeResult.structured) の値を改変するな**。住所・氏名・日付・金額等は **そのままコピペで使う**。
+- **AI が「正式表記」「漢数字」「全角」等の変換を勝手にしない**。「下谷2丁目3番2号」を「下谷二丁目三番二号」に変えるな。
+  整理結果に書いてある通りに埋める。変換ルールがあるならそれは整理時に Phase 1 で適用済み。
+- 統一ルールは Phase 1 で適用済み。Phase 2 で再解釈しない。
+
+## ⚠ テンプレと株主の振り分け
+
+- テンプレファイル名末尾が \`_個人.docx\` → 個人株主 (整理結果 parties で role:株主、note なし) 全員分作る
+- テンプレファイル名末尾が \`_法人.docx\` → **法人格を持つ株主 (会社・組合) 全員分作る**。組合 (有限責任事業組合等) も法人格を持つ → 必ず法人テンプレを使う
+- どちらでもない (株主リスト等) → 1 ファイルだけ生成、outputLabel 不要
+- **株主を見落とすな**。個人 7 人 / 法人 1 人 / 組合 1 人なら、個人テンプレで 7 通 + 法人テンプレで 2 通 (会社 + 組合)。
+
+## テンプレ本文 (${templateFile})
+
+各段落の冒頭に \`[/body/p[@paraId=XXXXXXXX]]\` (8文字16進ID)。
+段落の特定には **必ず @paraId を使う**。位置番号 (p[1]) はダメ (insert/delete でズレる)。
+末尾の「黄色ハイライト一覧」が ★label★ 相当 = 値を埋める対象。
+書き換えは段落単位の set + find/replace で OK (run 境界跨ぐ)。
+
+${bodyForThisDoc}
+
+---
+
+## コマンド使い方 (簡潔版、詳細は Tool description 参照)
+
+### docx の場合
+- **set** (text 書き換え + ハイライト除去を 1 op で):
+  \`{command:"set", path:"/body/p[@paraId=XXX]", props:{find:"元値", replace:"新値", highlight:"none"}}\`
+- **remove** (段落削除): \`{command:"remove", path:"/body/p[@paraId=XXX]"}\`
+- **add** (段落追加): \`{command:"add", parent:"/body", after:"/body/p[@paraId=XXX]", type:"paragraph", props:{text:"..."}}\`
+
+### xlsx の場合 (重要、docx と書き方が違う)
+- **set** (セル値書き込み + 塗りつぶし除去):
+  \`{command:"set", path:"/シート名/B14", props:{value:"徳永優也", fill:"FFFFFF"}}\`
+- **path はセルアドレス** (/シート名/B14)。row[14] レベルでは複数セル一括書き換え不可
+- **find/replace はセル内 text のみ**。タブ \\t でセル間置換は無効 (典型ミス)
+- 1 行 5 セル埋めるなら set を 5 回 (各セル 1 op)
+- 塗りつぶし除去は \`fill=FFFFFF\` (白)。docx の highlight=none は xlsx で使えない
+
+## ⚠ ラベル変換 (remove + add の組み合わせ) — 必ず読め
+
+組合株主の同意欄等で **元 N 行を remove + 新 M 行を add** する場合、
+**元の情報項目 (本店/商号/代取/議決権 等) を新ラベル群で 1 つも省略せず表現する**。
+remove より少ない add は **ほぼ確実に省略バグ**。op 数を減らす最適化を勝手にやるな。
+
+例: 元 4 行 (本店/商号/代取/議決権) → 新 6 行 (主たる事務所/名称/無限責任組合員/組合員/代取/議決権)
+
+★★ ダブり防止 (実際に起きた事故) ★★
+- まず **完成形の全行を確定** してから commands を出す (頭の中で同意欄を 1 枚書き上げる)。
+- ★旧の個人行 (例: 「氏　名　徳永優也」) を、set find/replace で新役割行 (例: 「代表取締役　川上登福」) に
+  **流用してはいけない**★。流用すると、その名前が「氏名」行と「代表取締役」行の2箇所に出て **ダブる**。
+- 旧個人行 (住所・氏名 等) は **必ず remove** する (新役割行に書き換えない)。新行は全部 add で別に作る。
+- 行数が増える組合変換では「旧領域を丸ごと remove + 新領域を add」が基本。set で旧行を使い回さない。
+
+## ⚠ 議案などのブロック削除 (確認回答で「議案◯を丸ごと削除」と指定された場合)
+- その議案の **見出し段落から、次の議案の見出しの直前まで** の全段落を remove する。
+  見出しも明細 (記・ア・イ・ウ 等) も **1 段落残さず** remove せよ (paraId は本文に全部書いてある)。
+- 削除したら **後続の議案番号を繰り上げる**: 「議案３…の件」→「議案２…の件」を、その見出し段落の
+  set find/replace で直す (例: {command:"set", path:"/body/p[@paraId=YYY]", props:{find:"議案３", replace:"議案２"}})。
+- 「削除」と確定しているのに remove を出さない / 見出しだけ残すのは誤り。`;
+
+            try {
+              // OfficeCLI モード: 会話履歴全部を送るのは無駄 (添付 PDF/画像、tool_use 往復、
+              // テンプレ二度送りで 30k+)。必要情報 (整理結果 + Q&A) だけ 1 つの user メッセージに
+              // 圧縮し、cache_control で並列 cacheRead を効かせる。
+              // organizeResult.structured (Phase 1 の Tool Use 出力) があれば優先使用。
+              const organizeResult = await loadOrganizeResult(company.id, threadId);
+              let essentialContext = extractEssentialContext(messagesWithUserTurn, organizeResult);
+              if (globalRulesText.trim()) {
+                essentialContext += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
+              }
+              const response = await client.messages.create({
+                model: JSON_MODEL,
+                max_tokens: 16384,
+                temperature: 0,
+                tools: [PHASE2_OFFICECLI_TOOL],
+                tool_choice: { type: "tool", name: "submit_phase2_officecli" },
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      // 共通プレフィックス: 7 並列の各 call で同一 → cache 効く
+                      { type: "text", text: essentialContext, cache_control: { type: "ephemeral" } },
+                      // 書類別 suffix: 各 call で異なる → cache 対象外
+                      { type: "text", text: jsonPrompt },
+                    ],
+                  },
+                ],
+              });
+              logTokenUsage(
+                `/api/document-templates/analyze (Call 2 officecli: ${templateFile})`,
+                JSON_MODEL,
+                response.usage
+              );
+              if (response.stop_reason === "max_tokens") {
+                console.warn(`[analyze officecli] Call 2 for ${templateFile} hit max_tokens (${response.usage.output_tokens})`);
+              }
+              const toolBlock = response.content.find(
+                (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+              );
+              if (toolBlock?.name === "submit_phase2_officecli") {
+                const input = toolBlock.input as {
+                  documents?: { templateFile: string; outputLabel?: string; commands: unknown[] }[]
+                };
+                // input.documents[].commands を officeCommands に格納
+                const out: Phase2DocumentDecision[] = (input.documents || []).map((d) => ({
+                  templateFile: d.templateFile,
+                  outputLabel: d.outputLabel,
+                  officeCommands: d.commands as Phase2DocumentDecision["officeCommands"],
+                }));
+                return out;
+              }
+              console.warn(`[analyze officecli] Call 2 for ${templateFile}: Tool Use returned no commands`);
+              return [];
+            } catch (e) {
+              console.error(`[analyze officecli] Call 2 for ${templateFile} failed:`, e instanceof Error ? e.message : e);
+              return [];
+            }
+          };
+
+          // 書類ごとに Tool Use を呼ぶサブルーチン (changes モード)
           const runPhase2ForDocument = async (
             templateFile: string,
             bodyForThisDoc: string
           ): Promise<Phase2DocumentDecision[]> => {
+            // env var officecli ならそっちのルートに振る
+            if (useOfficeCliEngine()) {
+              return runPhase2OfficeCliForDocument(templateFile, bodyForThisDoc);
+            }
             const jsonPrompt = `## あなたの仕事
 
 下の「推論メモ」と「テンプレ本文 (${templateFile})」を読んで、**submit_phase2_changes** ツールを呼び出して
@@ -775,10 +1240,142 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             }
           };
 
-          // 書類ごとに並列で Tool Use を呼ぶ
-          const docResults = await Promise.all(
-            templateBlocks.map((b) => runPhase2ForDocument(b.templateFile, b.body))
-          );
+          // 書類ごとに半並列で Tool Use を呼ぶ。
+          // Anthropic prompt caching の仕様: 並列同時送信だと全 call が cacheWrite (cache 未作成)。
+          // → 1 つ目を先に実行して cache 作成 → 残り並列で cacheRead (10倍安い)。
+          // 時間: 完全並列なら N 秒、半並列なら 2N 秒 (1 件分待ち + 残り並列)。コスト 1/3 になる。
+          let docResults: Phase2DocumentDecision[][];
+          if (useClassificationMode() && classificationData.length > 0) {
+            // ===== 仕分け式: Step A (確定値表+仕分け) → fill/loop は機械生成、ai は従来 AI =====
+            send(controller, { type: "stage", stage: "structuring" });
+            send(controller, { type: "text", text: "仕分けモード: 確定値表を作成中...\n" });
+            const { runPhase2Planning } = await import("@/lib/phase2-plan");
+            const { resolveSlots, generateFillCommands } = await import("@/lib/fill-command-generator");
+
+            // 各テンプレの slot 一覧 (slotId + label ヒント + 形式 + 前値) を AI に渡す
+            const planTemplates = classificationData.map((c) => ({
+              templateFile: c.templateFile,
+              markedText: c.starMarkedText,
+              slots: (c.labels?.slots || [])
+                .filter((s) => s.label && s.label !== "不明")
+                .map((s) => ({ slotId: s.slotId, label: s.label, format: s.format, sourceHint: s.sourceHint, oldValue: c.slots.get(s.slotId) })),
+            }));
+
+            const organizeForPlan = await loadOrganizeResult(company.id, threadId);
+            let caseContextForPlan = extractEssentialContext(messagesWithUserTurn, organizeForPlan);
+            // 統一ルール本体を Step A に渡す (番号参照だけでは組合変換できないため)
+            if (globalRulesText.trim()) {
+              caseContextForPlan += `\n\n## 統一ルール (最優先で従う。番号参照されたルールの本体はここ)\n${globalRulesText}`;
+            }
+            // 確認回答 (議案削除の要否等) を分類AI(Step A)にも渡す。これが無いと「削除が要る→ai」の
+            // 判断ができず、削除が要る書類まで fill に振り分けられて削除指示が落ちる (議案2不具合の根因)。
+            if (qaBlock) caseContextForPlan += `\n${qaBlock}`;
+
+            // 案件フォルダの画像 (マイナンバーカード等) を穴埋め AI に添付する。
+            // 生年月日・住所などは本人確認書類の画像にしか無く、整理結果(テキスト)に出てこないことがある。
+            // 穴埋め時にその画像を直接読めるようにして「データが無い→元データ(原本)を見る」を成立させる
+            // (これが無いと生年月日が <UNKNOWN> のまま出る)。analyze は案件ファイルを body で受け取らないので
+            // ここで案件フォルダ(thread.folderPath)を読み込む。
+            let casePlanImages: { base64: string; mimeType: string; name: string }[] = [];
+            try {
+              const fsLib = await import("fs/promises");
+              const nodePath = await import("path");
+              // eslint-disable-next-line @typescript-eslint/no-require-imports
+              const crypto = require("crypto");
+              const companyHash = crypto.createHash("md5").update(company.id).digest("hex");
+              const threadFile = nodePath.default.join(process.cwd(), "data", "chat-threads", companyHash, `${threadId}.json`);
+              const threadData = JSON.parse(await fsLib.default.readFile(threadFile, "utf-8")) as { folderPath?: string };
+              if (threadData.folderPath) {
+                const IMG = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+                const caseFiles = await readAllFilesInFolder(threadData.folderPath);
+                casePlanImages = caseFiles
+                  .filter((cf) => cf.mimeType && IMG.has(cf.mimeType) && cf.base64)
+                  .map((cf) => ({ base64: cf.base64 as string, mimeType: cf.mimeType as string, name: cf.name }));
+                if (casePlanImages.length > 0) {
+                  send(controller, { type: "text", text: `案件画像 ${casePlanImages.length} 件を穴埋め時の原本参照に添付\n` });
+                }
+              }
+            } catch { /* 案件画像が読めなくても続行 */ }
+
+            const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates, caseImages: casePlanImages });
+            const planSummary = plan.templatePlans.map((tp) => `${tp.templateFile}:${tp.mode}`).join(", ");
+            send(controller, { type: "text", text: `仕分け: ${planSummary}\n` });
+
+            const byFile = new Map(classificationData.map((c) => [c.templateFile, c]));
+            const results: Phase2DocumentDecision[][] = [];
+            const aiTemplates: { templateFile: string; body: string }[] = [];
+
+            // ai モードに渡す値ヒント (fill/loop で AI が決めた値を label→value で集約。整合性用のソフトヒント)
+            const valueHint: Record<string, string> = {};
+            for (const tp of plan.templatePlans) {
+              const cd = byFile.get(tp.templateFile);
+              if (!cd?.labels) continue;
+              const labelById = new Map(cd.labels.slots.map((s) => [s.slotId, s.label]));
+              const allFills = [
+                ...(tp.slotFills || []),
+                ...(tp.sharedSlotFills || []),
+                ...(tp.entities || []).flatMap((e) => e.slotFills),
+              ];
+              for (const f of allFills) {
+                const lbl = labelById.get(f.slotId);
+                if (lbl && f.value) valueHint[lbl] = f.value;
+              }
+            }
+
+            for (const tp of plan.templatePlans) {
+              const cd = byFile.get(tp.templateFile);
+              if (!cd) {
+                send(controller, { type: "text", text: `  ${tp.templateFile}: メタ無し → skip\n` });
+                continue;
+              }
+              if (tp.mode === "ai") {
+                send(controller, { type: "text", text: `  ${tp.templateFile}: [AI個別] ${tp.reason || ""}\n` });
+                const block = templateBlocks.find((b) => b.templateFile === tp.templateFile);
+                if (block) aiTemplates.push(block);
+                continue;
+              }
+              // fill / loop → 機械生成 (slotId 直接)
+              const resolved = resolveSlots({
+                slots: cd.slots,
+                docxPositions: cd.docxPositions,
+                xlsxPositions: cd.xlsxPositions,
+              });
+              const docs = generateFillCommands({ plan: tp, slots: resolved, xlsxCellTexts: cd.xlsxCellTexts, percentRefs: cd.xlsxPercentRefs });
+              const decisionsForTpl: Phase2DocumentDecision[] = docs.map((d) => ({
+                templateFile: tp.templateFile,
+                outputLabel: d.outputLabel,
+                officeCommands: d.commands as Phase2DocumentDecision["officeCommands"],
+              }));
+              results.push(decisionsForTpl);
+              const totalCmds = docs.reduce((s, d) => s + d.commands.length, 0);
+              const skipped = [...new Set(docs.flatMap((d) => d.skippedSlotIds))];
+              send(controller, {
+                type: "text",
+                text: `  ${tp.templateFile}: ${tp.mode} ${docs.length}通 ${totalCmds}コマンド機械生成${skipped.length ? ` (slot未処理: ${skipped.length})` : ""}\n`,
+              });
+            }
+
+            // ai モードのテンプレだけ従来 AI で生成。値ヒントを渡して書類間の表記を統一。
+            if (aiTemplates.length > 0) {
+              send(controller, { type: "text", text: `AI個別生成 ${aiTemplates.length}件...\n` });
+              const aiResults = await Promise.all(
+                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body, valueHint))
+              );
+              results.push(...aiResults);
+            }
+            docResults = results;
+          } else if (templateBlocks.length === 0) {
+            docResults = [];
+          } else if (templateBlocks.length === 1) {
+            docResults = [await runPhase2ForDocument(templateBlocks[0].templateFile, templateBlocks[0].body)];
+          } else {
+            // 1 件目 (cacheWrite) → 完了待ち → 残り並列 (cacheRead)
+            const first = await runPhase2ForDocument(templateBlocks[0].templateFile, templateBlocks[0].body);
+            const rest = await Promise.all(
+              templateBlocks.slice(1).map((b) => runPhase2ForDocument(b.templateFile, b.body))
+            );
+            docResults = [first, ...rest];
+          }
           const decisions: Phase2Decisions = { documents: docResults.flat() };
 
           if (decisions.documents.length > 0) {
@@ -800,9 +1397,17 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             send(controller, { type: "decisions", decisions: null });
           }
 
-          // aiMessages に推論ターンを保存 (Call 2 の結果は保存しない、必要なら phase2Decisions から復元)
-          const finalMessages = appendAssistantTurn(messagesWithUserTurn, reasoningText, "analyze");
-          await saveAiMessages(company.id, threadId, finalMessages);
+          // aiMessages に analyze ターンを保存。changes モードは reasoning テキスト、
+          // officecli モードは Call 1 廃止なので空 (decisions 自体は phase2Decisions から復元可)。
+          if (useOfficeCliEngine()) {
+            // officecli: ユーザーターン (analyze 指示) も付けずに、aiMessages をそのまま保存。
+            // analyze stage を記録するために空テキストの user + assistant ペアを追加してもいいが、
+            // truncateBeforeStage が無くても次回 analyze 実行時に切り戻し対象が無いので問題なし。
+            await saveAiMessages(company.id, threadId, messagesWithUserTurn);
+          } else {
+            const finalMessages = appendAssistantTurn(messagesWithUserTurn, reasoningText, "analyze");
+            await saveAiMessages(company.id, threadId, finalMessages);
+          }
 
           send(controller, { type: "done" });
         } catch (e) {

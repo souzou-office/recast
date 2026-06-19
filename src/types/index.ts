@@ -361,15 +361,72 @@ export interface Phase2DocumentDecision {
   templateFile: string;                                    // クリーンな物理テンプレファイル名 (例: "2-1.提案書兼同意書.docx")
   outputLabel?: string;                                    // 同一テンプレから複数出力する場合の識別 (例: "藤崎用", "先端機構用")
                                                             // 省略時は同一テンプレに 1 出力。出力ファイル名は {base}_{outputLabel}.{ext}
-  // 新スキーマ (changes): 段落番号ベースの統一操作リスト。1 段落 1 op が構造的保証される。
-  // 旧 slotDecisions / blockDeletes / rowInsertions / textReplaces は当面互換のため残置するが
-  // 新規 AI 出力ではこちらだけ使う想定。
+  // 最新スキーマ (officecli): C 案 = AI が officecli の用語そのまま使ったコマンド配列。
+  // RECAST_ENGINE=officecli のとき produce-v2 がこれを実行する。
+  // 旧 changes も互換のため残置する。
+  officeCommands?: OfficeCliCommandPayload[];
+  // 中間スキーマ (changes): 段落番号ベースの統一操作リスト。1 段落 1 op が構造的保証される。
+  // OfficeCLI 移行が完了したら廃止予定。
   changes?: ChangeOp[];
   // 旧スキーマ (互換用、新ルートでは使わない)
   slotDecisions?: SlotDecision[];                          // 各 slot 1 entry のみ
   blockDeletes?: BlockDelete[];                            // 議案ブロック等の複数段落削除 (start/end anchor で範囲指定)
   rowInsertions?: RowInsertion[];                          // 新規行挿入 (法人引受人なら代表取締役行を足す等)
   textReplaces?: TextReplace[];                            // blockDeletes に伴う議案番号繰り上げ等
+}
+
+/**
+ * OfficeCLI コマンド (C 案、AI 出力 → recast が CLI 引数化)。
+ * src/lib/officecli.ts の OfficeCliCommand と同形 (型循環避けるため type 定義はここに置く)。
+ *
+ * 例:
+ *   { command: "set", path: "/body/p[@paraId=064BAB11]",
+ *     props: { find: "令和８年２月１１日", replace: "令和８年６月１日" } }
+ */
+export interface OfficeCliCommandPayload {
+  command: "set" | "add" | "remove" | "get" | "query" | "view" | "validate" | "close";
+  path?: string;
+  parent?: string;
+  type?: string;
+  after?: string;
+  before?: string;
+  props?: Record<string, string>;
+  reason?: string;
+}
+
+// ============================================================
+// 仕分け式アーキテクチャ (classification-based fill) の型
+// ============================================================
+// 思想: AI は「判断」だけする (確定値を1つに決める + 各テンプレの扱いを仕分ける)。
+//       「同じ値を人数分コピペする」みたいな機械作業は recast がルールベースでやる。
+// これにより (1) コスト激減 (2) 書類間の整合性が構造的に保証される (3) 処理が可視化される。
+
+// Step A (AI 1回) の出力。
+// ★設計変更★: 値は「slotId 直接指定」で各 slot に割り当てる (ラベル名照合を廃止)。
+// 理由: ラベル名 (AI 生成) はテンプレ間で表記が揺れ (報酬の支給開始時期 vs 報酬支給開始時期)、
+//       文字列照合だと 1 文字差で外れて古い値が残る事故が起きた。slotId は番号なので揺れない。
+// AI は全テンプレを 1 回で見て各 slot に値を割り当てる → 書類間の整合性も AI が担保。
+export interface Phase2Plan {
+  templatePlans: TemplatePlan[];
+}
+
+// slot 1 つへの値割り当て。slotId はパーサーが振る番号 (テンプレ内で一意)。
+export interface SlotFill {
+  slotId: number;
+  value: string;   // この slot に入れる値。空文字 "" は「この行は不要 → 段落削除」を意味する
+}
+
+export interface TemplatePlan {
+  templateFile: string;
+  mode: "fill" | "loop" | "ai";
+  // fill: 出力1通。slotFills の slotId → 値 を機械で埋める
+  slotFills?: SlotFill[];
+  // loop: 人数分の出力。sharedSlotFills は全員共通 (1回指定で整合)、
+  //       entities[].slotFills は各人固有 (氏名/住所/株数 等)
+  sharedSlotFills?: SlotFill[];
+  entities?: { outputLabel: string; slotFills: SlotFill[] }[];
+  // ai: 構造変化等で機械化できない → 従来通り AI に officeCommands を出させる (slotFills 無し)
+  reason?: string;                       // ai のとき: なぜ機械化できないか (ログ・可視化用)
 }
 
 // 新スキーマ: 段落単位の操作 1 つ。AI が「どの段落をどうする」を 1 op で表現する。
@@ -413,6 +470,14 @@ export interface ChatThread {
   // Phase 2 で確定した「テンプレに入れる値・削除する議案・残る要確認」。
   // clarify-procedural と produce の両方が参照する。
   phase2Decisions?: Phase2Decisions;
+  // Phase 1 (organize) の整理結果。
+  //   - markdown: 人間用の整理 (チャットに表示)
+  //   - structured: Tool Use で AI が出した構造化 JSON。Phase 2-A / Phase 2 / verify が
+  //     会話履歴を引き継がず、これだけを参照する設計 (疎結合 + トークン削減)。
+  organizeResult?: {
+    markdown: string;
+    structured: unknown;  // ExecuteOrganizeResult (将来的に型付け、現状 unknown)
+  };
   // 1案件=1会話: 案件整理→質問→書類生成→検証 を Claude の同じ会話履歴で進める
   // （別人感をなくし、各ステップが前段の判断・迷いを継承するため）
   aiMessages?: CaseAiMessage[];

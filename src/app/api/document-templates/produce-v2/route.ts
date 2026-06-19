@@ -31,6 +31,8 @@ import {
 } from "@/lib/produce-edits";
 import type { ChatThread, Phase2DocumentDecision } from "@/types";
 
+// self-review は廃止 (横断的チェックは verify に集約)
+
 // 旧 produce 互換の出力シェイプ
 interface DocOut {
   name: string;
@@ -191,6 +193,211 @@ export async function POST(request: NextRequest) {
           console.warn(`[produce-v2] 物理テンプレが見つからない: ${decisionDoc.templateFile}`);
           return null;
         }
+
+        // ===== OfficeCLI モード: decisionDoc.officeCommands があれば優先 =====
+        // (新スキーマ。AI が officecli の用語そのままで commands を出す。
+        //  recast は引数組み立て + exec のみ。)
+        if (decisionDoc.officeCommands && decisionDoc.officeCommands.length > 0) {
+          const { copyToTemp, applyCommands } = await import("@/lib/officecli");
+          const workCopy = await copyToTemp(f.path, decisionDoc.outputLabel);
+
+          // 数式セル保護 (xlsx): テンプレで =SUM 等になっている「計算結果セル」(合計・割合など) への
+          // AI set コマンドをドロップする。計算結果はスプレッドシートが自動計算するのが正しく、
+          // ai モードで AI が同じセルに値を書くと数式を潰して事故る (合計% が 100%→1% に化けた件)。
+          // 「AI は判断、計算は spreadsheet」の切り分け。docx には数式が無いので xlsx のみ対象。
+          let sourceCommands = decisionDoc.officeCommands;
+          if (/\.(xlsx|xlsm|xls)$/i.test(f.name)) {
+            try {
+              const { getXlsxFormulaCells } = await import("@/lib/xlsx-marker-parser");
+              const formulaCells = getXlsxFormulaCells(await fs.readFile(f.path));
+              if (formulaCells.size > 0) {
+                const before = sourceCommands.length;
+                sourceCommands = sourceCommands.filter((cmd) => {
+                  if (cmd.command !== "set" || !cmd.path) return true;
+                  const key = cmd.path.replace(/^\//, ""); // "/Sheet/F24" → "Sheet/F24"
+                  return !formulaCells.has(key);
+                });
+                const dropped = before - sourceCommands.length;
+                if (dropped > 0) {
+                  console.log(`[produce-v2 officecli] ${f.name}: 数式セルへの set を ${dropped} 件スキップ (合計・割合などの計算結果を保護)`);
+                }
+              }
+            } catch (e) {
+              console.warn(`[produce-v2 officecli] 数式セル保護スキップ:`, e instanceof Error ? e.message : e);
+            }
+          }
+
+          // AI のブレ対策: 強制補完。
+          // - docx 段落への set: props.highlight が無ければ "none" 補完 (マーカー除去忘れ防止)
+          // - xlsx セルへの set: props.fill が無ければ "FFFFFF" 補完 (塗りつぶし除去忘れ防止)
+          const sanitizedCommands = sourceCommands.map((cmd) => {
+            if (cmd.command !== "set" || !cmd.path) return cmd;
+            const isDocxPara = /\/body\/p\[/.test(cmd.path);
+            const isXlsxCell = /^\/[^/]+\/[A-Z]+\d+/.test(cmd.path); // /SheetName/CellAddr
+            if (!isDocxPara && !isXlsxCell) return cmd;
+            const props: Record<string, string> = { ...(cmd.props || {}) };
+            if (isDocxPara && props.find && !("highlight" in props)) {
+              props.highlight = "none";
+            }
+            if (isXlsxCell) {
+              // xlsx セルへの find/replace は run 分割で 0 マッチ失敗しやすい。
+              // replace 値があれば value= に変換 (セル丸ごと上書き、確実)。
+              // (analyze プロンプトでも value 指定を指示済みだが、AI が find/replace を出した時の保険)
+              if (props.find && props.replace !== undefined && props.value === undefined) {
+                console.warn(`[produce-v2 officecli] ${f.name} xlsx cell ${cmd.path}: find/replace → value 変換`);
+                props.value = props.replace;
+                delete props.find;
+                delete props.replace;
+              }
+              if (!("fill" in props)) props.fill = "FFFFFF";
+            }
+            return { ...cmd, props };
+          });
+
+          // 同じ `after` で連続する add は逆順に並べ替える。
+          // officecli の `add --after X` 仕様: 同じ位置に連続 add すると LIFO で積まれる
+          // (後に add したものが先頭に来る)。AI が「A → B → C」の順で書いても
+          // 結果は「C → B → A」になる事故 (Deep30 組合の同意欄が逆順になった原因)。
+          // recast が逆順に並べ替えることで、AI の出力順 = 結果順に揃える。
+          const reordered: typeof sanitizedCommands = [];
+          let idx = 0;
+          while (idx < sanitizedCommands.length) {
+            const c = sanitizedCommands[idx];
+            if (c.command === "add" && c.after) {
+              const group = [c];
+              let j = idx + 1;
+              while (j < sanitizedCommands.length && sanitizedCommands[j].command === "add" && sanitizedCommands[j].after === c.after) {
+                group.push(sanitizedCommands[j]);
+                j++;
+              }
+              // 逆順で push (LIFO 対策)
+              for (let k = group.length - 1; k >= 0; k--) reordered.push(group[k]);
+              idx = j;
+            } else {
+              reordered.push(c);
+              idx++;
+            }
+          }
+
+          // add で段落を足すとき、隣 (after=) の行の書式 (字下げ・行間・配置) を自動コピーする。
+          // officecli の add は default 書式で段落を作るので、足した行だけ左端に飛んで字下げが崩れる
+          // (組合の同意欄で発生)。after 段落を get して layout 系プロパティを add の props に注入。
+          // 値の継承は recast が機械的にやる → AI に書式判断させない (決定論的)。
+          //
+          // ★致命的な落とし穴 (実機で再現確認済み)★
+          //   get の対象は workCopy では「絶対に」なく、テンプレ原本 (f.path) にすること。
+          //   officecli は get したファイルを resident process で掴むらしく、同じファイルを直後に
+          //   batch すると【全コマンドを success と報告するのに保存が一切反映されない】無言失敗を起こす。
+          //   → add を持つ書類 (組合の提案書兼同意書など) だけがこの get を通るため、組合書類だけが
+          //     丸ごとテンプレのまま出力される (Deep30 組合の提案書が Polaris テンプレのまま出た原因)。
+          //   get(別ファイル) + batch(workCopy) なら汚染されないことを確認済み。afterId 段落はコピー
+          //   直後の workCopy とテンプレで同一なので、f.path から読んでも書式は同じ。
+          {
+            const { runOfficeCli } = await import("@/lib/officecli");
+            // after paraId → 書式プロパティ のキャッシュ (同じ after に複数 add がぶら下がる)
+            const fmtCache = new Map<string, Record<string, string>>();
+            const LAYOUT_KEYS = ["indent", "firstLineIndent", "hangingIndent", "lineSpacing", "lineRule", "align", "spaceBefore", "spaceAfter"];
+            for (const c of reordered) {
+              if (c.command !== "add" || !c.after) continue;
+              const m = c.after.match(/paraId=([0-9A-Fa-f]+)/);
+              if (!m) continue;
+              const afterId = m[1];
+              if (!fmtCache.has(afterId)) {
+                try {
+                  // ★workCopy ではなく f.path (テンプレ原本) から読む。理由は上のコメント参照★
+                  const r = await runOfficeCli(["get", f.path, `/body/p[@paraId=${afterId}]`, "--json"], { timeoutMs: 10_000 });
+                  const parsed = JSON.parse(r.stdout || "{}");
+                  const fmt = parsed?.data?.results?.[0]?.format || {};
+                  const picked: Record<string, string> = {};
+                  for (const k of LAYOUT_KEYS) {
+                    if (fmt[k] !== undefined && fmt[k] !== null) picked[k] = String(fmt[k]);
+                  }
+                  fmtCache.set(afterId, picked);
+                } catch { fmtCache.set(afterId, {}); }
+              }
+              const inherited = fmtCache.get(afterId)!;
+              // AI が既に指定してるプロパティは尊重、未指定のものだけ継承
+              c.props = { ...inherited, ...(c.props || {}) };
+            }
+          }
+
+          const execResults = await applyCommands(workCopy, reordered);
+          const failed = execResults.filter((r) => !r.ok);
+          if (failed.length > 0) {
+            console.warn(
+              `[produce-v2 officecli] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} ` +
+              `${failed.length}/${execResults.length} commands failed:`,
+              failed.slice(0, 3).map((x) => x.error)
+            );
+          } else {
+            console.log(
+              `[produce-v2 officecli] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} ` +
+              `applied ${execResults.length} commands`
+            );
+          }
+
+          // self-review は廃止。
+          // 横断的な整合性チェックは verify (produce 後) に集約 (生成書類だけを入力に絞り、
+          // 全書類間の整合性 + 明らかな誤りを 1 回の LLM 呼び出しで指摘する設計)。
+          // 旧設計: 書類ごとに 1-2 回 LLM 呼び出し → 14 書類で $1+ かかってた。
+
+          let resultBuf: Buffer = await fs.readFile(workCopy);
+          const ext0 = f.name.split(".").pop() || "docx";
+          const isDocxOut = /^docx|^docm/i.test(ext0);
+
+          // 清書クリーンアップ (docx のみ): fitText (文字幅固定) と マーカー (黄色ハイライト・赤文字) を
+          // PizZip で XML 直接編集して確実に除去する。
+          //   - fitText: 長い値 (「Deep30投資事業有限責任組合」等) を固定幅に押し込んで極小・潰れ
+          //     表示になる事故 (組合の提案書兼同意書「無限責任組合員」「代表取締役」行) を解消。
+          //     列位置は段落の字下げ (indent) が保つので fitText を外しても崩れない。
+          //   - highlight/赤文字: テンプレ上の「ここを埋める」目印。清書には絶対に残さない。
+          // ★officecli ではなく XML 直接編集にする理由★: officecli の後処理は高負荷時 (Word
+          //   プロセス枯渇) に無言で失敗し「修正したのに直らない」事故の元凶だった。XML 直接編集なら
+          //   Word/officecli に依存せず負荷状況に関係なく決定論的に効く。
+          if (isDocxOut) {
+            try {
+              const { cleanupGeneratedDocx } = await import("@/lib/docx-cleanup");
+              const { buf: cleaned, counts } = cleanupGeneratedDocx(resultBuf);
+              resultBuf = cleaned;
+              if (counts.fitText || counts.highlight || counts.redColor) {
+                console.log(
+                  `[produce-v2 officecli] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} ` +
+                  `cleanup: fitText=${counts.fitText}, highlight=${counts.highlight}, redColor=${counts.redColor}`
+                );
+              }
+            } catch (e) {
+              console.warn(`[produce-v2 officecli] cleanup 失敗:`, e instanceof Error ? e.message : e);
+            }
+          } else if (/^xls[xm]/i.test(ext0)) {
+            // xlsx/xlsm: 数式 (合計・割合) を Excel 開封時に必ず再計算させる。
+            // officecli はセル値を書き換えるが数式を再計算しないため、放置すると古いキャッシュ値
+            // (例: 合計 24756 のまま、実データは 105263) が残る。fullCalcOnLoad で開封時に強制再計算。
+            try {
+              const { ensureXlsxRecalc } = await import("@/lib/xlsx-cleanup");
+              const { buf: recalced, changed } = ensureXlsxRecalc(resultBuf);
+              resultBuf = recalced;
+              if (changed) {
+                console.log(`[produce-v2 officecli] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""}: xlsx fullCalcOnLoad 設定 (数式を開封時に再計算)`);
+              }
+            } catch (e) {
+              console.warn(`[produce-v2 officecli] xlsx recalc 設定失敗:`, e instanceof Error ? e.message : e);
+            }
+          }
+
+          const baseName = f.name.replace(/\.[^.]+$/, "");
+          const labelSuffix = decisionDoc.outputLabel ? `_${sanitizeFsName(decisionDoc.outputLabel)}` : "";
+
+          // プレビュー HTML はフロント側 docx-preview に任せる (CLAUDE.md 方針)。
+          // officecli view html はブラウザを自動起動する副作用があるため使わない。
+          return {
+            name: `${baseName}${labelSuffix}`,
+            fileName: `${baseName}${labelSuffix}.${ext0}`,
+            docxBase64: resultBuf.toString("base64"),
+            previewHtml: "",
+            templatePath: f.path,
+          };
+        }
+
         const buf = await fs.readFile(f.path);
         const ext = f.name.toLowerCase().split(".").pop() || "";
         const isXlsx = ext === "xlsx" || ext === "xlsm" || ext === "xls";

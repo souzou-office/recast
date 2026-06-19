@@ -237,20 +237,43 @@ function findTopLevelParagraphs(xml: string): ParaRange[] {
 // AI には周辺文脈と .labels.json のラベルから型・意味を判断させる。
 // 元の値（前案件の値）は slots Map に保持（produce/regenerate で originalValue→newValue の
 // 置換マップを作るため必要）。
-export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; slots: Map<number, string> } {
+// slot ごとの位置情報。ルールベース fill コマンド生成 (確定値表方式) で使う。
+// paraId が取れれば officecli の path=/body/p[@paraId=XXX] を機械生成できる。
+export interface DocxSlotPosition {
+  paraId: string | null;   // <w:p w:paraId="..."> の値。無い段落は null
+  paraIndex: number;       // findTopLevelParagraphs での 0-indexed
+}
+
+// <w:p ...> の開始タグから w:paraId 属性を抜く
+function extractParaId(openTag: string): string | null {
+  const m = openTag.match(/\bw14?:paraId="([0-9A-Fa-f]+)"/) || openTag.match(/\bparaId="([0-9A-Fa-f]+)"/);
+  return m ? m[1] : null;
+}
+
+export function getMarkedDocumentTextWithSlots(buffer: Buffer): {
+  text: string;
+  slots: Map<number, string>;
+  slotPositions: Map<number, DocxSlotPosition>;
+} {
   const zip = new PizZip(buffer);
   let docXml = zip.file("word/document.xml")?.asText();
-  if (!docXml) return { text: "", slots: new Map() };
+  if (!docXml) return { text: "", slots: new Map(), slotPositions: new Map() };
   docXml = stripAlternateContent(docXml);
 
   const slots = new Map<number, string>();
+  const slotPositions = new Map<number, DocxSlotPosition>();
   let slotId = 0;
   const lines: string[] = [];
   // 段落の境界は「ネストされた <w:p> を考慮した」findTopLevelParagraphs で取得する。
   // 単純な非貪欲 regex だと、テキストボックス内の <w:p> で </w:p> を取り違えて
   // 後続のハイライトラン（同意書テンプレの議決権数等）を取りこぼす。
   const paragraphs = findTopLevelParagraphs(docXml);
+  let paraIndex = 0;
   for (const p of paragraphs) {
+    // この段落の paraId を開始タグ (p.start 〜 p.openEnd) から抽出
+    const openTag = docXml.slice(p.start, p.openEnd);
+    const paraId = extractParaId(openTag);
+    const thisParaIndex = paraIndex++;
     // <w:p> 内の <w:r> を、ネストされた <w:p>（テキストボックス内）の <w:r> も含めて拾う。
     // ただしテキストボックス内の run は別段落として扱いたいので、まず外側 <w:p> 直下の
     // run だけを取り、テキストボックスは画像扱いでスキップ。
@@ -265,6 +288,7 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; 
     const flushGroup = () => {
       if (currentGroupText) {
         slots.set(slotId, currentGroupText);
+        slotPositions.set(slotId, { paraId, paraIndex: thisParaIndex });
         // ★前案件の値は出力テキストに含めない★。番号だけ。AI には文脈から型を判断させる。
         lineText += `［要入力_${slotId}］`;
         slotId++;
@@ -287,7 +311,7 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): { text: string; 
     // (空) 行は produce-v2 の段落番号付けで skip され、engine の段落 index 計算には影響しない。
     lines.push(lineText.trim() ? lineText : "(空)");
   }
-  return { text: lines.join("\n"), slots };
+  return { text: lines.join("\n"), slots, slotPositions };
 }
 
 // 文書全体のテキストを、ハイライト部分を★マーク★で囲んで返す（旧方式、後方互換用）

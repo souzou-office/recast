@@ -21,6 +21,17 @@ npm-debug.log*
 # tokens (OAuth)
 /data/tokens.json
 
+# ローカルのライブ作業データ（各PC固有・ローカルパス含む・アプリが常時書き換える）。
+# git 管理しない: コードのリセット等でユーザーのライブ設定が巻き込まれて壊れるのを防ぐため。
+/data/folders.json
+/data/chat-threads/
+/data/chat-history/
+/data/produce-v2-debug/
+/data/*.bak*
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# dev test artifacts
+dev.*
