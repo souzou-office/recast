@@ -545,31 +545,17 @@ export async function POST(request: NextRequest) {
   // docx/xlsx のみ処理) ため、メモに書いた指示が生成に効いていなかった。共通ルール(統一ルール.txt)とは別。
   let memoBlock = "";
   try {
-    const notes: string[] = [];
-    const pickNotes = (files: { name: string; content?: string }[], label: string) => {
-      for (const f of files) {
-        if (!/\.(txt|md)$/i.test(f.name)) continue;
-        const c = (f.content || "").trim();
-        if (!c || c.startsWith("[")) continue; // 空 / base64 等は除外
-        notes.push(`### ${label}: ${f.name}\n${c}`);
-      }
-    };
-    if (templateFolderPath) {
-      try { pickNotes(await readAllFilesInFolder(templateFolderPath), "テンプレ群メモ"); } catch { /* ignore */ }
-    }
-    try {
-      const fsLib = await import("fs/promises");
-      const nodePath = await import("path");
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const crypto = require("crypto");
-      const companyHash = crypto.createHash("md5").update(company.id).digest("hex");
-      const threadFile = nodePath.default.join(process.cwd(), "data", "chat-threads", companyHash, `${threadId}.json`);
-      const threadData = JSON.parse(await fsLib.default.readFile(threadFile, "utf-8")) as { folderPath?: string };
-      if (threadData.folderPath) pickNotes(await readAllFilesInFolder(threadData.folderPath), "案件フォルダメモ");
-    } catch { /* ignore */ }
-    if (notes.length > 0) {
-      memoBlock = `\n\n## メモ・注意事項 (テンプレ作成者/案件担当者がファイルに残した指示。反映すること)\n${notes.join("\n\n")}`;
-    }
+    // 案件フォルダ (thread.folderPath) を引いて、テンプレ群メモ + 案件フォルダメモ(.txt/.md) を読む。
+    // 質問生成(analyze-questions)と共通の loadMemoNotes を使う。
+    const fsLib = await import("fs/promises");
+    const nodePath = await import("path");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const crypto = require("crypto");
+    const companyHash = crypto.createHash("md5").update(company.id).digest("hex");
+    const threadFile = nodePath.default.join(process.cwd(), "data", "chat-threads", companyHash, `${threadId}.json`);
+    const threadData = JSON.parse(await fsLib.default.readFile(threadFile, "utf-8")) as { folderPath?: string };
+    const { loadMemoNotes } = await import("@/lib/memo-notes");
+    memoBlock = await loadMemoNotes(templateFolderPath, threadData.folderPath || null);
   } catch { /* メモが読めなくても続行 */ }
 
   // Phase 1 (organize) 完了が前提
