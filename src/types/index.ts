@@ -425,8 +425,11 @@ export interface TemplatePlan {
   //       entities[].slotFills は各人固有 (氏名/住所/株数 等)
   sharedSlotFills?: SlotFill[];
   entities?: { outputLabel: string; slotFills: SlotFill[] }[];
-  // ai: 構造変化等で機械化できない → 従来通り AI に officeCommands を出させる (slotFills 無し)
+  // ai: 構造変化等で機械化できない → AI に officeCommands を出させる (slotFills 無し)
   reason?: string;                       // ai のとき: なぜ機械化できないか (ログ・可視化用)
+  // ai のとき: このテンプレから作る出力の一覧 (振り分けを Step A が1回だけ確定する)。
+  // ai 経路 (FILL/STRUCT) は再判断せずこの通りに出力する → loop と ai で振り分けがブレない。
+  aiOutputs?: { outputLabel: string; needsStructuralEdit: boolean }[];
 }
 
 // 新スキーマ: 段落単位の操作 1 つ。AI が「どの段落をどうする」を 1 op で表現する。

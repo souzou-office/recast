@@ -1013,7 +1013,8 @@ xlsx の **セル全体が 1 slot** として塗られていて、元セルに *
           const runPhase2OfficeCliForDocument = async (
             templateFile: string,
             bodyForThisDoc: string,
-            valueTableHint?: Record<string, string>   // 仕分けモードの確定値表 (書類間で値を揃えるため)
+            valueTableHint?: Record<string, string>,  // 仕分けモードの確定値表 (書類間で値を揃えるため)
+            aiOutputs?: { outputLabel: string; needsStructuralEdit: boolean }[]  // Step A が確定した出力一覧 (振り分け再判断を防ぐ)
           ): Promise<Phase2DocumentDecision[]> => {
             // 確定値表があれば「この値をそのまま使え」とプロンプトに明示 (書類間の表記統一)
             const valueTableBlock = valueTableHint && Object.keys(valueTableHint).length > 0
@@ -1113,13 +1114,27 @@ ${bodyForThisDoc}`;
               }
             };
 
-            // ===== パス1: FILL (set のみ) — ★label の穴埋め + 出力の振り分け =====
+            // ===== パス1: FILL (set のみ) — ★label の穴埋め。出力は Step A 確定分をそのまま作る =====
+            // Step A が出力一覧 (aiOutputs) を確定済みなら、FILL に振り分けを再判断させない。
+            // (loop↔ai で振り分けがブレて法人/組合が出力から欠落する事故を防ぐ。未指定時のみ振り分けルール)
+            const fillOutputsDirective = aiOutputs && aiOutputs.length > 0
+              ? `## ★作る出力は確定済み — 自分で振り分けを判断するな★
+このテンプレからは次の出力を **全部・この通りに** 作る (Step A が確定済み)。outputLabel はこの表記をそのまま使う:
+${aiOutputs.map((o) => `- "${o.outputLabel}"`).join("\n")}
+上の ${aiOutputs.length} 件を **1 件も落とさず** documents[] に並べる。構造変更が要る相手 (組合等) も
+このパスでは ★label の穴埋めだけ する (作り替えは別工程)。`
+              : `## 出力の振り分け
+上の「株主の振り分けルール」に従い、このテンプレから作る出力を **全部** documents[] に並べる
+(法人テンプレなら 会社 + 組合 で 2 entry 等)。各 entry に outputLabel を付ける。`;
+
             const fillPrompt = `## あなたの仕事 (穴埋めパス)
 
 **${templateFile}** の ★label★ (黄色ハイライト) に値を流し込む **set コマンドだけ** を submit_phase2_officecli で提出。他書類は無視。
 ${qaBlock}
 このパスは **穴埋め専用**。行の追加・削除・議案削除・組合化などの **構造変更は一切やらない** (別工程が担当)。
 構造が変わる箇所 (組合の同意欄など) の行も、ここでは **そのまま値だけ埋める** (作り替えは別工程)。
+
+${fillOutputsDirective}
 
 ${sharedBody}
 
@@ -1130,31 +1145,30 @@ ${sharedBody}
 - \`{command:"set", path:"/body/p[@paraId=XXX]", props:{find:"元値", replace:"新値", highlight:"none"}}\` (置換+ハイライト除去を1op)
 ### xlsx (docx と違う)
 - \`{command:"set", path:"/シート名/B14", props:{value:"徳永優也", fill:"FFFFFF"}}\` (value で丸ごと上書き、find/replace 禁止=run分割で0マッチ)
-- 1 op = 1 セル。1 行 5 セルなら set 5 回。
-
-## 出力の振り分け (重要)
-上の「株主の振り分けルール」に従い、このテンプレから作る出力を **全部** documents[] に並べる
-(法人テンプレなら 会社 + 組合 で 2 entry 等)。各 entry に outputLabel を付ける。
-**次の工程 (構造変更) がこの outputLabel をそのまま引き継ぐ**ので、識別しやすい名前にする。`;
+- 1 op = 1 セル。1 行 5 セルなら set 5 回。`;
 
             const fillDocs = await callPass(PHASE2_OFFICECLI_FILL_TOOL, fillPrompt, "FILL");
 
-            // ===== パス2: STRUCT — 構造変更だけ (FILL が確定した出力ラベルを引き継ぐ) =====
-            const knownOutputs = fillDocs.map((d) => ({ templateFile: d.templateFile, outputLabel: d.outputLabel }));
-            const outputsList = knownOutputs.length > 0
-              ? knownOutputs.map((o) => `- ${o.templateFile}${o.outputLabel ? ` [outputLabel: ${o.outputLabel}]` : " [outputLabel なし]"}`).join("\n")
-              : `- ${templateFile} [outputLabel なし]`;
+            // ===== パス2: STRUCT — 構造変更だけ。対象は Step A が「構造変更要」と印を付けた出力のみ =====
+            // 出力一覧と「どれが構造変更を要するか」は Step A が確定済み (aiOutputs)。これで STRUCT が
+            // 個人出力に誤って構造変更を当てる事故を防ぐ。未指定時のみ FILL 結果から判断させる。
+            const structOutputsList = aiOutputs && aiOutputs.length > 0
+              ? aiOutputs.map((o) => `- "${o.outputLabel}" → ${o.needsStructuralEdit ? "★構造変更が必要 (この出力に remove/add を出す)" : "構造変更なし (commands は空にする)"}`).join("\n")
+              : (fillDocs.length > 0
+                  ? fillDocs.map((d) => `- "${d.outputLabel || ""}" → 構造変更の要否を本文から判断`).join("\n")
+                  : `- "" → 構造変更の要否を本文から判断`);
 
             const structPrompt = `## あなたの仕事 (構造変更パス)
 
 ★label★ の穴埋めは **別工程で完了済み**。お前の仕事は **構造変更だけ** (行の追加・削除・議案削除・組合化)。
-**穴埋め (単なる ★label の値入れ) は出すな**。構造が変わらない出力は commands を空にしてよい。
+**穴埋め (単なる ★label の値入れ) は出すな**。
 ${qaBlock}
-## 対象の出力 (前工程=穴埋めが確定したもの。この outputLabel を完全一致で引き継ぐこと)
-${outputsList}
+## 対象の出力 (outputLabel はこの表記を完全一致で使う。穴埋め工程と合体するため)
+${structOutputsList}
 
-各出力について、**構造変更が要るものだけ** commands を出す。outputLabel は上のリストの表記を
-**そのまま使う** (勝手に変えると別出力扱いになり、穴埋め結果と合体できず崩れる)。
+- ★構造変更が必要 と印が付いた出力 **だけ** に remove/add を出す。
+- 印が無い出力 (個人など) は **commands を空** にする (構造変更を当てるな)。
+- outputLabel を勝手に変えるな (別出力扱いになり穴埋めと合体できず崩れる)。
 
 ${sharedBody}
 
@@ -1420,7 +1434,7 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
 
             const byFile = new Map(classificationData.map((c) => [c.templateFile, c]));
             const results: Phase2DocumentDecision[][] = [];
-            const aiTemplates: { templateFile: string; body: string }[] = [];
+            const aiTemplates: { templateFile: string; body: string; aiOutputs?: { outputLabel: string; needsStructuralEdit: boolean }[] }[] = [];
 
             // ai モードに渡す値ヒント (fill/loop で AI が決めた値を label→value で集約。整合性用のソフトヒント)
             const valueHint: Record<string, string> = {};
@@ -1446,9 +1460,11 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
                 continue;
               }
               if (tp.mode === "ai") {
-                send(controller, { type: "text", text: `  ${tp.templateFile}: [AI個別] ${tp.reason || ""}\n` });
+                const outsLabel = (tp.aiOutputs || []).map((o) => `${o.outputLabel || "(単一)"}${o.needsStructuralEdit ? "*構造" : ""}`).join(", ");
+                send(controller, { type: "text", text: `  ${tp.templateFile}: [AI個別] ${tp.reason || ""} → 出力: ${outsLabel || "(未指定)"}\n` });
+                console.log(`[analyze] ai出力一覧 ${tp.templateFile}: ${outsLabel || "(未指定=FILLが振り分け)"}`);
                 const block = templateBlocks.find((b) => b.templateFile === tp.templateFile);
-                if (block) aiTemplates.push(block);
+                if (block) aiTemplates.push({ ...block, aiOutputs: tp.aiOutputs });
                 continue;
               }
               // fill / loop → 機械生成 (slotId 直接)
@@ -1476,7 +1492,7 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             if (aiTemplates.length > 0) {
               send(controller, { type: "text", text: `AI個別生成 ${aiTemplates.length}件...\n` });
               const aiResults = await Promise.all(
-                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body, valueHint))
+                aiTemplates.map((b) => runPhase2OfficeCliForDocument(b.templateFile, b.body, valueHint, b.aiOutputs))
               );
               results.push(...aiResults);
             }

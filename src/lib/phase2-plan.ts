@@ -81,6 +81,24 @@ const PHASE2_PLAN_TOOL: Anthropic.Tool = {
             },
             // ai 用
             reason: { type: "string", description: "ai のとき: なぜ機械化できないか (短く)" },
+            aiOutputs: {
+              type: "array",
+              description:
+                "ai のとき必須: このテンプレから作る出力を **全部** 列挙する (振り分けはここで1回だけ確定。" +
+                "後工程に再判断させない)。法人テンプレが無く個人テンプレを使い回す場合も、" +
+                "個人・法人・組合の全員をここに列挙する。漏らすとその人の書類が出なくなる。",
+              items: {
+                type: "object",
+                properties: {
+                  outputLabel: { type: "string", description: "出力の識別名 (氏名/法人名等)。1出力だけなら空文字可" },
+                  needsStructuralEdit: {
+                    type: "boolean",
+                    description: "true=この出力は行構造の変更が要る (組合の同意欄など個人と形が違う)。false=穴埋めだけで作れる (個人など)",
+                  },
+                },
+                required: ["outputLabel", "needsStructuralEdit"],
+              },
+            },
           },
           required: ["templateFile", "mode"],
         },
@@ -150,7 +168,14 @@ fill/loop は **既存スロットに値を入れることしかできない** (
     (例: 提案書テンプレ1つで 個人2名 + 会社1 + 組合1 を出す → 組合の行構造が違うので ai)
 
 迷ったら: そのテンプレの **全出力の中に、テンプレの行をそのまま使えない相手が 1 人でもいるか?**
-いるなら ai。穴埋めだけで全員作れるなら fill/loop。`;
+いるなら ai。穴埋めだけで全員作れるなら fill/loop。
+
+### ai のときの aiOutputs (必須・最重要)
+ai に分類したら、**aiOutputs にそのテンプレから作る出力を全部列挙**する (loop の entities と同じ顔ぶれ)。
+後工程 (穴埋め/構造変更) はこの一覧の通りに出力する。**ここで列挙し漏らすとその人の書類が出なくなる**。
+- 個人・法人・組合を**全員**列挙する (個人テンプレを使い回すケースでも法人/組合を必ず含める)
+- 各出力に needsStructuralEdit: 行構造の変更が要るか (組合=true / 個人=false 等)
+- 例: 個人2名+会社1+組合1なら aiOutputs に4件。個人2名と会社=false、組合=true。`;
 }
 
 export async function runPhase2Planning(args: {
