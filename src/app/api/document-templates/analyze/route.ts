@@ -1415,6 +1415,8 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             const plan = await runPhase2Planning({ caseContext: caseContextForPlan, templates: planTemplates, caseImages: casePlanImages });
             const planSummary = plan.templatePlans.map((tp) => `${tp.templateFile}:${tp.mode}`).join(", ");
             send(controller, { type: "text", text: `仕分け: ${planSummary}\n` });
+            // サーバーログにも分類結果を出す (loop↔ai のブレ調査用。SSE は client にしか出ないため)
+            console.log(`[analyze] 仕分け結果: ${planSummary}`);
 
             const byFile = new Map(classificationData.map((c) => [c.templateFile, c]));
             const results: Phase2DocumentDecision[][] = [];
