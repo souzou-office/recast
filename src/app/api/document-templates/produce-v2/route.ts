@@ -345,6 +345,26 @@ export async function POST(request: NextRequest) {
           const ext0 = f.name.split(".").pop() || "docx";
           const isDocxOut = /^docx|^docm/i.test(ext0);
 
+          // ★穴埋め未完 (サイレントスキップ) 検出 — cleanup の"前"に必ず実行★
+          // 穴埋めが効くと set が highlight を消す。cleanup は全 highlight を消してしまうので、その前に
+          // 「highlight が残ってる=変換が効いてないマーカー」を機械検出してログに出す。
+          // 「officecli が成功と言いつつ書類が変わってない」(recast 最大の怖さ) を黙って出さず可視化する。
+          if (isDocxOut) {
+            try {
+              const { detectUnfilledMarkers } = await import("@/lib/docx-verify");
+              const unfilled = detectUnfilledMarkers(resultBuf);
+              if (unfilled.length > 0) {
+                console.warn(
+                  `[produce-v2 verify] ${f.name}${decisionDoc.outputLabel ? ` [${decisionDoc.outputLabel}]` : ""} ` +
+                  `★穴埋め未完 ${unfilled.length} 件 (highlight 残り=変換が効いてない可能性): ` +
+                  unfilled.slice(0, 10).map((u) => `"${u.text}"`).join(" / ")
+                );
+              }
+            } catch (e) {
+              console.warn(`[produce-v2 verify] detectUnfilledMarkers 失敗:`, e instanceof Error ? e.message : e);
+            }
+          }
+
           // 清書クリーンアップ (docx のみ): fitText (文字幅固定) と マーカー (黄色ハイライト・赤文字) を
           // PizZip で XML 直接編集して確実に除去する。
           //   - fitText: 長い値 (「Deep30投資事業有限責任組合」等) を固定幅に押し込んで極小・潰れ
