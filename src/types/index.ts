@@ -416,15 +416,24 @@ export interface SlotFill {
   value: string;   // この slot に入れる値。空文字 "" は「この行は不要 → 段落削除」を意味する
 }
 
+// 領域スロット (緑マーカー = 入れ替えブロック) への中身割り当て。
+// AI は「その領域に入る行」を配列で出すだけ。場所 (消す段落・挿入位置) はパーサーが
+// 確定済みなので AI は触らない。lines が空配列なら領域を削除するだけ (純削除)。
+export interface RegionFill {
+  slotId: number;     // 領域スロットの slotId (パーサーが振った ［領域_N］ の番号)
+  lines: string[];    // その領域に入れる行 (個人=2行/組合=6行 等。完成形を上から順に)
+}
+
 export interface TemplatePlan {
   templateFile: string;
   mode: "fill" | "loop" | "ai";
-  // fill: 出力1通。slotFills の slotId → 値 を機械で埋める
+  // fill: 出力1通。slotFills の slotId → 値、regionFills の slotId → 行配列 を機械で埋める
   slotFills?: SlotFill[];
+  regionFills?: RegionFill[];            // fill: この出力の領域スロットの中身
   // loop: 人数分の出力。sharedSlotFills は全員共通 (1回指定で整合)、
-  //       entities[].slotFills は各人固有 (氏名/住所/株数 等)
+  //       entities[].slotFills / regionFills は各人固有 (氏名/住所/同意欄ブロック 等)
   sharedSlotFills?: SlotFill[];
-  entities?: { outputLabel: string; slotFills: SlotFill[] }[];
+  entities?: { outputLabel: string; slotFills: SlotFill[]; regionFills?: RegionFill[] }[];
   // ai: 構造変化等で機械化できない → AI に officeCommands を出させる (slotFills 無し)
   reason?: string;                       // ai のとき: なぜ機械化できないか (ログ・可視化用)
   // ai のとき: このテンプレから作る出力の一覧 (振り分けを Step A が1回だけ確定する)。

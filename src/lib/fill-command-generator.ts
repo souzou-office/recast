@@ -8,9 +8,9 @@
 //   ラベル名の表記揺れで外れることが構造的に起きない。
 //   officecli へは今まで通り paraId/セル指定のコマンドで渡す (slotId は recast 内部のみ)。
 
-import type { DocxSlotPosition } from "./docx-marker-parser";
+import type { DocxSlotPosition, RegionSlot } from "./docx-marker-parser";
 import type { XlsxSlotPosition } from "./xlsx-marker-parser";
-import type { OfficeCliCommandPayload, TemplatePlan, SlotFill } from "@/types";
+import type { OfficeCliCommandPayload, TemplatePlan, SlotFill, RegionFill } from "@/types";
 
 // 1 書類分の生成結果。
 export interface GeneratedDoc {
@@ -79,7 +79,9 @@ function generateForOneOutput(
   slotValues: Map<number, string>,
   outputLabel: string | undefined,
   xlsxCellTexts?: Map<string, string>,
-  percentRefs?: Set<string>
+  percentRefs?: Set<string>,
+  regionSlots?: Map<number, RegionSlot>,
+  regionValues?: Map<number, string[]>
 ): GeneratedDoc {
   const commands: OfficeCliCommandPayload[] = [];
   const skippedSlotIds: number[] = [];
@@ -139,6 +141,31 @@ function generateForOneOutput(
     }
   }
 
+  // --- 領域 (緑マーカー = 入れ替えブロック): 旧領域を remove して afterParaId 直後に新行を add ---
+  // 場所 (removeParaIds / afterParaId) はパーサーが確定済み。AI が出した lines を入れるだけ。
+  // ★重複は機械で除去★ (同じ remove を2回・同じ行を複数回 = ダブりの元 を構造的に防ぐ)。
+  // 挿入順序の整列 (officecli の同一 after への LIFO) と書式継承は produce-v2 が行う。
+  if (regionSlots && regionValues) {
+    for (const [slotId, lines] of regionValues) {
+      const region = regionSlots.get(slotId);
+      if (!region) { skippedSlotIds.push(slotId); continue; }
+      const seenRemove = new Set<string>();
+      for (const pid of region.removeParaIds) {
+        if (!pid || seenRemove.has(pid)) continue;
+        seenRemove.add(pid);
+        commands.push({ command: "remove", path: `/body/p[@paraId=${pid}]` });
+      }
+      if (region.afterParaId) {
+        const seenLine = new Set<string>();
+        for (const line of lines) {
+          if (line == null || seenLine.has(line)) continue;
+          seenLine.add(line);
+          commands.push({ command: "add", parent: "/body", after: `/body/p[@paraId=${region.afterParaId}]`, type: "paragraph", props: { text: line } });
+        }
+      }
+    }
+  }
+
   return { outputLabel, commands, skippedSlotIds };
 }
 
@@ -149,18 +176,26 @@ function fillsToMap(fills: SlotFill[] | undefined): Map<number, string> {
   return m;
 }
 
+// RegionFill[] → Map<slotId, lines[]>
+function regionFillsToMap(fills: RegionFill[] | undefined): Map<number, string[]> {
+  const m = new Map<number, string[]>();
+  for (const f of fills || []) m.set(f.slotId, f.lines || []);
+  return m;
+}
+
 // テンプレ 1 つ分の生成。mode に応じて fill (1通) / loop (人数分) を機械展開する。
 // mode === "ai" の場合はこの関数を呼ばない (呼び出し側で AI に officeCommands を出させる)。
 export function generateFillCommands(args: {
   plan: TemplatePlan;
   slots: SlotInfo[];
+  regionSlots?: Map<number, RegionSlot>;   // パーサーが検出した領域 (緑) の位置情報
   xlsxCellTexts?: Map<string, string>;
   percentRefs?: Set<string>;
 }): GeneratedDoc[] {
-  const { plan, slots, xlsxCellTexts, percentRefs } = args;
+  const { plan, slots, regionSlots, xlsxCellTexts, percentRefs } = args;
 
   if (plan.mode === "fill") {
-    return [generateForOneOutput(slots, fillsToMap(plan.slotFills), undefined, xlsxCellTexts, percentRefs)];
+    return [generateForOneOutput(slots, fillsToMap(plan.slotFills), undefined, xlsxCellTexts, percentRefs, regionSlots, regionFillsToMap(plan.regionFills))];
   }
 
   if (plan.mode === "loop") {
@@ -168,13 +203,13 @@ export function generateFillCommands(args: {
     const entities = plan.entities || [];
     if (entities.length === 0) {
       // エンティティ無し → 共通分だけで 1 通
-      return [generateForOneOutput(slots, shared, undefined, xlsxCellTexts, percentRefs)];
+      return [generateForOneOutput(slots, shared, undefined, xlsxCellTexts, percentRefs, regionSlots, regionFillsToMap(plan.regionFills))];
     }
     return entities.map((ent) => {
-      // 共通 slot + この人固有 slot をマージ (固有が優先)
+      // 共通 slot + この人固有 slot をマージ (固有が優先)。領域は各人固有 (同意欄ブロック等)。
       const merged = new Map(shared);
       for (const f of ent.slotFills) merged.set(f.slotId, f.value);
-      return generateForOneOutput(slots, merged, ent.outputLabel, xlsxCellTexts, percentRefs);
+      return generateForOneOutput(slots, merged, ent.outputLabel, xlsxCellTexts, percentRefs, regionSlots, regionFillsToMap(ent.regionFills));
     });
   }
 

@@ -32,7 +32,7 @@ export interface TemplateSlotLabel {
 //       slot の採番がズレた。labels.json (AI に渡す slot 一覧) と produce 側の位置 (live parser)
 //       の番号が食い違い、株主リストの値が列ズレ・行ズレする事故が起きたため再生成必須。
 //       ★パーサーの採番ロジックを変えたら必ずここを bump すること★ (labels.json は採番のキャッシュ)
-const PARSER_VERSION = 7;
+const PARSER_VERSION = 8;   // 8: 緑ハイライト(領域マーカー)を点フィールドから除外 → 採番が変わるので再生成
 
 export interface TemplateLabels {
   templateHash: string;

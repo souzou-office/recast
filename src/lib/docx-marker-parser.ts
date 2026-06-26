@@ -282,7 +282,9 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): {
   const slots = new Map<number, string>();
   const slotPositions = new Map<number, DocxSlotPosition>();
   const regionSlots = new Map<number, RegionSlot>();
-  let slotId = 0;
+  let slotId = 0;                    // 点スロットの採番。★領域では増やさない★ (extractMarkedFields=labels と一致させる)
+  const REGION_SLOT_BASE = 100000;  // 領域スロットは別系統で採番 (点番号を消費せず labels とズレないように)
+  let regionSeq = 0;
   const lines: string[] = [];
   // 段落の境界は「ネストされた <w:p> を考慮した」findTopLevelParagraphs で取得する。
   // 単純な非貪欲 regex だと、テキストボックス内の <w:p> で </w:p> を取り違えて
@@ -317,9 +319,9 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): {
     const isRegionPara = /<w:highlight\s+w:val="green"\s*\/>/i.test(cleanInner);
     if (isRegionPara) {
       if (!openRegion) {
-        openRegion = { slotId, removeParaIds: [], afterParaId: prevParaId, texts: [] };
-        lines.push(`［領域_${slotId}］`);
-        slotId++;
+        const rid = REGION_SLOT_BASE + regionSeq++;   // 点番号を消費しない別系統
+        openRegion = { slotId: rid, removeParaIds: [], afterParaId: prevParaId, texts: [] };
+        lines.push(`［領域_${rid}］`);
       }
       if (paraId) openRegion.removeParaIds.push(paraId);
       openRegion.texts.push(getParagraphText(cleanInner).trim());

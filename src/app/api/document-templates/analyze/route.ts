@@ -704,6 +704,7 @@ export async function POST(request: NextRequest) {
     labels: import("@/lib/template-labels").TemplateLabels | null;
     slots: Map<number, string>;
     docxPositions?: Map<number, import("@/lib/docx-marker-parser").DocxSlotPosition>;
+    regionSlots?: Map<number, import("@/lib/docx-marker-parser").RegionSlot>;   // 緑マーカーの入れ替え領域
     xlsxPositions?: Map<number, import("@/lib/xlsx-marker-parser").XlsxSlotPosition>;
     xlsxCellTexts?: Map<string, string>;   // xlsx セル単位再構築用
     xlsxPercentRefs?: Set<string>;          // % 書式セル (値に % を付ける)
@@ -736,7 +737,7 @@ export async function POST(request: NextRequest) {
         if (ext === "docx" || ext === "docm") {
           try {
             docBuf = await fs.readFile(f.path);
-            const { text, slots, slotPositions } = getMarkedDocumentTextWithSlots(docBuf);
+            const { text, slots, slotPositions, regionSlots } = getMarkedDocumentTextWithSlots(docBuf);
             const labels = await ensureDocxLabels(f.path);
             const labelById = new Map<number, string>();
             for (const s of labels?.slots || []) {
@@ -752,7 +753,7 @@ export async function POST(request: NextRequest) {
             });
             classificationData.push({
               templateFile: f.name, filePath: f.path, isXlsx: false,
-              labels: labels ?? null, slots, docxPositions: slotPositions, starMarkedText: markedText,
+              labels: labels ?? null, slots, docxPositions: slotPositions, regionSlots, starMarkedText: markedText,
             });
           } catch (e) {
             console.warn(`[analyze] docx marker read failed (${f.name}):`, e instanceof Error ? e.message : e);
@@ -1520,13 +1521,16 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
             const { runPhase2Planning } = await import("@/lib/phase2-plan");
             const { resolveSlots, generateFillCommands } = await import("@/lib/fill-command-generator");
 
-            // 各テンプレの slot 一覧 (slotId + label ヒント + 形式 + 前値) を AI に渡す
+            // 各テンプレの slot 一覧 (slotId + label ヒント + 形式 + 前値) + 領域スロットを AI に渡す
             const planTemplates = classificationData.map((c) => ({
               templateFile: c.templateFile,
               markedText: c.starMarkedText,
               slots: (c.labels?.slots || [])
                 .filter((s) => s.label && s.label !== "不明")
                 .map((s) => ({ slotId: s.slotId, label: s.label, format: s.format, sourceHint: s.sourceHint, oldValue: c.slots.get(s.slotId) })),
+              regions: c.regionSlots && c.regionSlots.size > 0
+                ? [...c.regionSlots.entries()].map(([slotId, r]) => ({ slotId, text: r.text }))
+                : undefined,
             }));
 
             const organizeForPlan = await loadOrganizeResult(company.id, threadId);
@@ -1613,7 +1617,7 @@ delete range で消す段落数より少ない insertAfter は **ほぼ確実に
                 docxPositions: cd.docxPositions,
                 xlsxPositions: cd.xlsxPositions,
               });
-              const docs = generateFillCommands({ plan: tp, slots: resolved, xlsxCellTexts: cd.xlsxCellTexts, percentRefs: cd.xlsxPercentRefs });
+              const docs = generateFillCommands({ plan: tp, slots: resolved, regionSlots: cd.regionSlots, xlsxCellTexts: cd.xlsxCellTexts, percentRefs: cd.xlsxPercentRefs });
               const decisionsForTpl: Phase2DocumentDecision[] = docs.map((d) => ({
                 templateFile: tp.templateFile,
                 outputLabel: d.outputLabel,
