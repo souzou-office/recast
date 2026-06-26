@@ -57,7 +57,7 @@ export default function ChatSidebar({
     setRescanning(true);
     try {
       await fetch("/api/workspace", {
-        method: "POST",
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "rescanCompany", companyId: selectedCompanyId }),
       });

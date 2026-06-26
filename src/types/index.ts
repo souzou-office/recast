@@ -392,6 +392,11 @@ export interface OfficeCliCommandPayload {
   before?: string;
   props?: Record<string, string>;
   reason?: string;
+  // ★recast 内部用 (officecli には渡さない)★ add した段落の書式 (字下げ・配置等) を、
+  // この paraId の段落から継承する。未指定なら after の段落から継承 (従来通り)。
+  // 領域(緑)の add 行は、挿入位置(after=日付など右寄せ)でなく旧領域の行から継承させて
+  // 「全部右寄せになる」事故を防ぐ。produce-v2 が読み、officecli 送信時は無視される。
+  formatFromParaId?: string;
 }
 
 // ============================================================

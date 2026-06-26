@@ -298,24 +298,25 @@ export async function POST(request: NextRequest) {
             const fmtCache = new Map<string, Record<string, string>>();
             const LAYOUT_KEYS = ["indent", "firstLineIndent", "hangingIndent", "lineSpacing", "lineRule", "align", "spaceBefore", "spaceAfter"];
             for (const c of reordered) {
-              if (c.command !== "add" || !c.after) continue;
-              const m = c.after.match(/paraId=([0-9A-Fa-f]+)/);
-              if (!m) continue;
-              const afterId = m[1];
-              if (!fmtCache.has(afterId)) {
+              if (c.command !== "add") continue;
+              // 書式の継承元: formatFromParaId があればそれを優先 (領域の add は旧領域行から継承して
+              // 「挿入位置=右寄せの日付」を継いで全部右寄せになる事故を防ぐ)。無ければ after の段落。
+              const srcId = c.formatFromParaId || c.after?.match(/paraId=([0-9A-Fa-f]+)/)?.[1];
+              if (!srcId) continue;
+              if (!fmtCache.has(srcId)) {
                 try {
                   // ★workCopy ではなく f.path (テンプレ原本) から読む。理由は上のコメント参照★
-                  const r = await runOfficeCli(["get", f.path, `/body/p[@paraId=${afterId}]`, "--json"], { timeoutMs: 10_000 });
+                  const r = await runOfficeCli(["get", f.path, `/body/p[@paraId=${srcId}]`, "--json"], { timeoutMs: 10_000 });
                   const parsed = JSON.parse(r.stdout || "{}");
                   const fmt = parsed?.data?.results?.[0]?.format || {};
                   const picked: Record<string, string> = {};
                   for (const k of LAYOUT_KEYS) {
                     if (fmt[k] !== undefined && fmt[k] !== null) picked[k] = String(fmt[k]);
                   }
-                  fmtCache.set(afterId, picked);
-                } catch { fmtCache.set(afterId, {}); }
+                  fmtCache.set(srcId, picked);
+                } catch { fmtCache.set(srcId, {}); }
               }
-              const inherited = fmtCache.get(afterId)!;
+              const inherited = fmtCache.get(srcId)!;
               // AI が既に指定してるプロパティは尊重、未指定のものだけ継承
               c.props = { ...inherited, ...(c.props || {}) };
             }
