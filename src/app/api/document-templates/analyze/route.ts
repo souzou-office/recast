@@ -376,6 +376,75 @@ const PHASE2_OFFICECLI_FILL_TOOL: Anthropic.Tool = {
   },
 };
 
+// ===== STRUCT パス専用 Tool: 構造変更を「構造化ブロック」で出させる =====
+// ★なぜ自由な remove/add をやめるか★
+//   STRUCT に自由な remove/add を書かせると、AI が同じ remove を 2 回・同じ add を 3 回 (別アンカーで)
+//   出す等、重複・バラバラに生成して同意欄がダブる事故が起きた (実機確認)。
+//   → AI には「消す段落の一覧 + 入れる新行の一覧 + 挿入位置」を **1 ブロックずつ宣言** させ、
+//     recast が重複なし・正しい順序で officecli コマンドにコンパイルする。
+//     1 ブロック = lines 配列 1 つなので「同じ行を 3 回 add」は構造的に起こせない。
+const PHASE2_OFFICECLI_STRUCT_TOOL: Anthropic.Tool = {
+  name: "submit_phase2_struct",
+  description:
+    "各出力の構造変更を **構造化ブロック** で提出する (自由な remove/add は書かない)。" +
+    "recast がこれを重複なし・正しい順序の officecli コマンドに変換する。" +
+    "構造変更が要らない出力は replaceBlocks/rewrites を空にする。",
+  input_schema: {
+    type: "object",
+    properties: {
+      documents: {
+        type: "array",
+        description: "出力ごとの構造変更。outputLabel は穴埋め工程と完全一致させる",
+        items: {
+          type: "object",
+          properties: {
+            templateFile: { type: "string", description: "物理テンプレファイル名" },
+            outputLabel: { type: "string", description: "穴埋め工程が確定した outputLabel と完全一致させる。1出力なら省略" },
+            replaceBlocks: {
+              type: "array",
+              description:
+                "行構成が変わる領域の差し替え (個人の同意欄→組合の同意欄 等)。" +
+                "1 領域 = 1 ブロック。旧領域を消して新行を入れる、を宣言する (自分で remove/add を書かない)。",
+              items: {
+                type: "object",
+                properties: {
+                  afterParaId: { type: "string", description: "この paraId の段落の直後に新行を挿入する (残す段落=旧領域の直前の行 等)。8桁16進のみ" },
+                  removeParaIds: {
+                    type: "array",
+                    description: "消す旧段落の paraId 一覧 (8桁16進)。旧領域の行を1つ残らず挙げる。重複しても recast が1回にする",
+                    items: { type: "string" },
+                  },
+                  lines: {
+                    type: "array",
+                    description: "挿入する新行を上から順に。1要素=1行 (段落)。完成形を省略せず全行。空配列なら純削除 (新行なし)",
+                    items: { type: "string" },
+                  },
+                },
+                required: ["afterParaId", "removeParaIds", "lines"],
+              },
+            },
+            rewrites: {
+              type: "array",
+              description: "行数が変わらない1対1の文言書き換え (議案番号の繰り上げ 議案３→議案２ 等)。find/replace。",
+              items: {
+                type: "object",
+                properties: {
+                  paraId: { type: "string", description: "対象段落の paraId (8桁16進)" },
+                  find: { type: "string", description: "置換前の文字" },
+                  replace: { type: "string", description: "置換後の文字" },
+                },
+                required: ["paraId", "find", "replace"],
+              },
+            },
+          },
+          required: ["templateFile"],
+        },
+      },
+    },
+    required: ["documents"],
+  },
+};
+
 // 旧 Phase 2 Tool (互換のため残置)。新規 AI 出力には使わない。
 const PHASE2_DECISIONS_TOOL: Anthropic.Tool = {
   name: "submit_phase2_decisions",
@@ -1160,40 +1229,111 @@ ${sharedBody}
 
             const structPrompt = `## あなたの仕事 (構造変更パス)
 
-★label★ の穴埋めは **別工程で完了済み**。お前の仕事は **構造変更だけ** (行の追加・削除・議案削除・組合化)。
-**穴埋め (単なる ★label の値入れ) は出すな**。
+★label★ の穴埋めは **別工程で完了済み**。お前の仕事は **構造変更だけ** を submit_phase2_struct で出す。
+**自由な remove/add は書かない**。「消す段落の一覧 + 入れる新行の一覧 + 挿入位置」を **ブロックで宣言**する
+(recast が重複なし・正しい順序の officecli に変換する。だから同じ行を2回も3回も足す事故が起こせない)。
 ${qaBlock}
 ## 対象の出力 (outputLabel はこの表記を完全一致で使う。穴埋め工程と合体するため)
 ${structOutputsList}
 
-- ★構造変更が必要 と印が付いた出力 **だけ** に remove/add を出す。
-- 印が無い出力 (個人など) は **commands を空** にする (構造変更を当てるな)。
+- ★構造変更が必要 と印が付いた出力 **だけ** に replaceBlocks / rewrites を出す。
+- 印が無い出力 (個人など) は replaceBlocks も rewrites も **空** にする。
 - outputLabel を勝手に変えるな (別出力扱いになり穴埋めと合体できず崩れる)。
 
 ${sharedBody}
 
 ---
 
-## 構造変更コマンドの書き方
-- **remove** (段落削除): \`{command:"remove", path:"/body/p[@paraId=XXX]"}\`
-- **add** (段落追加): \`{command:"add", parent:"/body", after:"/body/p[@paraId=XXX]", type:"paragraph", props:{text:"..."}}\`
-- **set** (議案番号の繰り上げ等、行数が変わらない文言修正のみ): \`{command:"set", path:"/body/p[@paraId=YYY]", props:{find:"議案３", replace:"議案２"}}\`
-- add した行の書式 (字下げ・行間・配置) は recast が隣行から自動継承するので text だけでよい (列ずれ不要)。
+## 構造変更の書き方
 
-## ⚠ 行数が変わる構造変更 (個人→組合 の同意欄 等) = 最重要・ダブり防止
-個人の同意欄 (住所/氏名 の2行) を 組合の同意欄 (主たる事務所/名称/無限責任組合員/組合員/代表取締役 の5-6行)
-に変えるような **行数が変わる** 変換では、その領域を『丸ごと書き直す』として扱う:
-  (1) まず完成形の全行を頭の中で確定 → (2) 旧領域の段落を **1つ残らず remove** → (3) 新しい全行を add で作る。
-- ★旧の個人行 (氏名 行 等) を set find/replace で新役割行 (代表取締役 等) に **流用するな**★。
-  流用すると『氏　名　川上登福』と『代表取締役　川上登福』の2箇所に出て **ダブる** (実際の事故)。
-  旧個人行は必ず remove、新役割行は add で別に作る。
-- 元の情報項目 (本店/商号/代取/議決権 等) を新ラベル群で **1つも省略せず** 表現する。remove より少ない add は省略バグ。
+### replaceBlocks: 行構成が変わる領域の差し替え (個人の同意欄 → 組合の同意欄 等)
+1 領域につき **1 ブロック**。次を宣言する (自分で remove/add を書かない):
+- **afterParaId**: 新行を入れる位置 = 残す段落 (旧領域の直前に残る行 等) の paraId
+- **removeParaIds**: 消す旧段落の paraId を **1つ残らず** 列挙 (旧個人行=住所/氏名 等)
+- **lines**: 入れる新行を上から順に **完成形で全部** (組合なら 主たる事務所/名称/無限責任組合員/組合員/代表取締役/議決権 等)
 
-## ⚠ 議案などのブロック削除 (確認回答で「議案◯を丸ごと削除」と指定された場合)
-- その議案の **見出し段落から、次の議案の見出しの直前まで** の全段落を remove (見出しも明細も 1 段落残さず)。
-- 削除したら後続の議案番号を繰り上げる: 「議案３…」→「議案２…」を set find/replace で直す。`;
+例 (個人→組合):
+  afterParaId: 旧領域の直前に残る段落の paraId
+  removeParaIds: [旧住所のparaId, 旧氏名のparaId, ...(旧領域の行を全部)]
+  lines: ["（株主）　主たる事務所　東京都…", "　名　称　Deep30投資…", "　無限責任組合員　…", "　組合員　…", "　代表取締役　…", "議案の議決権　…"]
 
-            const structDocs = await callPass(PHASE2_OFFICECLI_TOOL, structPrompt, "STRUCT");
+★重要★
+- removeParaIds は旧領域の行を **全部** 挙げる (1つでも残すと旧行が残ってダブる)。
+- lines は **完成形を省略せず**。旧の情報項目 (本店/商号/代取/議決権) を新ラベルで全部表現する。
+- 同じ領域は **1 ブロックにまとめる** (2ブロックに割らない)。同じ行を lines に重複して入れない。
+- paraId は本文に書いてある 8桁16進をそのまま使う (存在しない paraId を作らない)。
+
+### rewrites: 行数が変わらない1対1の書き換え (議案番号の繰り上げ等)
+- 例: 議案削除後の繰り上げ → { paraId: "議案3見出しのparaId", find: "議案３", replace: "議案２" }
+- 議案ブロックの削除自体は replaceBlocks で lines:[] (純削除=新行なし) として出す。`;
+
+            // 構造化 STRUCT を呼び、replaceBlocks/rewrites を「重複なし officeCommands」にコンパイルする。
+            // ★AI に生 remove/add を書かせない理由★ 同じ remove を 2 回・同じ add を 3 回 (別アンカーで)
+            //   出して同意欄がダブる事故が起きた。ブロック宣言 → recast がコンパイル なら構造的に防げる。
+            const structDocs: Phase2DocumentDecision[] = await (async () => {
+              try {
+                const response = await client.messages.create({
+                  model: JSON_MODEL,
+                  max_tokens: 16384,
+                  temperature: 0,
+                  tools: [PHASE2_OFFICECLI_STRUCT_TOOL],
+                  tool_choice: { type: "tool", name: "submit_phase2_struct" },
+                  messages: [
+                    {
+                      role: "user",
+                      content: [
+                        { type: "text", text: essentialContext, cache_control: { type: "ephemeral" } },
+                        { type: "text", text: structPrompt },
+                      ],
+                    },
+                  ],
+                });
+                logTokenUsage(`/api/document-templates/analyze (Call 2 STRUCT: ${templateFile})`, JSON_MODEL, response.usage);
+                const toolBlock = response.content.find(
+                  (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+                );
+                if (toolBlock?.name !== "submit_phase2_struct") {
+                  console.warn(`[analyze officecli] STRUCT for ${templateFile}: 構造化出力なし`);
+                  return [];
+                }
+                const input = toolBlock.input as {
+                  documents?: {
+                    templateFile: string; outputLabel?: string;
+                    replaceBlocks?: { afterParaId: string; removeParaIds: string[]; lines: string[] }[];
+                    rewrites?: { paraId: string; find: string; replace: string }[];
+                  }[];
+                };
+                return (input.documents || []).map((d) => {
+                  const cmds: NonNullable<Phase2DocumentDecision["officeCommands"]> = [];
+                  // rewrites (1対1) → set find/replace
+                  for (const rw of d.rewrites || []) {
+                    if (!rw.paraId || !rw.find) continue;
+                    cmds.push({ command: "set", path: `/body/p[@paraId=${rw.paraId}]`, props: { find: rw.find, replace: rw.replace ?? "", highlight: "none" } });
+                  }
+                  // replaceBlocks → remove(重複除去) + add(各行1回・afterParaId 直後)
+                  for (const b of d.replaceBlocks || []) {
+                    const seenRemove = new Set<string>();
+                    for (const id of b.removeParaIds || []) {
+                      if (!id || seenRemove.has(id)) continue;
+                      seenRemove.add(id);
+                      cmds.push({ command: "remove", path: `/body/p[@paraId=${id}]` });
+                    }
+                    if (b.afterParaId) {
+                      const seenLine = new Set<string>();
+                      for (const line of b.lines || []) {
+                        if (line == null || seenLine.has(line)) continue; // 同一行の重複は1回に (ダブり保険)
+                        seenLine.add(line);
+                        cmds.push({ command: "add", parent: "/body", after: `/body/p[@paraId=${b.afterParaId}]`, type: "paragraph", props: { text: line } });
+                      }
+                    }
+                  }
+                  return { templateFile: d.templateFile, outputLabel: d.outputLabel, officeCommands: cmds };
+                });
+              } catch (e) {
+                console.error(`[analyze officecli] STRUCT for ${templateFile} failed:`, e instanceof Error ? e.message : e);
+                return [];
+              }
+            })();
 
             // ===== 合体: (templateFile::outputLabel) で FILL の set + STRUCT の構造変更を結合 =====
             // set が先・構造変更 (remove/add) が後。FILL が同意欄の旧行を埋めても、STRUCT がその行を
