@@ -19,8 +19,9 @@ const MODEL = "claude-sonnet-4-6";
 // テンプレ 1 つ分の入力 (Step A に渡す)。各 slot に slotId が付く。
 export interface PlanTemplateInput {
   templateFile: string;
-  markedText: string;                    // ★label★ 入りの本文 (構造把握用)
+  markedText: string;                    // ★label★ / ［領域_N］ 入りの本文 (構造把握用)
   slots: { slotId: number; label: string; format?: string; sourceHint?: string; oldValue?: string }[];
+  regions?: { slotId: number; text: string }[];   // 緑マーカーの「入れ替え領域」(slotId + 元テキスト)
 }
 
 const SLOT_FILL_ITEM = {
@@ -30,6 +31,24 @@ const SLOT_FILL_ITEM = {
     value: { type: "string" as const, description: "その slot に入れる最終的な値。不要な行 (使わない取締役枠等) は空文字 \"\"" },
   },
   required: ["slotId", "value"],
+};
+
+// 領域スロット (緑マーカー = 入れ替えブロック) への中身。AI は「入る行」を配列で出すだけ。
+// 場所 (消す段落・挿入位置) はパーサーが確定済みなので AI は触らない。
+const REGION_FILL_ITEM = {
+  type: "object" as const,
+  properties: {
+    slotId: { type: "number" as const, description: "対象の領域スロット番号 (本文の ［領域_N］ の N)" },
+    lines: {
+      type: "array" as const,
+      items: { type: "string" as const },
+      description:
+        "その領域に入れる行を上から順に (1要素=1行)。例: 個人なら『住所の行』『氏名の行』、" +
+        "組合なら『主たる事務所』『名称』『無限責任組合員』『組合員』『代表取締役』等。完成形を省略せず全行。" +
+        "空配列なら領域を削除するだけ (純削除)。",
+    },
+  },
+  required: ["slotId", "lines"],
 };
 
 const PHASE2_PLAN_TOOL: Anthropic.Tool = {
@@ -51,17 +70,23 @@ const PHASE2_PLAN_TOOL: Anthropic.Tool = {
               type: "string",
               enum: ["fill", "loop", "ai"],
               description:
-                "fill=出力1通・各 slot に値を入れる / " +
-                "loop=同質な複数出力 (株主ごと1通など。全員構造が同じ) / " +
-                "ai=構造が変わって機械化できない (組合で行挿入が要る等)",
+                "fill=出力1通 / " +
+                "loop=複数出力 (株主ごと1通など) / " +
+                "ai=議案ブロック削除+番号繰り上げ 等、緑の領域マーカーで表せない構造編集だけ。" +
+                "★組合化など『行の入れ替え』は緑の領域スロット(［領域_N］)で表すので ai にしない → loop+regionFills を使う★",
             },
-            // fill 用
+            // fill 用 (出力1通)
             slotFills: {
               type: "array",
               description: "fill のとき: 各 slot への値割り当て [{slotId, value}]。埋めるべき全 slot を含める",
               items: SLOT_FILL_ITEM,
             },
-            // loop 用
+            regionFills: {
+              type: "array",
+              description: "fill のとき: 各 領域スロット (［領域_N］) に入れる行 [{slotId, lines}]",
+              items: REGION_FILL_ITEM,
+            },
+            // loop 用 (複数出力)
             sharedSlotFills: {
               type: "array",
               description: "loop のとき: 全出力で共通の slot 値 (報酬・日付・代表取締役等)。1 回だけ指定 → 全員に適用されて整合する",
@@ -69,18 +94,37 @@ const PHASE2_PLAN_TOOL: Anthropic.Tool = {
             },
             entities: {
               type: "array",
-              description: "loop のとき: 出力 (株主等) ごとの固有 slot 値",
+              description: "loop のとき: 出力 (株主等) ごとの固有な値 (点 slotFills + 領域 regionFills)",
               items: {
                 type: "object",
                 properties: {
                   outputLabel: { type: "string", description: "出力の識別名 (氏名等)" },
                   slotFills: { type: "array", description: "この出力固有の slot 値 (氏名/住所/株数等)", items: SLOT_FILL_ITEM },
+                  regionFills: { type: "array", description: "この出力固有の領域の中身 (同意欄ブロック等)。個人=2行/組合=6行", items: REGION_FILL_ITEM },
                 },
                 required: ["outputLabel", "slotFills"],
               },
             },
             // ai 用
             reason: { type: "string", description: "ai のとき: なぜ機械化できないか (短く)" },
+            aiOutputs: {
+              type: "array",
+              description:
+                "ai のとき必須: このテンプレから作る出力を **全部** 列挙する (振り分けはここで1回だけ確定。" +
+                "後工程に再判断させない)。法人テンプレが無く個人テンプレを使い回す場合も、" +
+                "個人・法人・組合の全員をここに列挙する。漏らすとその人の書類が出なくなる。",
+              items: {
+                type: "object",
+                properties: {
+                  outputLabel: { type: "string", description: "出力の識別名 (氏名/法人名等)。1出力だけなら空文字可" },
+                  needsStructuralEdit: {
+                    type: "boolean",
+                    description: "true=この出力は行構造の変更が要る (組合の同意欄など個人と形が違う)。false=穴埋めだけで作れる (個人など)",
+                  },
+                },
+                required: ["outputLabel", "needsStructuralEdit"],
+              },
+            },
           },
           required: ["templateFile", "mode"],
         },
@@ -102,7 +146,13 @@ function buildPrompt(caseContext: string, templates: PlanTemplateInput[]): strin
           return `  - ${parts.join(" / ")}`;
         })
         .join("\n");
-      return `### ${t.templateFile}\n本文:\n${t.markedText}\n\nslot 一覧 (この番号で値を割り当てる):\n${slotLines}`;
+      const regionLines = (t.regions || [])
+        .map((r) => `  - 領域 ${r.slotId} (本文の ［領域_${r.slotId}］): 元の内容「${r.text.slice(0, 80)}」`)
+        .join("\n");
+      const regionBlock = regionLines
+        ? `\n\n領域スロット (緑マーカー=入れ替えブロック。この領域に入る行を regionFills で出す):\n${regionLines}`
+        : "";
+      return `### ${t.templateFile}\n本文:\n${t.markedText}\n\nslot 一覧 (この番号で値を割り当てる):\n${slotLines}${regionBlock}`;
     })
     .join("\n\n---\n\n");
 
@@ -110,39 +160,44 @@ function buildPrompt(caseContext: string, templates: PlanTemplateInput[]): strin
 
 ${caseContext}
 
-## テンプレ一覧 (★label★ = 値を埋める箇所。各 slot に番号 slotId が振ってある)
+## テンプレ一覧
+本文中のマーカーは2種類:
+- **★label★ → 点スロット (［要入力_N］)**: 1箇所に「値」を入れる (行数は変わらない)。slotFills で指定。
+- **緑マーカー → 領域スロット (［領域_N］)**: 行構成ごと入れ替わるブロック (同意欄など)。regionFills で「入る行」を指定。
 
 ${tplBlocks}
 
 ## あなたの仕事
+各テンプレを仕分け (fill/loop/ai) し、**点スロットには値 (slotFills)、領域スロットには行 (regionFills)** を、
+番号 (slotId) で指定する。ラベル名では指定しない。
 
-各テンプレを仕分けして、**各 slot に入れる値を slot 番号 (slotId) で指定**してください。
-
-### 値の入れ方 (重要)
-- 値は必ず **slotId** で指定する。ラベル名では指定しない (ラベルは slot を理解するためのヒント)
+### 値の入れ方 (点スロット)
 - 「形式」ヒントに従って最終表記を決める (例: 形式「○月分より」なら「令和8年6月分より」)
-- **同じ意味の値は全テンプレ・全出力で同じにする** (例: 月額報酬は全書類で「75万円」に統一。
-  ある書類で 750,000円 にしない)。あなたは全テンプレを一度に見ているので統一できる
-- **案件フォルダの画像 (マイナンバーカード・運転免許証・印鑑証明書等) が添付されている場合**、
-  整理結果・確認回答のテキストに無い値 (生年月日・住所・氏名の正確な表記など) は、その添付画像から
-  **読み取って埋める**こと。生年月日はまさにこれらの画像に写っている。
-  「資料から値が決まらない」と諦める前に、必ず添付画像を確認する (UNKNOWN 等の placeholder を残さない)。
-- それでも本当に決まらない slot だけ slotFills に含めない (前案件値が残るが、それは別途チェックされる)
-- **使わない行の slot** (取締役3枠あるが1人だけ等、余る枠) は value を空文字 "" にする
-  → recast がその行を削除して詰める
+- **同じ意味の値は全テンプレ・全出力で同じにする** (月額報酬は全書類「75万円」で統一。750,000円 にしない)。
+  全テンプレを一度に見ているので統一できる
+- **案件フォルダの画像 (マイナンバーカード等) が添付されていれば**、整理結果に無い値 (生年月日・住所の
+  正確な表記等) は画像から読み取って埋める (UNKNOWN を残さない)
+- 本当に決まらない点 slot だけ slotFills に含めない (前案件値が残るが別途チェックされる)
+- **使わない行の点 slot** (取締役3枠で1人等) は value を空文字 "" → recast がその行を削除
+
+### 領域の入れ方 (領域スロット = 緑マーカー)
+領域は「行構成ごと入れ替わるブロック」。**各出力ごとに、その領域に入る行を regionFills の lines で出す**:
+- 個人の出力 → その個人の行 (例: 「住所　○○」「氏名　○○」)
+- 組合の出力 → 組合の行 (例: 「主たる事務所　○○」「名称　○○」「無限責任組合員　○○」「組合員　○○」「代表取締役　○○」)
+- **場所 (どの段落を消すか・どこに入れるか) は recast が決める**。あなたは行の中身だけ出す (paraId 不要)。
+- 元の項目を新ラベルで省略せず全部表現する。完成形を上から順に。
 
 ### 仕分け (mode)
-- **fill**: 出力は1通で、**slot の穴埋めだけ**で済む書類 (値を入れるだけ・構造は変えない)
-- **loop**: 株主ごとに1通 (個人提案書等、全員構造が同じ)。
-  - sharedSlotFills = 全員共通の slot 値 (報酬・日付・代取等) を1回指定
-  - entities = 株主ごとに { outputLabel(氏名等), slotFills(氏名/住所/株数等その人固有) }
-- **ai**: **穴埋め以外の“構造の編集”が要る書類**。次のどれかに当てはまれば必ず ai にする:
-  - 確認回答で「**議案/ブロックを丸ごと削除**」「議案番号の繰り上げ」が指定されている
-  - 行の挿入が要る (法人提案書で組合だけ無限責任組合員の行を足す等)
-  - その他、slot 穴埋めだけでは形が合わない
-  fill/loop は **slot に値を入れることしかできず、段落・ブロックの削除や番号繰り上げはできない**。
-  そういう編集が 1 つでもあれば ai。reason に理由を書く。
-  (穴埋めだけで済むなら fill/loop を優先)`;
+- **fill**: 出力1通 (点 slotFills + 必要なら 領域 regionFills)
+- **loop**: 複数出力 (株主ごと1通など)。各出力で点も領域も中身が違う:
+  - sharedSlotFills = 全出力共通の点 slot 値 (報酬・日付・代取等) を1回指定
+  - entities = 出力ごとに { outputLabel(氏名/法人名等), slotFills(その固有の点値), regionFills(その固有の領域行) }
+  - ★1つのテンプレを個人にも法人/組合にも使う場合もこれ★。個人も法人も組合も全部 entities に入れ、
+    領域 (同意欄) の lines を相手ごとに変える (個人=2行/組合=6行)。**ai にしない**。
+    1人でも漏らすとその人の書類が出ない → **全員を entities に列挙**する。
+- **ai**: 緑の領域マーカーで表せない構造編集だけ (議案ブロックの丸ごと削除 + 後続議案の番号繰り上げ 等)。
+  この時だけ aiOutputs に全出力を列挙し各出力に needsStructuralEdit を付ける。
+  (組合化など『行の入れ替え』は領域スロットで表せるので ai にしない)`;
 }
 
 export async function runPhase2Planning(args: {
