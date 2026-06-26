@@ -31,10 +31,19 @@ function getRunText(runXml: string): string {
   return decodeXml(texts.join(""));
 }
 
-// <w:r> にハイライト（黄色塗り）または赤い文字色があるか。
-// どちらも「ここはこれから埋めるべきスロット」のマーカーとして扱う。
+// highlight の色 (w:val) を取り出す。無ければ null。
+function highlightColor(runXml: string): string | null {
+  const m = runXml.match(/<w:highlight\s+w:val="([^"]*)"\s*\/>/);
+  return m ? m[1] : null;
+}
+
+// <w:r> が「点マーカー」か (黄等の highlight、または赤文字)。
+// ★緑 (w:val="green") は「領域マーカー」(入れ替えブロック) なので点としては扱わない★。
+// 緑の処理は getMarkedDocumentTextWithSlots が段落単位でまとめて行う。
 function hasHighlight(runXml: string): boolean {
-  return /<w:highlight\s+w:val="[^"]*"\s*\/>/.test(runXml) || hasRedColor(runXml);
+  const c = highlightColor(runXml);
+  if (c && c !== "green") return true;
+  return hasRedColor(runXml);
 }
 
 // 「標準の色：赤」を Word が書き込むときの XML。FF0000 が固定値。
@@ -244,6 +253,15 @@ export interface DocxSlotPosition {
   paraIndex: number;       // findTopLevelParagraphs での 0-indexed
 }
 
+// 緑ハイライトで囲んだ「入れ替え領域」(個人の同意欄→組合の同意欄 等)。
+// 連続する緑段落を1領域にまとめる。AI には中身(行配列)だけ出させ、recast が
+// removeParaIds を消して afterParaId の直後に新行を入れる (場所はコードが決定論で特定する)。
+export interface RegionSlot {
+  removeParaIds: string[];     // 領域の全段落 paraId (置き換えで削除する対象)
+  afterParaId: string | null;  // 新行の挿入位置 = 領域直前の段落 paraId (null=本文先頭)
+  text: string;                // 元テキスト (デバッグ・AI 提示用)
+}
+
 // <w:p ...> の開始タグから w:paraId 属性を抜く
 function extractParaId(openTag: string): string | null {
   const m = openTag.match(/\bw14?:paraId="([0-9A-Fa-f]+)"/) || openTag.match(/\bparaId="([0-9A-Fa-f]+)"/);
@@ -254,14 +272,16 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): {
   text: string;
   slots: Map<number, string>;
   slotPositions: Map<number, DocxSlotPosition>;
+  regionSlots: Map<number, RegionSlot>;
 } {
   const zip = new PizZip(buffer);
   let docXml = zip.file("word/document.xml")?.asText();
-  if (!docXml) return { text: "", slots: new Map(), slotPositions: new Map() };
+  if (!docXml) return { text: "", slots: new Map(), slotPositions: new Map(), regionSlots: new Map() };
   docXml = stripAlternateContent(docXml);
 
   const slots = new Map<number, string>();
   const slotPositions = new Map<number, DocxSlotPosition>();
+  const regionSlots = new Map<number, RegionSlot>();
   let slotId = 0;
   const lines: string[] = [];
   // 段落の境界は「ネストされた <w:p> を考慮した」findTopLevelParagraphs で取得する。
@@ -269,18 +289,45 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): {
   // 後続のハイライトラン（同意書テンプレの議決権数等）を取りこぼす。
   const paragraphs = findTopLevelParagraphs(docXml);
   let paraIndex = 0;
+  // ★緑(領域)段落をまたいで1領域にまとめるための「開いてる領域」★
+  let openRegion: { slotId: number; removeParaIds: string[]; afterParaId: string | null; texts: string[] } | null = null;
+  let prevParaId: string | null = null;
+  const closeRegion = () => {
+    if (openRegion) {
+      regionSlots.set(openRegion.slotId, {
+        removeParaIds: openRegion.removeParaIds,
+        afterParaId: openRegion.afterParaId,
+        text: openRegion.texts.join(" / "),
+      });
+      openRegion = null;
+    }
+  };
   for (const p of paragraphs) {
     // この段落の paraId を開始タグ (p.start 〜 p.openEnd) から抽出
     const openTag = docXml.slice(p.start, p.openEnd);
     const paraId = extractParaId(openTag);
     const thisParaIndex = paraIndex++;
     // <w:p> 内の <w:r> を、ネストされた <w:p>（テキストボックス内）の <w:r> も含めて拾う。
-    // ただしテキストボックス内の run は別段落として扱いたいので、まず外側 <w:p> 直下の
-    // run だけを取り、テキストボックスは画像扱いでスキップ。
     const inner = docXml.slice(p.openEnd, p.end - "</w:p>".length);
-    // テキストボックス content 内の <w:p> はここでは処理しない（後で別に処理）
-    // → 簡易的に <w:txbxContent>...</w:txbxContent> を除去してから run を拾う
+    // テキストボックス content 内の <w:p> はここでは処理しない → 除去してから run を拾う
     const cleanInner = inner.replace(/<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/g, "");
+
+    // ★緑ハイライトを含む段落 = 「入れ替え領域」段落★。連続する領域段落を1スロットにまとめる。
+    // 点 (黄/赤) と違い、領域は段落まるごとを差し替える (中身は AI が行配列で出す。場所はここで確定)。
+    const isRegionPara = /<w:highlight\s+w:val="green"\s*\/>/i.test(cleanInner);
+    if (isRegionPara) {
+      if (!openRegion) {
+        openRegion = { slotId, removeParaIds: [], afterParaId: prevParaId, texts: [] };
+        lines.push(`［領域_${slotId}］`);
+        slotId++;
+      }
+      if (paraId) openRegion.removeParaIds.push(paraId);
+      openRegion.texts.push(getParagraphText(cleanInner).trim());
+      prevParaId = paraId;
+      continue; // 領域段落では点スロット処理をしない (まるごと差し替えるため)
+    }
+    closeRegion(); // 領域でない段落に来たら、開いてた領域を確定する
+
     const runRe = /<w:r\b[^>]*>([\s\S]*?)<\/w:r>/g;
     let rm;
     let lineText = "";
@@ -306,12 +353,12 @@ export function getMarkedDocumentTextWithSlots(buffer: Buffer): {
       }
     }
     flushGroup();
-    // 空段落も "(空)" マーカーとして出力する。AI に構造 (セクション区切り) を見せるため。
-    // 例: 「(甲) ブロック / (空) / (乙) ブロック」と AI が認識できる。
-    // (空) 行は produce-v2 の段落番号付けで skip され、engine の段落 index 計算には影響しない。
+    // 空段落も "(空)" マーカーとして出力する (AI に構造=セクション区切りを見せるため)。
     lines.push(lineText.trim() ? lineText : "(空)");
+    prevParaId = paraId;
   }
-  return { text: lines.join("\n"), slots, slotPositions };
+  closeRegion(); // 末尾が領域段落だった場合に確定
+  return { text: lines.join("\n"), slots, slotPositions, regionSlots };
 }
 
 // 文書全体のテキストを、ハイライト部分を★マーク★で囲んで返す（旧方式、後方互換用）
