@@ -156,11 +156,25 @@ function generateForOneOutput(
         commands.push({ command: "remove", path: `/body/p[@paraId=${pid}]` });
       }
       if (region.afterParaId) {
+        // ★書式の継承元★: 挿入位置(afterParaId=日付など)から継承すると、日付が右寄せの場合
+        // 新行も全部右寄せになる。代わりに旧領域の行から継承する:
+        //   先頭行 → 旧領域の先頭段落 (例: 「（株主）住所…」= 行頭プレフィックスありの行)
+        //   2行目以降 → 旧領域の末尾段落 (例: 「氏名…」= 字下げされたラベル行)
+        // これで個人テンプレと同じ2段字下げ・左寄せになる。
+        const firstOld = region.removeParaIds[0];
+        const lastOld = region.removeParaIds[region.removeParaIds.length - 1] || firstOld;
         const seenLine = new Set<string>();
+        let addIdx = 0;
         for (const line of lines) {
           if (line == null || seenLine.has(line)) continue;
           seenLine.add(line);
-          commands.push({ command: "add", parent: "/body", after: `/body/p[@paraId=${region.afterParaId}]`, type: "paragraph", props: { text: line } });
+          const formatFromParaId = addIdx === 0 ? firstOld : lastOld;
+          commands.push({
+            command: "add", parent: "/body", after: `/body/p[@paraId=${region.afterParaId}]`,
+            type: "paragraph", props: { text: line },
+            ...(formatFromParaId ? { formatFromParaId } : {}),
+          });
+          addIdx++;
         }
       }
     }
