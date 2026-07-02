@@ -1,5 +1,39 @@
 # CLAUDE.md — recast
 
+## ★★ 2026-07-02 セッション: 事由駆動型 申請書生成 (jirei) — 新方式の縦1本を実装 ★★
+
+**性格**: 「現行が限界だから直す」修正ではなく「これが本来あるべき姿だから作る」理想追求。
+設計と議論の全経緯は `docs/事由駆動型申請書-設計と経緯.md` を読むこと。
+
+**体験**: 新タブ「申請」→ 事由ボタン（例: 目的変更）を押す → 基本情報(資料)から埋まる値は
+自動で埋まり、決まらない分だけ質問 → 答えると書類一式が生成される。
+テンプレを選ばない・フォームに転記しない。**AI呼び出しゼロ・officecliゼロ・決定論**。
+
+**構造**: 事由 = データ（コードではない）。事由を足す = 以下2つを置くだけ（コード無改修）:
+- `data/jirei/<id>.json` — 木（必要書類・聞く質問・穴→値の出所 fact/answer/const）
+- `data/jirei-templates/*.docx|xlsx` — 穴あきテンプレ（黄色マーカー=穴。既存パーサー規約そのまま）
+
+**新規ファイル**:
+- `src/types/jirei.ts` / `src/lib/jirei/loader.ts` — 木の型とローダー
+- `src/lib/event-filing/facts.ts` — StructuredProfile → 事実キー平坦化＋派生（株主総数・総議決権数等。
+  v1前提: 1株=1議決権・全員出席）
+- `src/lib/event-filing/select.ts` — 必要書類/未回答質問/穴の値map（純粋関数）
+- `src/lib/event-filing/produce.ts` — 既存穴埋めエンジン(replaceMarkedFields /
+  expandYellowRowBlock+replaceXlsxMarkedCells / cleanup)を呼ぶだけの glue。
+  docx複数行値は生成後に `<w:br/>` 化。xlsxの単発穴は「《ラベル》」セル(全文一致)、
+  繰り返し行は黄色データ行(セル文言=rowSlotsキー)を人数分展開
+- `src/app/api/jirei/route.ts` — GET一覧 / POST(質問フェーズ⇄生成フェーズ)
+- `src/components/JireiPanel.tsx` + page.tsx タブ「申請」
+- `scripts/build-jirei-templates.mjs` — 目的変更テンプレ2枚の初期生成（司法書士がWordで直接編集可）
+
+**E2E検証済み**（テスト会社QuantumZero・株主2名）: 資料から14値自動、質問2つだけ、
+生成docx/xlsxの全値埋まり・マーカー/プレースホルダー残りゼロ・株主行の自動展開OK。
+`next build` も緑（既存の型エラー2件も修正: FilePreview/DocumentResultCard の
+Uint8Array<ArrayBuffer>、read-case-files の FileContent import）。
+
+**次**: 実物の様式に合わせたテンプレ調整（ユーザーがWordで確認・修正）→ 2事由目=役員変更
+（木に条件分岐が入る本番。分岐表の表現力テスト）→ 条件付き必要書類(rules)を型に追加。
+
 ## ★ 進行中の大改修 (feat/officecli-integration) — 2026-05-23 開始
 
 ### 動機

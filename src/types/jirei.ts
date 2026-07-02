@@ -29,9 +29,13 @@ export interface JireiQuestion {
 export interface JireiDocument {
   templateFile: string;          // data/jirei-templates/ 配下のファイル名
   kind: "docx" | "xlsx";
-  // 事実の配列 1 件につき 1 行/1 通 展開する場合のキー（省略時 = 単一）
+  // 事実の配列 1 件につき 1 行 展開する場合のキー（省略時 = 単一）
   // 例: "株主" → 株主リストを株主の人数分の行に展開
   repeatOverFactList?: string;
+  // xlsx の黄色データ行の「セル文言 → factList のフィールド名」対応。
+  // 例: { "株主氏名": "氏名", "株主株式数": "株式数" }
+  // テンプレの黄色行のセルに書かれた文言をキーに、その列に入れる値のフィールドを引く。
+  rowSlots?: Record<string, string>;
 }
 
 // 事由（木）本体

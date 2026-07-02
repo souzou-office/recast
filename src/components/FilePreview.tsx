@@ -50,7 +50,7 @@ type ViewState =
   | { kind: "error"; message: string }
   | { kind: "unsupported"; ext: string };
 
-function base64ToUint8(b64: string): Uint8Array {
+function base64ToUint8(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64);
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);

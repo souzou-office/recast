@@ -28,15 +28,31 @@ const profile = {
   ],
 };
 
-// facts.ts の profileToFacts 相当（デモ用ポート）
+// facts.ts の profileToFacts 相当（デモ用ポート。派生事実も同じ計算）
 function profileToFacts(p) {
   const f = {};
+  const num = (s) => { const m = (s || "").replace(/[,，]/g, "").match(/\d+/); return m ? parseInt(m[0]) : null; };
+  const fmt = (n) => n.toLocaleString("ja-JP");
   if (p.商号) f["会社名"] = p.商号;
   if (p.本店所在地) f["本店所在地"] = p.本店所在地;
   if (p.発行済株式総数) f["発行済株式総数"] = p.発行済株式総数;
   if (Array.isArray(p.事業目的) && p.事業目的.length) f["現在の事業目的"] = p.事業目的.join(" / ");
   const rep = (p.役員 || []).find((o) => (o.役職 || "").includes("代表取締役"));
   if (rep) f["代表取締役氏名"] = rep.氏名;
+  const sh = p.株主 || [];
+  if (sh.length > 0) {
+    const total = sh.reduce((s, x) => s + (num(x.持株数) ?? 0), 0);
+    f["株主総数"] = String(sh.length);
+    f["議決権株主数"] = String(sh.length);
+    f["出席株主数"] = String(sh.length);
+    if (total > 0) {
+      f["総議決権数"] = fmt(total);
+      f["出席議決権数"] = fmt(total);
+      f["株主株式数合計"] = fmt(total);
+      f["株主議決権数合計"] = fmt(total);
+    }
+    f["株主議決権割合合計"] = "100%";
+  }
   return f;
 }
 

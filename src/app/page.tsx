@@ -7,9 +7,10 @@ import ChatWorkflow from "@/components/ChatWorkflow";
 import CompanyProfile from "@/components/CompanyProfile";
 import SettingsView from "@/components/SettingsView";
 import ChatWindow from "@/components/chat/ChatWindow";
+import JireiPanel from "@/components/JireiPanel";
 import { Icon } from "@/components/ui/Icon";
 
-type MainView = "chat" | "profile" | "search" | "settings";
+type MainView = "chat" | "profile" | "jirei" | "search" | "settings";
 
 export default function Home() {
   const [view, setView] = useState<MainView>("chat");
@@ -161,6 +162,16 @@ export default function Home() {
           >
             基本情報
           </button>
+          <button
+            onClick={() => setView("jirei")}
+            className={`px-3.5 h-8 rounded-full text-[13px] transition-colors ${
+              view === "jirei"
+                ? "bg-[var(--color-panel)] shadow-sm text-[var(--color-fg)] font-medium"
+                : "text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+            }`}
+          >
+            申請
+          </button>
         </nav>
 
         {/* 右端: 横断検索・設定 */}
@@ -222,6 +233,12 @@ export default function Home() {
               key={config?.selectedCompanyId || "none"}
               company={selectedCompany || null}
               onUpdate={fetchConfig}
+            />
+          )}
+          {view === "jirei" && (
+            <JireiPanel
+              key={`jirei-${config?.selectedCompanyId || "none"}`}
+              company={selectedCompany || null}
             />
           )}
           {view === "search" && (
