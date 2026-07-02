@@ -12,9 +12,26 @@
 import type { StructuredProfile } from "@/types";
 
 // "700株" "1,000" 等から数値を取り出す。数値が無ければ null。
-function toNumber(s?: string): number | null {
+// 基本情報の AI 生成では持株数が number で入ることもあるので両方受ける。
+function toNumber(s?: string | number): number | null {
+  if (typeof s === "number") return Number.isFinite(s) ? s : null;
   const m = (s || "").replace(/[,，]/g, "").match(/\d+/);
   return m ? parseInt(m[0], 10) : null;
+}
+
+// 基本情報の structured は AI 生成のため、キー名が「株主」ではなく
+// 「株主構成（氏名・住所・持株数・持株比率・メールアドレス）」のような
+// 記述的な形で保存されることがある。正規キー → 前方一致 の順で配列を探す。
+function pickArray<T>(
+  p: Record<string, unknown>,
+  canonical: string
+): T[] {
+  const exact = p[canonical];
+  if (Array.isArray(exact)) return exact as T[];
+  for (const k of Object.keys(p)) {
+    if (k.startsWith(canonical) && Array.isArray(p[k])) return p[k] as T[];
+  }
+  return [];
 }
 
 function fmt(n: number): string {
@@ -38,11 +55,18 @@ export function profileToFacts(
   }
 
   // 代表取締役の氏名を役員から導出（役職に「代表取締役」を含む先頭）
-  const rep = (p.役員 || []).find((o) => (o.役職 || "").includes("代表取締役"));
+  const officers = pickArray<{ 役職?: string; 氏名?: string }>(
+    p as Record<string, unknown>,
+    "役員"
+  );
+  const rep = officers.find((o) => (o.役職 || "").includes("代表取締役"));
   if (rep?.氏名) facts["代表取締役氏名"] = rep.氏名;
 
   // --- 株主リストからの派生事実 ---
-  const shareholders = p.株主 || [];
+  const shareholders = pickArray<{ 持株数?: string | number }>(
+    p as Record<string, unknown>,
+    "株主"
+  );
   if (shareholders.length > 0) {
     const n = shareholders.length;
     const totalShares = shareholders.reduce((sum, s) => sum + (toNumber(s.持株数) ?? 0), 0);
@@ -72,7 +96,12 @@ export function factList(
 ): Record<string, string>[] {
   if (!p) return [];
   if (key === "株主") {
-    return (p.株主 || []).map((s) => {
+    return pickArray<{
+      氏名?: string;
+      住所?: string;
+      持株数?: string | number;
+      持株比率?: string;
+    }>(p as Record<string, unknown>, "株主").map((s) => {
       const shares = toNumber(s.持株数);
       return {
         氏名: s.氏名 || "",
@@ -84,7 +113,12 @@ export function factList(
     });
   }
   if (key === "役員") {
-    return (p.役員 || []).map((o) => ({
+    return pickArray<{
+      役職?: string;
+      氏名?: string;
+      住所?: string;
+      就任日?: string;
+    }>(p as Record<string, unknown>, "役員").map((o) => ({
       役職: o.役職 || "",
       氏名: o.氏名 || "",
       住所: o.住所 || "",
