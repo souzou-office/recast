@@ -1,0 +1,44 @@
+{
+  "id": "mokuteki-henkou",
+  "name": "目的変更",
+  "description": "株式会社の事業目的を変更する登記。株主総会の特別決議で定款を変更する。",
+  "questions": [
+    { "id": "new_purpose", "label": "変更後の事業目的（全文・1行1項目）を教えてください", "kind": "text" },
+    { "id": "meeting_date", "label": "株主総会の開催日はいつですか？（例: 令和8年6月20日）", "kind": "date" }
+  ],
+  "documents": [
+    { "templateFile": "株主総会議事録_目的変更.docx", "kind": "docx" },
+    {
+      "templateFile": "株主リスト.xlsx",
+      "kind": "xlsx",
+      "repeatOverFactList": "株主",
+      "rowSlots": {
+        "株主氏名": "氏名",
+        "株主住所": "住所",
+        "株主株式数": "株式数",
+        "株主議決権数": "議決権数",
+        "株主議決権割合": "議決権割合"
+      }
+    }
+  ],
+  "slots": {
+    "会社名": { "type": "fact", "key": "会社名" },
+    "本店所在地": { "type": "fact", "key": "本店所在地" },
+    "発行済株式総数": { "type": "fact", "key": "発行済株式総数" },
+    "株主総数": { "type": "fact", "key": "株主総数" },
+    "議決権株主数": { "type": "fact", "key": "議決権株主数" },
+    "総議決権数": { "type": "fact", "key": "総議決権数" },
+    "出席株主数": { "type": "fact", "key": "出席株主数" },
+    "出席議決権数": { "type": "fact", "key": "出席議決権数" },
+    "議長氏名": { "type": "fact", "key": "代表取締役氏名" },
+    "代表取締役氏名": { "type": "fact", "key": "代表取締役氏名" },
+    "変更前の目的": { "type": "fact", "key": "現在の事業目的" },
+    "合計株式数": { "type": "fact", "key": "株主株式数合計" },
+    "合計議決権数": { "type": "fact", "key": "株主議決権数合計" },
+    "合計議決権割合": { "type": "fact", "key": "株主議決権割合合計" },
+    "変更後の目的": { "type": "answer", "questionId": "new_purpose" },
+    "開催日": { "type": "answer", "questionId": "meeting_date" },
+    "作成日": { "type": "answer", "questionId": "meeting_date" },
+    "証明日付": { "type": "answer", "questionId": "meeting_date" }
+  }
+}

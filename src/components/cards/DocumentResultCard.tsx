@@ -22,7 +22,7 @@ interface Props {
   onBulkRegenerate?: () => void;
 }
 
-function base64ToBytes(base64: string): Uint8Array {
+function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   const byteChars = atob(base64);
   const byteArray = new Uint8Array(byteChars.length);
   for (let i = 0; i < byteChars.length; i++) byteArray[i] = byteChars.charCodeAt(i);

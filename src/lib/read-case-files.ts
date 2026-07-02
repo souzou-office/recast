@@ -2,9 +2,9 @@
 // 案件フォルダと共通フォルダのファイルを統一的に読み込むヘルパー。
 // execute / clarify / produce / verify の全エンドポイントでこれを使う。
 
-import { readAllFilesInFolder, type FileContent } from "./files";
+import { readAllFilesInFolder } from "./files";
 import { isPathDisabled } from "./disabled-filter";
-import type { Company } from "@/types";
+import type { Company, FileContent } from "@/types";
 
 export interface CaseFileSet {
   commonTexts: string[];    // 共通フォルダのテキスト
