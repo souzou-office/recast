@@ -6,7 +6,7 @@
 //        読めなかった分だけ質問が出る → 答える → 書類一式が生成される。
 // ユーザーはテンプレを選ばない・フォームに転記しない。「何が起きたか」を選ぶだけ。
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { Company } from "@/types";
 import { Icon } from "@/components/ui/Icon";
 import FilePreview from "@/components/FilePreview";
@@ -60,6 +60,12 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   const [previewDoc, setPreviewDoc] = useState<ProducedDocUI | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 資料ドロップ → 質問の答えを AI 抽出（結果は人が確認してから生成）
+  const [extracting, setExtracting] = useState(false);
+  const [extractNote, setExtractNote] = useState<string | null>(null);
+  const [extractSources, setExtractSources] = useState<Record<string, string>>({});
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch("/api/jirei")
@@ -78,7 +84,79 @@ export default function JireiPanel({ company }: { company: Company | null }) {
     setUnresolved([]);
     setPreviewDoc(null);
     setError(null);
+    setExtracting(false);
+    setExtractNote(null);
+    setExtractSources({});
+    setDragOver(false);
   };
+
+  // ドロップ/選択されたファイルをクライアントで読み (base64)、質問の答えを抽出してプレフィル。
+  // 既にユーザーが入力済みの欄は上書きしない。
+  const handleFilesForExtract = useCallback(
+    async (fileList: FileList | File[]) => {
+      if (!selectedId) return;
+      const files = Array.from(fileList);
+      if (files.length === 0) return;
+      setExtracting(true);
+      setExtractNote(null);
+      setError(null);
+      try {
+        const payload = await Promise.all(
+          files.map(
+            (f) =>
+              new Promise<{ name: string; base64: string }>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const dataUrl = reader.result as string;
+                  resolve({ name: f.name, base64: dataUrl.split(",")[1] || "" });
+                };
+                reader.onerror = () => reject(new Error(`読み込み失敗: ${f.name}`));
+                reader.readAsDataURL(f);
+              })
+          )
+        );
+        const res = await fetch("/api/jirei/extract-answers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jireiId: selectedId, files: payload }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "抽出に失敗しました");
+          return;
+        }
+        const extracted: Record<string, string> = data.answers || {};
+        const filled: string[] = [];
+        const kept: string[] = [];
+        const next = { ...answers };
+        for (const q of questions) {
+          const v = extracted[q.id];
+          if (!v) continue;
+          if ((answers[q.id] || "").trim()) {
+            kept.push(q.label);
+          } else {
+            next[q.id] = v;
+            filled.push(q.label);
+          }
+        }
+        setAnswers(next);
+        setExtractSources((prev) => ({ ...prev, ...(data.sources || {}) }));
+        const parts: string[] = [];
+        if (filled.length > 0) parts.push(`${filled.length}件を資料から読み取りました。内容を確認してください`);
+        if (kept.length > 0) parts.push(`入力済みの${kept.length}件はそのままにしました`);
+        const notFound: string[] = data.notFound || [];
+        if (filled.length === 0 && kept.length === 0 && notFound.length > 0) {
+          parts.push("この資料からは答えを読み取れませんでした");
+        }
+        setExtractNote(parts.join("。") || null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "抽出に失敗しました");
+      } finally {
+        setExtracting(false);
+      }
+    },
+    [selectedId, questions, answers]
+  );
 
   const callApi = useCallback(
     async (jireiId: string, currentAnswers: Record<string, string>) => {
@@ -221,6 +299,50 @@ export default function JireiPanel({ company }: { company: Company | null }) {
               <Icon name="MessageCircleQuestion" size={13} className="text-amber-600" />
               確認が必要な項目
             </div>
+            {/* 資料ドロップ: 答えが書いてあるファイルから AI がプレフィル（人が確認して生成） */}
+            <div
+              onClick={() => !extracting && fileInputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                if (!extracting) handleFilesForExtract(e.dataTransfer.files);
+              }}
+              className={`cursor-pointer rounded-xl border border-dashed p-3 text-center text-[12px] transition-colors ${
+                dragOver
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)]"
+                  : "border-[var(--color-border)] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)]"
+              }`}
+            >
+              {extracting ? (
+                <span className="inline-flex items-center gap-2">
+                  <Icon name="Loader2" size={13} className="animate-spin" />
+                  資料を読んでいます...
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-2">
+                  <Icon name="FileUp" size={13} />
+                  答えが書いてある資料をドロップ（クリックで選択）
+                </span>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) handleFilesForExtract(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+            {extractNote && (
+              <p className="text-[11px] text-[var(--color-fg-muted)]">{extractNote}</p>
+            )}
             {questions.map((q) => (
               <div key={q.id}>
                 <label className="block text-[12px] text-[var(--color-fg)] mb-1">{q.label}</label>
@@ -238,6 +360,11 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                     onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
                     className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[13px] focus:outline-none focus:border-[var(--color-accent)]"
                   />
+                )}
+                {extractSources[q.id] && (answers[q.id] || "").trim() && (
+                  <p className="mt-0.5 text-[11px] text-[var(--color-fg-muted)]">
+                    資料「{extractSources[q.id]}」から読み取り
+                  </p>
                 )}
               </div>
             ))}
