@@ -38,6 +38,13 @@ function fmt(n: number): string {
   return n.toLocaleString("ja-JP");
 }
 
+// 全角数字＋全角カンマ（統一ルール⑤: docx の数値は全角にカンマ。例: ３０，０００）
+function fmtZen(n: number): string {
+  return fmt(n).replace(/[0-9,]/g, (c) =>
+    c === "," ? "，" : String.fromCharCode(c.charCodeAt(0) + 0xfee0)
+  );
+}
+
 export function profileToFacts(
   p: Partial<StructuredProfile> | null | undefined
 ): Record<string, string> {
@@ -62,6 +69,16 @@ export function profileToFacts(
   const rep = officers.find((o) => (o.役職 || "").includes("代表取締役"));
   if (rep?.氏名) facts["代表取締役氏名"] = rep.氏名;
 
+  // 取締役の数（代表取締役を含む・監査役は含まない）。
+  // v1 前提: 取締役決定書は「全員一致」= 出席取締役数も同数（書面決議の典型）。
+  const directors = officers.filter((o) => (o.役職 || "").includes("取締役"));
+  if (directors.length > 0) {
+    facts["取締役総数"] = String(directors.length);
+    facts["出席取締役数"] = String(directors.length);
+    facts["取締役総数（全角）"] = fmtZen(directors.length);
+    facts["出席取締役数（全角）"] = fmtZen(directors.length);
+  }
+
   // --- 株主リストからの派生事実 ---
   const shareholders = pickArray<{ 持株数?: string | number }>(
     p as Record<string, unknown>,
@@ -74,8 +91,10 @@ export function profileToFacts(
     facts["株主総数"] = String(n);
     // 議決権: 1株=1議決権の前提。議決権制限株式がある会社では手直しが要る。
     facts["議決権株主数"] = String(n);
+    facts["議決権株主数（全角）"] = fmtZen(n);
     if (totalShares > 0) {
       facts["総議決権数"] = fmt(totalShares);
+      facts["総議決権数（全角）"] = fmtZen(totalShares);
       facts["株主株式数合計"] = fmt(totalShares);
       facts["株主議決権数合計"] = fmt(totalShares);
     }
@@ -108,6 +127,7 @@ export function factList(
         住所: s.住所 || "",
         株式数: shares !== null ? fmt(shares) : "",
         議決権数: shares !== null ? fmt(shares) : "", // 1株=1議決権の前提
+        議決権数全角: shares !== null ? fmtZen(shares) : "", // docx 用（統一ルール⑤）
         議決権割合: s.持株比率 || "",
       };
     });
