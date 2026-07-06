@@ -17,7 +17,7 @@ import {
 } from "@/lib/xlsx-marker-parser";
 import { cleanupGeneratedDocx } from "@/lib/docx-cleanup";
 import { ensureXlsxRecalc } from "@/lib/xlsx-cleanup";
-import type { Jirei, JireiDocument } from "@/types/jirei";
+import type { JireiDocument } from "@/types/jirei";
 import PizZip from "pizzip";
 
 export interface ProducedDoc {
@@ -108,16 +108,16 @@ function produceXlsx(
   return out;
 }
 
-// 事由の全書類を生成する。
+// 事由の必要書類を生成する。documents は呼び出し側で when 評価済み（requiredDocuments の結果）を渡す。
 export function produceJireiDocuments(args: {
-  jirei: Jirei;
+  documents: JireiDocument[];              // 生成する書類（requiredDocuments の結果）
   templates: Map<string, Buffer>;          // templateFile → テンプレの Buffer
   filled: Record<string, string>;          // buildFillMap の結果（ラベル → 値）
   getList: (key: string) => Record<string, string>[]; // factList の供給
 }): ProducedDoc[] {
-  const { jirei, templates, filled, getList } = args;
+  const { documents, templates, filled, getList } = args;
   const out: ProducedDoc[] = [];
-  for (const doc of jirei.documents) {
+  for (const doc of documents) {
     const templateBuf = templates.get(doc.templateFile);
     if (!templateBuf) continue;
     const list = doc.repeatOverFactList ? getList(doc.repeatOverFactList) : [];

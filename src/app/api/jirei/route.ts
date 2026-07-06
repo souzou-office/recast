@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { listJirei, loadJirei } from "@/lib/jirei/loader";
 import { profileToFacts, factList } from "@/lib/event-filing/facts";
-import { pendingQuestions, buildFillMap } from "@/lib/event-filing/select";
+import { pendingQuestions, buildFillMap, requiredDocuments, activeSlots } from "@/lib/event-filing/select";
 import { produceJireiDocuments } from "@/lib/event-filing/produce";
 import { promises as fs } from "fs";
 import path from "path";
@@ -57,9 +57,9 @@ export async function POST(request: NextRequest) {
 
     const facts = profileToFacts(structured);
 
-    // 資料から自動で埋まった値（UI で「読めた値」として見せる）
+    // 資料から自動で埋まった値（UI で「読めた値」として見せる）。when を満たすスロットだけ。
     const autoFilled: Record<string, string> = {};
-    for (const [label, binding] of Object.entries(jirei.slots)) {
+    for (const [label, binding] of activeSlots(jirei, answers)) {
       if (binding.type === "fact" && facts[binding.key]) {
         autoFilled[label] = facts[binding.key];
       }
@@ -75,11 +75,12 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 全て揃った → 生成
+    // 全て揃った → 生成（when を満たす書類だけ）
     const { filled, unresolved } = buildFillMap(jirei, facts, answers);
+    const docsToMake = requiredDocuments(jirei, answers);
 
     const templates = new Map<string, Buffer>();
-    for (const doc of jirei.documents) {
+    for (const doc of docsToMake) {
       try {
         templates.set(doc.templateFile, await fs.readFile(path.join(TEMPLATE_DIR, doc.templateFile)));
       } catch {
@@ -91,7 +92,7 @@ export async function POST(request: NextRequest) {
     }
 
     const documents = produceJireiDocuments({
-      jirei,
+      documents: docsToMake,
       templates,
       filled,
       getList: (key) => factList(structured, key),

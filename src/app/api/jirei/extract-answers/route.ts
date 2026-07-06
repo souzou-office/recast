@@ -86,7 +86,12 @@ export async function POST(request: NextRequest) {
     }
 
     const questionList = jirei.questions
-      .map((q) => `- questionId: ${q.id}\n  質問: ${q.label}`)
+      .map((q) => {
+        const choices = q.kind === "choice" && q.choices?.length
+          ? `\n  選択肢（この中から完全一致で選ぶ。判断できなければ空文字）: ${q.choices.join(" / ")}`
+          : "";
+        return `- questionId: ${q.id}\n  質問: ${q.label}${choices}`;
+      })
       .join("\n");
 
     const EXTRACT_TOOL: Anthropic.Tool = {

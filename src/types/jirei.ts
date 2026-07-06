@@ -11,11 +11,20 @@
 //     → 各書類の穴(slots) を facts / answers から埋める
 //   穴埋め自体は既存エンジン(docx/xlsx marker parser)を再利用。木はその「前段の判断」。
 
+// 条件（分岐）。「この質問の回答が anyOf のいずれかのとき有効」。
+// 例: 役員変更で { questionId: "kind", anyOf: ["取締役の就任"] } → 就任のときだけ。
+// questions / documents / slots のどれにでも付けられる。付いていなければ常に有効。
+export interface JireiCondition {
+  questionId: string;
+  anyOf: string[];
+}
+
 // 穴(スロット)に入れる値の出所
-export type SlotBinding =
+export type SlotBinding = (
   | { type: "fact"; key: string }            // 事実ベースから読む (profileToFacts のキー)
   | { type: "answer"; questionId: string }   // ユーザーの回答から
-  | { type: "const"; value: string };        // 固定値
+  | { type: "const"; value: string }         // 固定値
+) & { when?: JireiCondition };               // 条件を満たすときだけ有効な穴
 
 // 聞く分岐（資料で決まらない所だけ）
 export interface JireiQuestion {
@@ -23,6 +32,7 @@ export interface JireiQuestion {
   label: string;                 // 例: 「変更後の事業目的（全文）を教えてください」
   kind?: "text" | "date" | "choice";
   choices?: string[];
+  when?: JireiCondition;         // 条件を満たすときだけ聞く（分岐の下の質問）
 }
 
 // 必要書類（このテンプレを使う）
@@ -36,6 +46,7 @@ export interface JireiDocument {
   // 例: { "株主氏名": "氏名", "株主株式数": "株式数" }
   // テンプレの黄色行のセルに書かれた文言をキーに、その列に入れる値のフィールドを引く。
   rowSlots?: Record<string, string>;
+  when?: JireiCondition;         // 条件を満たすときだけ必要な書類
 }
 
 // 事由（木）本体

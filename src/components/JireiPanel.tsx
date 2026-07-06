@@ -21,6 +21,7 @@ interface JireiQuestionUI {
   id: string;
   label: string;
   kind?: string;
+  choices?: string[];
 }
 
 interface ProducedDocUI {
@@ -346,7 +347,20 @@ export default function JireiPanel({ company }: { company: Company | null }) {
             {questions.map((q) => (
               <div key={q.id}>
                 <label className="block text-[12px] text-[var(--color-fg)] mb-1">{q.label}</label>
-                {q.kind === "text" ? (
+                {q.kind === "choice" && q.choices ? (
+                  <select
+                    value={answers[q.id] || ""}
+                    onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+                    className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[13px] focus:outline-none focus:border-[var(--color-accent)]"
+                  >
+                    <option value="">選択してください</option>
+                    {q.choices.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                ) : q.kind === "text" ? (
                   <textarea
                     value={answers[q.id] || ""}
                     onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
