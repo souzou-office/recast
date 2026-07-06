@@ -49,6 +49,11 @@
     {
       "templateFile": "辞任届.docx",
       "kind": "docx",
+      "placeholders": {
+        "令和　　年　　月　　日": "辞任日",
+        "辞任する取締役の氏名": "対象取締役氏名",
+        "会社名": "会社名"
+      },
       "when": { "questionId": "kind", "anyOf": ["取締役の辞任"] }
     },
     {
@@ -79,7 +84,16 @@
       "kind": "docx",
       "when": { "questionId": "kind", "anyOf": ["取締役の重任"] }
     },
-    { "templateFile": "委任状.docx", "kind": "docx" }
+    {
+      "templateFile": "委任状_役員変更.docx",
+      "kind": "docx",
+      "placeholders": {
+        "令和　　年　　月　　日": "申請日",
+        "会社の住所": "本店所在地",
+        "会社名": "会社名",
+        "代表取締役の氏名": "代表取締役氏名"
+      }
+    }
   ],
   "slots": {
     "会社名": { "type": "fact", "key": "会社名" },
@@ -145,7 +159,6 @@
       "when": { "questionId": "kind", "anyOf": ["取締役の辞任"] }
     },
     "申請日": { "type": "answer", "questionId": "app_date" },
-    "管轄法務局": { "type": "answer", "questionId": "houmukyoku" },
-    "登記の事由": { "type": "const", "value": "役員変更" }
+    "管轄法務局": { "type": "answer", "questionId": "houmukyoku" }
   }
 }

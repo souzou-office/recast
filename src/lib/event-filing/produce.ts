@@ -46,8 +46,118 @@ function fixDocxLineBreaks(buf: Buffer): Buffer {
   return zip.generate({ type: "nodebuffer" });
 }
 
-function produceDocx(templateBuf: Buffer, filled: Record<string, string>): Buffer {
-  let buf = replaceMarkedFields(templateBuf, filled);
+// ============================================================
+// 【プレースホルダー】方式の置換（事務所の既存テンプレ規約・決定論）
+// ============================================================
+// 実物テンプレは 【令和　　年　　月　　日】 のような 【…】 を穴として使い、
+// Word の編集履歴で run が細かく分割されている（【/令和/　　/年/… が別 run）。
+// → 段落内の <w:t> を結合したテキスト上で 【…】 を探し、位置ベースで書き換える。
+//   中の文言は空白（半角/全角）を無視して placeholders のキーと照合する。
+
+function xmlUnescape(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+const normPh = (s: string) => s.replace(/[\s　]/g, "");
+
+// 段落 XML 内の「値が決まっている最初の 【…】」を 1 つ置換する。無ければ null。
+function replaceOneBracket(pXml: string, lookup: Map<string, string>): string | null {
+  const tRe = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g;
+  const nodes: { tagStart: number; tagEnd: number; text: string; offset: number }[] = [];
+  let combined = "";
+  let m: RegExpExecArray | null;
+  while ((m = tRe.exec(pXml)) !== null) {
+    const dec = xmlUnescape(m[1]);
+    nodes.push({ tagStart: m.index, tagEnd: m.index + m[0].length, text: dec, offset: combined.length });
+    combined += dec;
+  }
+  if (nodes.length === 0) return null;
+
+  const phRe = /【([^【】]*)】/g;
+  let span: { start: number; end: number; value: string } | null = null;
+  let pm: RegExpExecArray | null;
+  while ((pm = phRe.exec(combined)) !== null) {
+    const v = lookup.get(normPh(pm[1]));
+    if (v !== undefined) {
+      span = { start: pm.index, end: pm.index + pm[0].length, value: v };
+      break;
+    }
+  }
+  if (!span) return null;
+
+  // span と重なる各 <w:t> のテキストを書き換える（値は最初の重なりノードに入れる）
+  const newTexts = new Map<number, string>();
+  let inserted = false;
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    const nStart = n.offset;
+    const nEnd = n.offset + n.text.length;
+    if (nEnd <= span.start || nStart >= span.end) continue;
+    const before = n.text.slice(0, Math.max(0, span.start - nStart));
+    const after = n.text.slice(Math.min(n.text.length, span.end - nStart));
+    newTexts.set(i, before + (inserted ? "" : span.value) + after);
+    inserted = true;
+  }
+
+  // 後ろのノードから書き換えてインデックスのずれを回避
+  let out = pXml;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (!newTexts.has(i)) continue;
+    const n = nodes[i];
+    out =
+      out.slice(0, n.tagStart) +
+      `<w:t xml:space="preserve">${xmlEscape(newTexts.get(i)!)}</w:t>` +
+      out.slice(n.tagEnd);
+  }
+  return out;
+}
+
+function replaceBracketPlaceholders(
+  buf: Buffer,
+  placeholders: Record<string, string>, // 【内文言】(空白無視) → スロットラベル
+  filled: Record<string, string>
+): Buffer {
+  const lookup = new Map<string, string>();
+  for (const [ph, label] of Object.entries(placeholders)) {
+    const v = filled[label];
+    if (v !== undefined) lookup.set(normPh(ph), v);
+  }
+  if (lookup.size === 0) return buf;
+
+  const zip = new PizZip(buf);
+  const xml = zip.file("word/document.xml")?.asText();
+  if (!xml) return buf;
+
+  const out = xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (pXml) => {
+    if (!pXml.includes("【")) return pXml;
+    let cur = pXml;
+    // 1 つずつ置換して再走査（1 段落に複数の【…】があっても位置ずれしない）
+    for (let guard = 0; guard < 50; guard++) {
+      const next = replaceOneBracket(cur, lookup);
+      if (next === null) break;
+      cur = next;
+    }
+    return cur;
+  });
+  zip.file("word/document.xml", out);
+  return zip.generate({ type: "nodebuffer" });
+}
+
+function produceDocx(
+  templateBuf: Buffer,
+  filled: Record<string, string>,
+  doc: JireiDocument
+): Buffer {
+  let buf = templateBuf;
+  if (doc.placeholders) buf = replaceBracketPlaceholders(buf, doc.placeholders, filled);
+  buf = replaceMarkedFields(buf, filled);
   buf = fixDocxLineBreaks(buf);
   const { buf: cleaned } = cleanupGeneratedDocx(buf);
   return cleaned;
@@ -123,7 +233,7 @@ export function produceJireiDocuments(args: {
     const list = doc.repeatOverFactList ? getList(doc.repeatOverFactList) : [];
     const buf =
       doc.kind === "docx"
-        ? produceDocx(templateBuf, filled)
+        ? produceDocx(templateBuf, filled, doc)
         : produceXlsx(templateBuf, filled, doc, list);
     out.push({
       name: doc.templateFile.replace(/\.(docx|xlsx)$/i, ""),
