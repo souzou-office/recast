@@ -28,7 +28,7 @@ const XLSX_EXTS = [".xls", ".xlsx", ".xlsm"];
 const MAX_CACHE = 50;
 const RENDER_TIMEOUT_MS = 60_000;
 // レンダリング設定のバージョン。render 方式変更時にここを bump するとキャッシュ無効化される。
-const RENDER_VERSION = "v9-docx-fitwidth";
+const RENDER_VERSION = "v10-docx-fitpage";
 
 // ---- サーバ側 PNG キャッシュ (process 内のみ、再起動で消える) ----
 const htmlCache = new Map<string, string>();
@@ -188,11 +188,13 @@ async function renderToHtml(args: {
         throw new Error(`officecli html failed (exit ${result.exitCode}): ${result.stderr || "empty output"}`);
       }
       // officecli の scalePages は「縮小のみ (scale ≤ 1)」なので、広いペインでは A4 原寸
-      // (794px) のまま小さく見える。ビューア標準の「幅フィット」（拡大も可）に patch する。
+      // (794px) のまま小さく見える。PDF ビューア標準の「ページ全体フィット」
+      // （幅と高さの両方に収まる最大倍率。拡大も可）に patch する。
       // officecli の出力が変わって文字列が見つからなくなった場合は素通り（従来挙動に戻るだけ）。
       return result.stdout.replace(
         "var s=Math.min(availW/pageW,1);",
-        "var s=availW>0&&pageW>0?availW/pageW:1;"
+        "var availH=window.innerHeight-56;" +
+          "var s=(availW>0&&pageW>0&&pageH>0)?Math.min(availW/pageW,Math.max(availH,100)/pageH):1;"
       );
     }
 
