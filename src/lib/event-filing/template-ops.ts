@@ -29,7 +29,7 @@ const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 // 段落分割（入れ子対応）。produce.ts の splitParagraphs と同じ。
-function splitParagraphs(xml: string): { type: "p" | "other"; text: string }[] {
+export function splitParagraphs(xml: string): { type: "p" | "other"; text: string }[] {
   const segs: { type: "p" | "other"; text: string }[] = [];
   let i = 0;
   const openRe = /<w:p[ >/]/g;
@@ -117,6 +117,64 @@ function paraText(pXml: string): string {
   let m: RegExpExecArray | null;
   while ((m = tRe.exec(pXml)) !== null) t += unesc(m[1]);
   return t;
+}
+
+// テンプレ docx の「穴」を列挙する（木構造の可視化用）。
+//   brackets: 【…】プレースホルダーの中の文言（重複除去・出現順）
+//   yellow  : 黄色マーカーの文言グループ（連続する黄色 run を結合。重複除去）
+export function scanTemplateHoles(buf: Buffer): { brackets: string[]; yellow: string[] } {
+  const zip = new PizZip(buf);
+  const xml = zip.file("word/document.xml")?.asText();
+  if (!xml) return { brackets: [], yellow: [] };
+
+  const brackets: string[] = [];
+  const yellow: string[] = [];
+  const seenB = new Set<string>();
+  const seenY = new Set<string>();
+
+  for (const seg of splitParagraphs(xml)) {
+    if (seg.type !== "p") continue;
+    // 段落内の run を順に見て、テキスト結合と黄色グループを同時に作る
+    let combined = "";
+    let curYellow = "";
+    const runRe = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
+    let rm: RegExpExecArray | null;
+    const flushYellow = () => {
+      const t = curYellow.trim();
+      if (t && !seenY.has(t)) {
+        seenY.add(t);
+        yellow.push(t);
+      }
+      curYellow = "";
+    };
+    while ((rm = runRe.exec(seg.text)) !== null) {
+      const run = rm[0];
+      let text = "";
+      const tRe = /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g;
+      let tm: RegExpExecArray | null;
+      while ((tm = tRe.exec(run)) !== null) text += unesc(tm[1]);
+      combined += text;
+      if (/<w:highlight\s+w:val="yellow"/.test(run)) {
+        curYellow += text;
+      } else if (text !== "") {
+        // テキストを持つ非黄色 run が来たら黄色グループはそこで途切れる
+        // （テキストなしの run = 書式だけ・ブックマーク等はグループを切らない）
+        flushYellow();
+      }
+    }
+    flushYellow();
+
+    const phRe = /【([^【】]{1,40})】/g;
+    let pm: RegExpExecArray | null;
+    while ((pm = phRe.exec(combined)) !== null) {
+      const inner = pm[1].trim();
+      if (inner && !seenB.has(inner)) {
+        seenB.add(inner);
+        brackets.push(inner);
+      }
+    }
+  }
+  return { brackets, yellow };
 }
 
 // docx Buffer に ops を適用。各 op の置換件数も返す（0 件 = find が見つからなかった要警告）。

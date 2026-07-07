@@ -10,6 +10,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { Company } from "@/types";
 import { Icon } from "@/components/ui/Icon";
 import FilePreview from "@/components/FilePreview";
+import JireiTreeView from "@/components/JireiTreeView";
 
 interface JireiSummary {
   id: string;
@@ -74,6 +75,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   const [compileInstruction, setCompileInstruction] = useState("");
   const [compiling, setCompiling] = useState(false);
   const [compileResult, setCompileResult] = useState<{ name: string; warnings: string[] } | null>(null);
+  // 木の可視化（ロジックツリー表示）
+  const [treeViewId, setTreeViewId] = useState<string | null>(null);
 
   const openCompile = async () => {
     setCompileOpen(true);
@@ -285,26 +288,40 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         {/* 事由ボタン */}
         <div className="grid grid-cols-2 gap-2">
           {jireiList.map((j) => (
-            <button
+            <div
               key={j.id}
-              onClick={() => handleSelectJirei(j.id)}
-              disabled={loading}
-              className={`rounded-2xl border p-3 text-left transition-colors ${
+              className={`relative rounded-2xl border transition-colors ${
                 selectedId === j.id
                   ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
                   : "border-[var(--color-border)] bg-[var(--color-panel)] hover:border-[var(--color-accent)]"
               }`}
             >
-              <div className="flex items-center gap-2">
-                <Icon name="FileText" size={14} />
-                <span className="text-[13px] font-medium">{j.name}</span>
-              </div>
-              {j.description && (
-                <p className="mt-1 text-[11px] leading-relaxed text-[var(--color-fg-muted)] line-clamp-2">
-                  {j.description}
-                </p>
-              )}
-            </button>
+              <button
+                onClick={() => handleSelectJirei(j.id)}
+                disabled={loading}
+                className="w-full p-3 text-left"
+              >
+                <div className="flex items-center gap-2 pr-6">
+                  <Icon name="FileText" size={14} />
+                  <span className="text-[13px] font-medium">{j.name}</span>
+                </div>
+                {j.description && (
+                  <p className="mt-1 text-[11px] leading-relaxed text-[var(--color-fg-muted)] line-clamp-2">
+                    {j.description}
+                  </p>
+                )}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setTreeViewId(j.id);
+                }}
+                title="木を見る（何を聞いて何が出るか）"
+                className="absolute right-2 top-2 rounded-lg p-1 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-accent-fg)]"
+              >
+                <Icon name="Network" size={13} />
+              </button>
+            </div>
           ))}
           {jireiList.length === 0 && (
             <p className="col-span-2 text-[12px] text-[var(--color-fg-muted)]">
@@ -561,6 +578,9 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           {phase === "done" ? "書類名をクリックすると全画面でプレビューします" : ""}
         </div>
       </div>
+
+      {/* 木の可視化（全画面） */}
+      {treeViewId && <JireiTreeView jireiId={treeViewId} onClose={() => setTreeViewId(null)} />}
 
       {/* 全画面プレビュー（Esc または × で閉じる） */}
       {previewDoc && (
