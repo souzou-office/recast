@@ -239,6 +239,7 @@ export default function Home() {
             <JireiPanel
               key={`jirei-${config?.selectedCompanyId || "none"}`}
               company={selectedCompany || null}
+              onOpenProfile={() => setView("profile")}
             />
           )}
           {view === "search" && (
