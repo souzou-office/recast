@@ -64,8 +64,18 @@ export function resolveSlot(
   switch (binding.type) {
     case "fact":
       return facts[binding.key] ?? null;
-    case "answer":
-      return answers[binding.questionId] ?? null;
+    case "answer": {
+      const raw = answers[binding.questionId] ?? null;
+      if (raw === null || binding.lineField === undefined) return raw;
+      // 行リスト回答（氏名／住所 など）から n 番目のフィールドだけを一覧化
+      const sep = binding.separator || "／";
+      return raw
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => (l.split(sep)[binding.lineField!] || "").trim())
+        .join("\n");
+    }
     case "const":
       return binding.value;
     default:

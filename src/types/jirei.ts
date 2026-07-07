@@ -22,7 +22,9 @@ export interface JireiCondition {
 // 穴(スロット)に入れる値の出所
 export type SlotBinding = (
   | { type: "fact"; key: string }            // 事実ベースから読む (profileToFacts のキー)
-  | { type: "answer"; questionId: string }   // ユーザーの回答から
+  // ユーザーの回答から。lineField を指定すると「各行を separator で分割して n 番目だけ」を
+  // 改行で連結した値になる（例: 回答が「氏名／住所」の行リストで、氏名の一覧だけ欲しいとき）
+  | { type: "answer"; questionId: string; lineField?: number; separator?: string }
   | { type: "const"; value: string }         // 固定値
 ) & { when?: JireiCondition };               // 条件を満たすときだけ有効な穴
 
@@ -52,6 +54,15 @@ export interface JireiDocument {
   // 例: { "令和　　年　　月　　日": "辞任日", "辞任する取締役の氏名": "対象取締役氏名" }
   // これがあれば実物テンプレを黄色マーカー化せず無加工で使える。
   placeholders?: Record<string, string>;
+  // repeatOverFactList の絞り込み。一覧の各要素のフィールド値で「この書類を作る対象」を選ぶ。
+  // 例: 提案書兼同意書_個人 は { field: "種別", anyOf: ["個人"] }、_法人 は ["法人"]。
+  // 同じ一覧に対して種別ごとに別テンプレを出し分けるのに使う（統一ルール③）。
+  itemFilter?: { field: string; anyOf: string[] };
+  // ★回答から作る一覧★で「1件につき1ファイル」展開（例: 新任取締役ごとの就任承諾書）。
+  // 回答の1行 = 1件。行を separator（既定 "／"）で分割し、fields の順にフィールド名を与える。
+  // 例: { questionId: "new_directors", fields: ["氏名", "住所"] }
+  //     回答「山田太郎／東京都○○」→ { 氏名: "山田太郎", 住所: "東京都○○" }
+  repeatOverAnswerList?: { questionId: string; fields: string[]; separator?: string };
   when?: JireiCondition;         // 条件を満たすときだけ必要な書類
 }
 

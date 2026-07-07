@@ -1,0 +1,240 @@
+{
+  "id": "torishimariyaku-shuunin-fukusu",
+  "name": "取締役就任",
+  "description": "取締役が1名の株式会社において、書面決議（会社法319条1項）により複数名の取締役・代表取締役を選任する登記。提案書兼同意書は株主ごとに1枚生成される（個人用・法人用を種別で出し分け）。",
+  "requiredSources": [
+    {
+      "key": "touki",
+      "label": "登記情報（履歴事項全部証明書）",
+      "patterns": [
+        "履歴",
+        "現在事項",
+        "登記情報",
+        "登記簿"
+      ]
+    },
+    {
+      "key": "teikan",
+      "label": "定款",
+      "patterns": [
+        "定款"
+      ]
+    },
+    {
+      "key": "kabunushi",
+      "label": "株主名簿",
+      "patterns": [
+        "株主名簿"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "kettei_date",
+      "label": "取締役決定書の決定日は？（例: 令和8年2月11日）",
+      "kind": "date"
+    },
+    {
+      "id": "teian_date",
+      "label": "株主への提案書の発送日は？（例: 令和8年2月11日）",
+      "kind": "date"
+    },
+    {
+      "id": "doui_date",
+      "label": "同意欄の日付は？（例: 令和8年2月15日）",
+      "kind": "date"
+    },
+    {
+      "id": "minashi_date",
+      "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年2月16日）",
+      "kind": "date"
+    },
+    {
+      "id": "shunin_date",
+      "label": "取締役の就任日（みなし決議日と同じ場合が多い）は？（例: 令和8年2月16日）",
+      "kind": "date"
+    },
+    {
+      "id": "new_directors",
+      "label": "新たに選任する取締役（1行に1人、氏名／住所。例: 山田太郎／東京都港区南麻布四丁目9番34-107号）",
+      "kind": "text"
+    },
+    {
+      "id": "new_daihyo_address",
+      "label": "新代表取締役の住所は？（例: 東京都港区南麻布四丁目９番３４－１０７号）",
+      "kind": "text"
+    },
+    {
+      "id": "new_daihyo_name",
+      "label": "新代表取締役の氏名は？（例: 安部和志）",
+      "kind": "text"
+    },
+    {
+      "id": "hoshu_gaku",
+      "label": "取締役の報酬額（月額）は？（例: 月額金６万円）",
+      "kind": "text"
+    },
+    {
+      "id": "hoshu_kaishi",
+      "label": "報酬の支給開始時期は？（例: 令和８年２月分より）",
+      "kind": "text"
+    }
+  ],
+  "documents": [
+    {
+      "templateFile": "取締役決定書_取締役就任.docx",
+      "kind": "docx"
+    },
+    {
+      "templateFile": "提案書兼同意書_個人_取締役就任.docx",
+      "kind": "docx",
+      "repeatOverFactList": "株主",
+      "itemFilter": {
+        "field": "種別",
+        "anyOf": [
+          "個人"
+        ]
+      },
+      "placeholders": {
+        "株主住所": "住所",
+        "株主氏名": "氏名",
+        "株主議決権数": "議決権数全角"
+      }
+    },
+    {
+      "templateFile": "提案書兼同意書_法人_取締役就任.docx",
+      "kind": "docx",
+      "repeatOverFactList": "株主",
+      "itemFilter": {
+        "field": "種別",
+        "anyOf": [
+          "法人"
+        ]
+      },
+      "placeholders": {
+        "株主本店": "住所",
+        "株主商号": "氏名",
+        "株主議決権数": "議決権数全角"
+      }
+    },
+    {
+      "templateFile": "株主総会議事録_取締役就任.docx",
+      "kind": "docx"
+    },
+    {
+      "templateFile": "株主リスト.xlsx",
+      "kind": "xlsx",
+      "repeatOverFactList": "株主",
+      "rowSlots": {
+        "株主氏名": "氏名",
+        "株主住所": "住所",
+        "株主株式数": "株式数",
+        "株主議決権数": "議決権数",
+        "株主議決権割合": "議決権割合"
+      }
+    },
+    {
+      "templateFile": "就任承諾書_取締役就任.docx",
+      "kind": "docx",
+      "repeatOverAnswerList": {
+        "questionId": "new_directors",
+        "fields": ["氏名", "住所"]
+      },
+      "placeholders": {
+        "役員氏名": "氏名",
+        "役員住所": "住所"
+      }
+    },
+    {
+      "templateFile": "委任状_取締役就任.docx",
+      "kind": "docx"
+    }
+  ],
+  "slots": {
+    "会社名": {
+      "type": "fact",
+      "key": "会社名"
+    },
+    "本店所在地": {
+      "type": "fact",
+      "key": "本店所在地"
+    },
+    "代表取締役氏名": {
+      "type": "fact",
+      "key": "代表取締役氏名"
+    },
+    "取締役総数": {
+      "type": "fact",
+      "key": "取締役総数（全角）"
+    },
+    "出席取締役数": {
+      "type": "fact",
+      "key": "出席取締役数（全角）"
+    },
+    "議決権株主数": {
+      "type": "fact",
+      "key": "議決権株主数（全角）"
+    },
+    "総議決権数": {
+      "type": "fact",
+      "key": "総議決権数（全角）"
+    },
+    "合計株式数": {
+      "type": "fact",
+      "key": "株主株式数合計"
+    },
+    "合計議決権数": {
+      "type": "fact",
+      "key": "株主議決権数合計"
+    },
+    "合計議決権割合": {
+      "type": "fact",
+      "key": "株主議決権割合合計"
+    },
+    "決定日": {
+      "type": "answer",
+      "questionId": "kettei_date"
+    },
+    "提案日": {
+      "type": "answer",
+      "questionId": "teian_date"
+    },
+    "同意日": {
+      "type": "answer",
+      "questionId": "doui_date"
+    },
+    "みなし決議日": {
+      "type": "answer",
+      "questionId": "minashi_date"
+    },
+    "就任日": {
+      "type": "answer",
+      "questionId": "shunin_date"
+    },
+    "新取締役一覧": {
+      "type": "answer",
+      "questionId": "new_directors",
+      "lineField": 0
+    },
+    "新代表取締役住所": {
+      "type": "answer",
+      "questionId": "new_daihyo_address"
+    },
+    "新代表取締役氏名": {
+      "type": "answer",
+      "questionId": "new_daihyo_name"
+    },
+    "報酬額": {
+      "type": "answer",
+      "questionId": "hoshu_gaku"
+    },
+    "報酬支給開始": {
+      "type": "answer",
+      "questionId": "hoshu_kaishi"
+    },
+    "申請日": {
+      "type": "answer",
+      "questionId": "minashi_date"
+    }
+  }
+}

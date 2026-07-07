@@ -1,0 +1,42 @@
+{
+  "id": "tori-jinin",
+  "name": "取締役の辞任",
+  "description": "取締役の辞任の登記。実物テンプレ（辞任届・登記委任状）に基づく。総会決議は不要。",
+  "requiredSources": [
+    { "key": "touki", "label": "登記情報（履歴事項全部証明書）", "patterns": ["履歴", "現在事項", "登記情報", "登記簿"] },
+    { "key": "teikan", "label": "定款", "patterns": ["定款"], "optional": true }
+  ],
+  "questions": [
+    { "id": "target_name", "label": "辞任する取締役の氏名は？" },
+    { "id": "resign_date", "label": "辞任日は？（例: 令和8年6月20日）", "kind": "date" }
+  ],
+  "documents": [
+    {
+      "templateFile": "辞任届.docx",
+      "kind": "docx",
+      "placeholders": {
+        "令和　　年　　月　　日": "辞任日",
+        "辞任する取締役の氏名": "対象取締役氏名",
+        "会社名": "会社名"
+      }
+    },
+    {
+      "templateFile": "委任状_役員変更.docx",
+      "kind": "docx",
+      "placeholders": {
+        "令和　　年　　月　　日": "申請日",
+        "会社の住所": "本店所在地",
+        "会社名": "会社名",
+        "代表取締役の氏名": "代表取締役氏名"
+      }
+    }
+  ],
+  "slots": {
+    "会社名": { "type": "fact", "key": "会社名" },
+    "本店所在地": { "type": "fact", "key": "本店所在地" },
+    "代表取締役氏名": { "type": "fact", "key": "代表取締役氏名" },
+    "対象取締役氏名": { "type": "answer", "questionId": "target_name" },
+    "辞任日": { "type": "answer", "questionId": "resign_date" },
+    "申請日": { "type": "answer", "questionId": "resign_date" }
+  }
+}

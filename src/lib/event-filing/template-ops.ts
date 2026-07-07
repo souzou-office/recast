@@ -83,10 +83,15 @@ function replaceOnceInParagraph(pXml: string, find: string, replace: string): st
     nodes.push({ tagStart: m.index, tagEnd: m.index + m[0].length, text: dec, offset: combined.length });
     combined += dec;
   }
-  const at = combined.indexOf(find);
+  // タブは <w:tab/> 要素なので combined には現れない。AI が抽出テキスト（タブ入り）から
+  // コピーした find と照合できるよう、find 側のタブ・改行は無視する。
+  const findNorm = find.replace(/[\t\r\n]/g, "");
+  if (!findNorm) return null;
+  const at = combined.indexOf(findNorm);
   if (at === -1) return null;
-  const span = { start: at, end: at + find.length };
+  const span = { start: at, end: at + findNorm.length };
 
+  const repNorm = (replace ?? "").replace(/[\t\r]/g, "");
   const newTexts = new Map<number, string>();
   let inserted = false;
   for (let i = 0; i < nodes.length; i++) {
@@ -96,7 +101,7 @@ function replaceOnceInParagraph(pXml: string, find: string, replace: string): st
     if (nEnd <= span.start || nStart >= span.end) continue;
     const before = n.text.slice(0, Math.max(0, span.start - nStart));
     const after = n.text.slice(Math.min(n.text.length, span.end - nStart));
-    newTexts.set(i, before + (inserted ? "" : replace) + after);
+    newTexts.set(i, before + (inserted ? "" : repNorm) + after);
     inserted = true;
   }
   let out = pXml;

@@ -268,23 +268,55 @@ function produceXlsx(
   return out;
 }
 
+// 回答テキスト（1行=1件、行内は separator 区切り）を一覧に変換する。
+// 例: 「山田太郎／東京都○○」+ fields ["氏名","住所"] → { 氏名: "山田太郎", 住所: "東京都○○" }
+function answerToList(
+  raw: string,
+  fields: string[],
+  separator = "／"
+): Record<string, string>[] {
+  return raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split(separator);
+      const item: Record<string, string> = {};
+      fields.forEach((f, i) => {
+        item[f] = (parts[i] || "").trim();
+      });
+      return item;
+    });
+}
+
 // 事由の必要書類を生成する。documents は呼び出し側で when 評価済み（requiredDocuments の結果）を渡す。
 export function produceJireiDocuments(args: {
   documents: JireiDocument[];              // 生成する書類（requiredDocuments の結果）
   templates: Map<string, Buffer>;          // templateFile → テンプレの Buffer
   filled: Record<string, string>;          // buildFillMap の結果（ラベル → 値）
   getList: (key: string) => Record<string, string>[]; // factList の供給
+  answers?: Record<string, string>;        // repeatOverAnswerList 用
 }): ProducedDoc[] {
-  const { documents, templates, filled, getList } = args;
+  const { documents, templates, filled, getList, answers } = args;
   const out: ProducedDoc[] = [];
   for (const doc of documents) {
     const templateBuf = templates.get(doc.templateFile);
     if (!templateBuf) continue;
-    const list = doc.repeatOverFactList ? getList(doc.repeatOverFactList) : [];
+    let list = doc.repeatOverFactList ? getList(doc.repeatOverFactList) : [];
+    // 回答から作る一覧（例: 新任取締役ごとの就任承諾書）
+    if (doc.repeatOverAnswerList) {
+      const { questionId, fields, separator } = doc.repeatOverAnswerList;
+      list = answerToList(answers?.[questionId] || "", fields, separator);
+    }
+    // itemFilter: 一覧の絞り込み（例: 種別=個人 の株主だけこのテンプレで出す）
+    if (doc.itemFilter) {
+      const { field, anyOf } = doc.itemFilter;
+      list = list.filter((item) => anyOf.includes(item[field] || ""));
+    }
 
     // docx の繰り返し = 「1 件につき 1 ファイル」（例: 提案書兼同意書は株主ごとに 1 枚。統一ルール②）
     // 各ファイルは filled + その株主のフィールド（氏名/住所/議決権数全角…）で穴埋めする。
-    if (doc.kind === "docx" && doc.repeatOverFactList) {
+    if (doc.kind === "docx" && (doc.repeatOverFactList || doc.repeatOverAnswerList)) {
       const base = doc.templateFile.replace(/\.docx$/i, "");
       list.forEach((item, i) => {
         const merged = { ...filled, ...item };

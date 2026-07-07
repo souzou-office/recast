@@ -107,10 +107,15 @@ async function docNode(jirei: Jirei, doc: JireiDocument): Promise<TreeNode> {
     /* テンプレ未配置 */
   }
   const children = holes.map((h) => holeNode(jirei, doc, h));
+  let badge: string | undefined;
+  if (doc.repeatOverFactList) {
+    badge = `${doc.repeatOverFactList}ごとに1${doc.kind === "docx" ? "枚" : "行"}`;
+    if (doc.itemFilter) badge += `（${doc.itemFilter.anyOf.join("・")}のみ）`;
+  }
   return {
     label: doc.templateFile,
     kind: "doc",
-    badge: doc.repeatOverFactList ? `${doc.repeatOverFactList}ごとに1${doc.kind === "docx" ? "枚" : "行"}` : undefined,
+    badge,
     children,
   };
 }

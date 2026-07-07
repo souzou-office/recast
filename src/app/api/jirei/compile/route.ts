@@ -35,7 +35,7 @@ const FACT_KEYS = `
   株主総数 / 議決権株主数 / 議決権株主数（全角） / 総議決権数 / 総議決権数（全角）
   株主株式数合計 / 株主議決権数合計 / 株主議決権割合合計
 一覧の事実 (documents の repeatOverFactList で使える):
-  株主 … 各要素のフィールド: 氏名 / 住所 / 株式数 / 議決権数 / 議決権数全角 / 議決権割合
+  株主 … 各要素のフィールド: 氏名 / 住所 / 株式数 / 議決権数 / 議決権数全角 / 議決権割合 / 種別（"個人"|"法人" 自動判定）
   役員 … 各要素のフィールド: 役職 / 氏名 / 住所 / 就任日`;
 
 async function templateBase(): Promise<string | null> {
@@ -117,6 +117,15 @@ const COMPILE_TOOL: Anthropic.Tool = {
                 templateFile: { type: "string", description: "出力テンプレ名 (templateOps の out と一致させる)" },
                 kind: { type: "string", enum: ["docx", "xlsx"] },
                 repeatOverFactList: { type: "string", description: "1件=1ファイルで展開する一覧名 (例: 株主)" },
+                itemFilter: {
+                  type: "object",
+                  description: "一覧の絞り込み。個人用/法人用テンプレの出し分けは field: 種別, anyOf: [個人] / [法人]",
+                  properties: {
+                    field: { type: "string" },
+                    anyOf: { type: "array", items: { type: "string" } },
+                  },
+                  required: ["field", "anyOf"],
+                },
                 placeholders: {
                   type: "object",
                   description: "【文言】→ スロット名 or 一覧フィールド名。【文言】がスロット名そのものなら不要",
@@ -247,6 +256,10 @@ ${FACT_KEYS}
 - 建物名など値の2行目は、1行目の【スロット】に改行込みで入れる前提で、2行目の実値は空文字置換（削除）にする
 - 数値は統一ルールに従い docx は全角カンマ（例: fact の 総議決権数（全角） や 株主一覧の 議決権数全角 を使う）
 - 「株主ごとに1枚」の書類（提案書兼同意書など）は repeatOverFactList: "株主" とし、per-item の穴は placeholders で 【株主氏名】→氏名 のように一覧フィールドへマップする
+- 提案書兼同意書に「個人用」「法人用」の2テンプレがある場合は両方 documents に登録し、
+  itemFilter: { field: "種別", anyOf: ["個人"] } / ["法人"] で出し分ける（法人用の穴は 本店→住所, 商号→氏名 にマップ。代表取締役名は一覧に無いため 【…】のまま残してよい旨を warnings に書く）
+- 管轄法務局・登記申請日のような「書類に現れない値」「導出できる値」は質問にしない。
+  委任状の日付は案件の基準日（総会日・効力発生日など）のスロットを充てる
 - 委任状の代理人（事務所の住所・氏名）は固定文なので触らない
 - 日付は questions で聞く（例示形式「令和8年6月20日」を label に入れる）
 - questions の id は snake_case、jirei.id は kebab-case

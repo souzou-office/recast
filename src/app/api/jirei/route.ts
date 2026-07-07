@@ -163,6 +163,7 @@ export async function POST(request: NextRequest) {
       templates,
       filled,
       getList: (key) => factList(structured as Partial<StructuredProfile>, key),
+      answers,
     });
 
     return NextResponse.json({
