@@ -246,6 +246,16 @@ export default function JireiPanel({ company }: { company: Company | null }) {
     callApi(id, {});
   };
 
+  // 全画面プレビューを Esc で閉じる
+  useEffect(() => {
+    if (!previewDoc) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPreviewDoc(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewDoc]);
+
   const handleSubmitAnswers = () => {
     if (!selectedId) return;
     callApi(selectedId, answers);
@@ -545,20 +555,31 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         )}
       </div>
 
-      {/* 右: プレビュー */}
+      {/* 右: 余白（プレビューは全画面オーバーレイで開く） */}
       <div className="flex-1 overflow-hidden">
-        {previewDoc ? (
-          <FilePreview
-            docxBase64={previewDoc.base64}
-            fileName={previewDoc.fileName}
-            onClose={() => setPreviewDoc(null)}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-fg-muted)]">
-            {phase === "done" ? "書類を選ぶとプレビューが表示されます" : ""}
-          </div>
-        )}
+        <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-fg-muted)]">
+          {phase === "done" ? "書類名をクリックすると全画面でプレビューします" : ""}
+        </div>
       </div>
+
+      {/* 全画面プレビュー（Esc または × で閉じる） */}
+      {previewDoc && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 p-4 md:p-8"
+          onClick={() => setPreviewDoc(null)}
+        >
+          <div
+            className="flex h-full w-full overflow-hidden rounded-2xl bg-[var(--color-panel)] shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <FilePreview
+              docxBase64={previewDoc.base64}
+              fileName={previewDoc.fileName}
+              onClose={() => setPreviewDoc(null)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
