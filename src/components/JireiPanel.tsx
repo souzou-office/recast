@@ -67,21 +67,7 @@ function downloadBase64(base64: string, fileName: string, kind: string) {
   URL.revokeObjectURL(url);
 }
 
-// 基本情報の更新日を「2026/03/15 14:30」形式で
-function formatUpdatedAt(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-export default function JireiPanel({
-  company,
-  onOpenProfile,
-}: {
-  company: Company | null;
-  onOpenProfile?: () => void;
-}) {
+export default function JireiPanel({ company }: { company: Company | null }) {
   const [jireiList, setJireiList] = useState<JireiSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "sources" | "questions" | "done">("idle");
@@ -386,31 +372,6 @@ export default function JireiPanel({
           <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
             何が起きたかを選ぶと、必要書類が自動で組み上がります
           </p>
-          {/* 実務は案件の頭で資料を取り寄せて一新する。何時点の資料で作るかを常に見せる */}
-          {company && (
-            <div
-              className={`mt-2 flex items-center gap-2 rounded-xl border px-3 py-1.5 text-[11px] ${
-                company.profile
-                  ? "border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-fg-muted)]"
-                  : "border-amber-300 bg-amber-50 text-amber-900"
-              }`}
-            >
-              <Icon name={company.profile ? "DatabaseZap" : "TriangleAlert"} size={13} className="shrink-0" />
-              {company.profile ? (
-                <span>基本情報：{formatUpdatedAt(company.profile.updatedAt)} 時点の資料に基づく</span>
-              ) : (
-                <span>基本情報が未生成です</span>
-              )}
-              {onOpenProfile && (
-                <button
-                  onClick={onOpenProfile}
-                  className="ml-auto shrink-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-0.5 text-[11px] text-[var(--color-fg)] hover:border-[var(--color-accent)]"
-                >
-                  {company.profile ? "最新の資料で更新" : "基本情報タブで生成"}
-                </button>
-              )}
-            </div>
-          )}
         </div>
 
         {/* 事由ボタン */}
