@@ -67,6 +67,52 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   const [extractSources, setExtractSources] = useState<Record<string, string>>({});
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 事由コンパイラ（テンプレフォルダ → AI が木を生成。AI が働くのはこの登録時1回だけ）
+  const [compileOpen, setCompileOpen] = useState(false);
+  const [compileFolders, setCompileFolders] = useState<{ name: string; fileCount: number }[]>([]);
+  const [compileFolder, setCompileFolder] = useState("");
+  const [compileInstruction, setCompileInstruction] = useState("");
+  const [compiling, setCompiling] = useState(false);
+  const [compileResult, setCompileResult] = useState<{ name: string; warnings: string[] } | null>(null);
+
+  const openCompile = async () => {
+    setCompileOpen(true);
+    setCompileResult(null);
+    try {
+      const r = await fetch("/api/jirei/compile");
+      const d = await r.json();
+      setCompileFolders(d.folders || []);
+    } catch {
+      setCompileFolders([]);
+    }
+  };
+
+  const runCompile = async () => {
+    if (!compileFolder) return;
+    setCompiling(true);
+    setCompileResult(null);
+    setError(null);
+    try {
+      const r = await fetch("/api/jirei/compile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder: compileFolder, instruction: compileInstruction }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        setError(d.error || "事由化に失敗しました");
+        return;
+      }
+      setCompileResult({ name: d.jirei?.name || compileFolder, warnings: d.warnings || [] });
+      // 一覧を再取得（新しい事由ボタンが増える）
+      const list = await fetch("/api/jirei").then((x) => x.json());
+      setJireiList(list.jirei || []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "通信に失敗しました");
+    } finally {
+      setCompiling(false);
+    }
+  };
 
   useEffect(() => {
     fetch("/api/jirei")
@@ -256,6 +302,66 @@ export default function JireiPanel({ company }: { company: Company | null }) {
             </p>
           )}
         </div>
+
+        {/* 事由コンパイラ: テンプレフォルダ → AI が木を生成（登録時1回だけ AI が働く） */}
+        {!compileOpen ? (
+          <button
+            onClick={openCompile}
+            className="w-full rounded-xl border border-dashed border-[var(--color-border)] px-3 py-2 text-[12px] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)] text-left"
+          >
+            ＋ テンプレフォルダから事由を追加（AI が木を作ります）
+          </button>
+        ) : (
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] font-medium">テンプレフォルダから事由を追加</span>
+              <button
+                onClick={() => setCompileOpen(false)}
+                className="text-[12px] text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]"
+              >
+                閉じる
+              </button>
+            </div>
+            <select
+              value={compileFolder}
+              onChange={(e) => setCompileFolder(e.target.value)}
+              className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[13px]"
+            >
+              <option value="">フォルダを選択...</option>
+              {compileFolders.map((f) => (
+                <option key={f.name} value={f.name}>
+                  {f.name}（{f.fileCount}ファイル）
+                </option>
+              ))}
+            </select>
+            <textarea
+              value={compileInstruction}
+              onChange={(e) => setCompileInstruction(e.target.value)}
+              rows={2}
+              placeholder="追加の指示があれば（例: この書類は対象者ごとに1枚 / この日付は毎回聞いて）"
+              className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[12px]"
+            />
+            <button
+              onClick={runCompile}
+              disabled={!compileFolder || compiling}
+              className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-40"
+            >
+              {compiling ? "AI がテンプレを読んで木を作っています...（1分ほど）" : "この内容で事由にする"}
+            </button>
+            {compileResult && (
+              <div className="rounded-xl border border-green-200 bg-green-50 p-3 text-[12px] text-green-900 space-y-1">
+                <p>「{compileResult.name}」を追加しました。上のボタンから試せます。</p>
+                {compileResult.warnings.length > 0 && (
+                  <ul className="list-disc pl-4 text-amber-800">
+                    {compileResult.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {loading && (
           <div className="flex items-center gap-2 text-[12px] text-[var(--color-fg-muted)]">

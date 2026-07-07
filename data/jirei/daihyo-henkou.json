@@ -1,0 +1,183 @@
+{
+  "id": "daihyo-henkou",
+  "name": "代表取締役の変更",
+  "description": "取締役選任（書面決議・会社法319条1項方式）による代表取締役の変更登記。提案書兼同意書は株主ごとに1枚生成される。",
+  "questions": [
+    {
+      "id": "new_director_name",
+      "label": "新たに選任される取締役の氏名は？（例: 岩井康洋）",
+      "kind": "text"
+    },
+    {
+      "id": "new_director_address",
+      "label": "新たに選任される取締役の住所は？（ビル名まで全文。2行になる場合は改行。例: 東京都台東区浅草橋四丁目１９番４－９０３号\nクラリティア浅草橋）",
+      "kind": "text"
+    },
+    {
+      "id": "retiring_director_name",
+      "label": "辞任する取締役の氏名は？（例: 石橋賢人）",
+      "kind": "text"
+    },
+    {
+      "id": "retiring_director_address",
+      "label": "辞任する取締役の住所は？（例: 東京都目黒区東が丘二丁目７番７号）",
+      "kind": "text"
+    },
+    {
+      "id": "kettei_date",
+      "label": "取締役決定書の決定日は？（例: 令和８年３月２７日）",
+      "kind": "date"
+    },
+    {
+      "id": "teian_date",
+      "label": "株主への提案書の発送日は？（例: 令和８年３月２７日）",
+      "kind": "date"
+    },
+    {
+      "id": "minashi_date",
+      "label": "株主総会の決議があったものとみなされる日は？（例: 令和８年３月３０日）",
+      "kind": "date"
+    },
+    {
+      "id": "doui_date",
+      "label": "同意欄の日付は？（例: 令和８年３月３０日）",
+      "kind": "date"
+    },
+    {
+      "id": "tainin_date",
+      "label": "辞任届・就任承諾書・議事録の日付は？（例: 令和８年３月３０日）",
+      "kind": "date"
+    },
+    {
+      "id": "app_date",
+      "label": "登記申請日は？（委任状の日付。例: 令和８年３月３０日）",
+      "kind": "date"
+    }
+  ],
+  "documents": [
+    {
+      "templateFile": "取締役決定書_代表取締役の変更.docx",
+      "kind": "docx"
+    },
+    {
+      "templateFile": "提案書兼同意書_代表取締役の変更.docx",
+      "kind": "docx",
+      "repeatOverFactList": "株主",
+      "placeholders": {
+        "株主住所": "住所",
+        "株主氏名": "氏名",
+        "株主議決権数": "議決権数全角"
+      }
+    },
+    {
+      "templateFile": "株主総会議事録_代表取締役の変更.docx",
+      "kind": "docx"
+    },
+    {
+      "templateFile": "株主リスト.xlsx",
+      "kind": "xlsx",
+      "repeatOverFactList": "株主",
+      "rowSlots": {
+        "株主氏名": "氏名",
+        "株主住所": "住所",
+        "株主株式数": "株式数",
+        "株主議決権数": "議決権数",
+        "株主議決権割合": "議決権割合"
+      }
+    },
+    {
+      "templateFile": "辞任届_代表取締役の変更.docx",
+      "kind": "docx"
+    },
+    {
+      "templateFile": "就任承諾書_代表取締役の変更.docx",
+      "kind": "docx"
+    },
+    {
+      "templateFile": "登記委任状_代表取締役の変更.docx",
+      "kind": "docx"
+    }
+  ],
+  "slots": {
+    "会社名": {
+      "type": "fact",
+      "key": "会社名"
+    },
+    "本店所在地": {
+      "type": "fact",
+      "key": "本店所在地"
+    },
+    "代表取締役氏名": {
+      "type": "fact",
+      "key": "代表取締役氏名"
+    },
+    "取締役総数": {
+      "type": "fact",
+      "key": "取締役総数（全角）"
+    },
+    "出席取締役数": {
+      "type": "fact",
+      "key": "出席取締役数（全角）"
+    },
+    "議決権株主数": {
+      "type": "fact",
+      "key": "議決権株主数（全角）"
+    },
+    "総議決権数": {
+      "type": "fact",
+      "key": "総議決権数（全角）"
+    },
+    "合計株式数": {
+      "type": "fact",
+      "key": "株主株式数合計"
+    },
+    "合計議決権数": {
+      "type": "fact",
+      "key": "株主議決権数合計"
+    },
+    "合計議決権割合": {
+      "type": "fact",
+      "key": "株主議決権割合合計"
+    },
+    "新取締役氏名": {
+      "type": "answer",
+      "questionId": "new_director_name"
+    },
+    "新取締役住所": {
+      "type": "answer",
+      "questionId": "new_director_address"
+    },
+    "辞任取締役氏名": {
+      "type": "answer",
+      "questionId": "retiring_director_name"
+    },
+    "辞任取締役住所": {
+      "type": "answer",
+      "questionId": "retiring_director_address"
+    },
+    "決定日": {
+      "type": "answer",
+      "questionId": "kettei_date"
+    },
+    "提案日": {
+      "type": "answer",
+      "questionId": "teian_date"
+    },
+    "みなし決議日": {
+      "type": "answer",
+      "questionId": "minashi_date"
+    },
+    "同意日": {
+      "type": "answer",
+      "questionId": "doui_date"
+    },
+    "退任就任日": {
+      "type": "answer",
+      "questionId": "tainin_date"
+    },
+    "申請日": {
+      "type": "answer",
+      "questionId": "app_date"
+    }
+  }
+}
