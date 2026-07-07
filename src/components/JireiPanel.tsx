@@ -86,9 +86,12 @@ export default function JireiPanel({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "sources" | "questions" | "done">("idle");
   const [autoFilled, setAutoFilled] = useState<Record<string, string>>({});
-  // 原本直読みモード: 不足している原本 / 使った原本 / 判断の根拠（定款の条文引用）
-  const [missingSources, setMissingSources] = useState<string[]>([]);
-  const [foundSources, setFoundSources] = useState<string[]>([]);
+  // 原本直読みモード: 必要書類の受付状況 / ドロップ済み原本 / 出典 / 判断の根拠（定款の条文引用）
+  const [sourceStatus, setSourceStatus] = useState<
+    { label: string; optional: boolean; kind: "found" | "dropped" | "missing"; name: string | null }[]
+  >([]);
+  const [sourcesReady, setSourcesReady] = useState(false);
+  const [sourcesConfirmed, setSourcesConfirmed] = useState(false);
   const [sourceFiles, setSourceFiles] = useState<{ name: string; base64: string }[]>([]);
   const [sourceMeta, setSourceMeta] = useState<{ files: string[]; cached: boolean } | null>(null);
   const [evidenceByLabel, setEvidenceByLabel] = useState<Record<string, string>>({});
@@ -210,8 +213,9 @@ export default function JireiPanel({
     setExtractNote(null);
     setExtractSources({});
     setDragOver(false);
-    setMissingSources([]);
-    setFoundSources([]);
+    setSourceStatus([]);
+    setSourcesReady(false);
+    setSourcesConfirmed(false);
     setSourceFiles([]);
     setSourceMeta(null);
     setEvidenceByLabel({});
@@ -291,17 +295,25 @@ export default function JireiPanel({
     async (
       jireiId: string,
       currentAnswers: Record<string, string>,
-      extraSources?: { name: string; base64: string }[]
+      extraSources?: { name: string; base64: string }[],
+      confirmedOverride?: boolean
     ) => {
       if (!company) return;
       setLoading(true);
       setError(null);
       const sources = extraSources ?? sourceFiles;
+      const confirmed = confirmedOverride ?? sourcesConfirmed;
       try {
         const res = await fetch("/api/jirei", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ companyId: company.id, jireiId, answers: currentAnswers, sources }),
+          body: JSON.stringify({
+            companyId: company.id,
+            jireiId,
+            answers: currentAnswers,
+            sources,
+            sourcesConfirmed: confirmed,
+          }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -312,10 +324,10 @@ export default function JireiPanel({
         setEvidenceByLabel(data.evidenceByLabel || {});
         if (data.sourceMeta) setSourceMeta(data.sourceMeta);
         if (data.phase === "sources") {
-          // 原本が足りない → ドロップを求める
+          // 必要書類の受付（実務の順番: まず資料を揃えて確認してから進む）
           setPhase("sources");
-          setMissingSources(data.missing || []);
-          setFoundSources(data.found || []);
+          setSourceStatus(data.sources || []);
+          setSourcesReady(!!data.ready);
         } else if (data.phase === "questions") {
           setPhase("questions");
           setQuestions(data.questions || []);
@@ -331,7 +343,7 @@ export default function JireiPanel({
         setLoading(false);
       }
     },
-    [company, sourceFiles]
+    [company, sourceFiles, sourcesConfirmed]
   );
 
   const handleSelectJirei = (id: string) => {
@@ -518,23 +530,37 @@ export default function JireiPanel({
           </div>
         )}
 
-        {/* 原本が足りない（原本直読みモード） */}
+        {/* 必要書類の受付（原本直読みモード）— 実務どおり、まず資料を揃えてから進む */}
         {phase === "sources" && (
-          <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 space-y-2">
-            <div className="flex items-center gap-2 text-[12px] font-medium text-amber-900">
-              <Icon name="TriangleAlert" size={13} />
-              この事由に必要な原本が見つかりません
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-3">
+            <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--color-fg)]">
+              <Icon name="FolderOpen" size={13} className="text-[var(--color-accent-fg)]" />
+              この手続きに必要な資料
             </div>
-            <ul className="list-disc pl-5 text-[12px] text-amber-900">
-              {missingSources.map((m) => (
-                <li key={m}>{m}</li>
+            <div className="space-y-1.5">
+              {sourceStatus.map((s) => (
+                <div
+                  key={s.label}
+                  className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-[12px] ${
+                    s.kind === "missing"
+                      ? "border-amber-300 bg-amber-50 text-amber-900"
+                      : "border-green-200 bg-green-50 text-green-900"
+                  }`}
+                >
+                  <Icon
+                    name={s.kind === "missing" ? "CircleAlert" : "CircleCheck"}
+                    size={14}
+                    className="shrink-0"
+                  />
+                  <span className="font-medium">{s.label}</span>
+                  <span className="ml-auto text-right text-[11px] opacity-80">
+                    {s.kind === "found" && `${s.name}（フォルダから自動）`}
+                    {s.kind === "dropped" && `${s.name}（ドロップ）`}
+                    {s.kind === "missing" && (s.optional ? "任意（無くても進めます）" : "見つかりません")}
+                  </span>
+                </div>
               ))}
-            </ul>
-            {foundSources.length > 0 && (
-              <p className="text-[11px] text-amber-800">
-                見つかっている原本: {foundSources.join("・")}
-              </p>
-            )}
+            </div>
             <div
               onClick={() => fileInputRef.current?.click()}
               onDragOver={(e) => {
@@ -550,13 +576,15 @@ export default function JireiPanel({
                 setSourceFiles(merged);
                 if (selectedId) callApi(selectedId, answers, merged);
               }}
-              className={`cursor-pointer rounded-xl border border-dashed p-3 text-center text-[12px] ${
-                dragOver ? "border-amber-500 bg-amber-100" : "border-amber-300 text-amber-800"
+              className={`cursor-pointer rounded-xl border border-dashed p-3 text-center text-[12px] transition-colors ${
+                dragOver
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                  : "border-[var(--color-border)] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)]"
               }`}
             >
               <span className="inline-flex items-center gap-2">
                 <Icon name="FileUp" size={13} />
-                取り寄せた原本（PDF等）をここにドロップ（クリックで選択）
+                取り寄せた最新の資料をドロップ（同じ種類の資料は差し替わります）
               </span>
               <input
                 ref={fileInputRef}
@@ -573,9 +601,22 @@ export default function JireiPanel({
                 }}
               />
             </div>
-            <p className="text-[11px] text-amber-800">
-              または共通フォルダに入れてから事由を選び直してください
-            </p>
+            <button
+              onClick={() => {
+                if (!selectedId) return;
+                setSourcesConfirmed(true);
+                callApi(selectedId, answers, undefined, true);
+              }}
+              disabled={!sourcesReady || loading}
+              className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-40"
+            >
+              {loading ? "資料を読み取っています..." : "この資料で読み取る"}
+            </button>
+            {!sourcesReady && (
+              <p className="text-[11px] text-amber-700">
+                不足している資料をドロップするか、共通フォルダに入れてから事由を選び直してください
+              </p>
+            )}
           </div>
         )}
 

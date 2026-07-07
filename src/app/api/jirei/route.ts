@@ -70,24 +70,35 @@ export async function POST(request: NextRequest) {
         }));
 
       // 共通フォルダから自動発見
-      const { found, missing } = await findSourceFiles(company, jirei.requiredSources);
+      const { found } = await findSourceFiles(company, jirei.requiredSources);
 
-      // ドロップ分でカバーされた missing を除外
-      const stillMissing = missing.filter(
-        (m) => !m.optional && !dropped.some((d) => m.patterns.some((p) => d.name.includes(p)))
-      );
-      if (stillMissing.length > 0) {
+      // 原本の受付状況（種類ごと）。ドロップが自動発見より優先（取り寄せ直した最新を使う意図）
+      const droppedFor = (src: (typeof jirei.requiredSources)[number]) =>
+        dropped.find((d) => src.patterns.some((p) => d.name.includes(p)));
+      const status = jirei.requiredSources.map((src) => {
+        const drop = droppedFor(src);
+        if (drop) return { label: src.label, optional: !!src.optional, kind: "dropped" as const, name: drop.name };
+        const hit = found.find((f) => f.source.key === src.key);
+        if (hit) return { label: src.label, optional: !!src.optional, kind: "found" as const, name: hit.name };
+        return { label: src.label, optional: !!src.optional, kind: "missing" as const, name: null };
+      });
+      const missingRequired = status.filter((s) => s.kind === "missing" && !s.optional);
+
+      // ★実務の順番★: 事由を選んだらまず「必要書類の受付」を出す。
+      // ユーザーが資料を確認して「この資料で読み取る」を押すまで（sourcesConfirmed）先へ進まない。
+      if (body.sourcesConfirmed !== true || missingRequired.length > 0) {
         return NextResponse.json({
           phase: "sources",
           jireiName: jirei.name,
-          missing: stillMissing.map((m) => m.label),
-          found: found.map((f) => f.name),
+          sources: status,
+          ready: missingRequired.length === 0,
         });
       }
 
+      // 読み取り対象を確定（ドロップ優先。ドロップでカバーされた種類の自動発見分は使わない）
       const files: SourceFileInput[] = [...dropped];
       for (const f of found) {
-        // 同名がドロップ済みならドロップ側を優先（取り寄せ直した最新を使う意図）
+        if (droppedFor(f.source)) continue;
         if (files.some((x) => x.name === f.name)) continue;
         files.push({ name: f.name, buffer: await fs.readFile(f.path) });
       }
