@@ -264,12 +264,56 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
+// docx プレビュー HTML (officecli) は iframe 内の window resize でページを幅フィットさせるが、
+// 親レイアウトの変化（ペイン幅の変更・タブ切替で 0px → 実寸 等）では iframe 内に resize が
+// 飛ばず、ロード時の幅（最悪 0px）のまま固まる。→ iframe 要素のサイズを ResizeObserver で
+// 監視して、変わるたびに内部 window へ resize を撃ち込む。
+function FitIframe({ html }: { html: string }) {
+  const ref = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const kick = () => {
+      try {
+        el.contentWindow?.dispatchEvent(new Event("resize"));
+      } catch {
+        /* cross-origin 等は無視 */
+      }
+    };
+    const ro = new ResizeObserver(kick);
+    ro.observe(el);
+    // ResizeObserver が来ない環境向けの保険（ウィンドウリサイズは直接拾う）
+    window.addEventListener("resize", kick);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", kick);
+    };
+  }, []);
+  return (
+    <iframe
+      ref={ref}
+      srcDoc={html}
+      onLoad={() => {
+        // 初期ロード時にも一度フィットさせる（ロードが 0px 幅中に完了した場合の保険）
+        setTimeout(() => {
+          try {
+            ref.current?.contentWindow?.dispatchEvent(new Event("resize"));
+          } catch {
+            /* ignore */
+          }
+        }, 100);
+      }}
+      className="w-full h-full border-0 bg-[var(--color-panel)]"
+    />
+  );
+}
+
 function PreviewBody({ state }: { state: ViewState }) {
   switch (state.kind) {
     case "loading":
       return <p className="text-sm text-[var(--color-fg-subtle)] animate-pulse p-4">読込中...</p>;
     case "html":
-      return <iframe srcDoc={state.html} className="w-full h-full border-0 bg-[var(--color-panel)]" />;
+      return <FitIframe html={state.html} />;
     case "url":
       if (state.mime === "image") {
         return (
