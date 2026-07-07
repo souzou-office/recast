@@ -73,18 +73,20 @@ function holeNode(jirei: Jirei, doc: JireiDocument, hole: string): TreeNode {
       detail: `${doc.repeatOverFactList}ごと: ${target}`,
     };
   }
-  // スロット（空白無視で照合）
+  // スロット（空白無視で照合）。配列 = 分岐で出所が変わる穴（表示は先頭 + 注記）
   const slotEntry = Object.entries(jirei.slots).find(([k]) => norm(k) === norm(target));
   if (slotEntry) {
-    const binding = slotEntry[1];
+    const raw = slotEntry[1];
+    const binding = Array.isArray(raw) ? raw[0] : raw;
+    const multi = Array.isArray(raw) && raw.length > 1 ? "（分岐で出所が変わる）" : "";
     if (binding.type === "fact") {
-      return { label: hole, kind: "hole", source: "fact", detail: `資料: ${binding.key}` };
+      return { label: hole, kind: "hole", source: "fact", detail: `資料: ${binding.key}${multi}` };
     }
     if (binding.type === "answer") {
       const q = jirei.questions.find((x) => x.id === binding.questionId);
-      return { label: hole, kind: "hole", source: "answer", detail: `質問: ${q?.label || binding.questionId}` };
+      return { label: hole, kind: "hole", source: "answer", detail: `質問: ${q?.label || binding.questionId}${multi}` };
     }
-    return { label: hole, kind: "hole", source: "const", detail: `固定: ${binding.value}` };
+    return { label: hole, kind: "hole", source: "const", detail: `固定: ${binding.value}${multi}` };
   }
   return { label: hole, kind: "hole", source: "unknown", detail: "出所なし（テンプレの文言のまま残る）" };
 }

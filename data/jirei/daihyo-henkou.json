@@ -52,11 +52,6 @@
       "id": "tainin_date",
       "label": "辞任届・就任承諾書・議事録の日付は？（例: 令和８年３月３０日）",
       "kind": "date"
-    },
-    {
-      "id": "app_date",
-      "label": "登記申請日は？（委任状の日付。例: 令和８年３月３０日）",
-      "kind": "date"
     }
   ],
   "documents": [
@@ -182,7 +177,7 @@
     },
     "申請日": {
       "type": "answer",
-      "questionId": "app_date"
+      "questionId": "minashi_date"
     }
   }
 }

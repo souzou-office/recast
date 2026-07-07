@@ -73,5 +73,8 @@ export interface Jirei {
   requiredSources?: JireiSource[]; // 必要な原本（宣言があれば原本直読みモード）
   questions: JireiQuestion[];    // 聞く分岐
   documents: JireiDocument[];    // 必要書類
-  slots: Record<string, SlotBinding>; // 穴のラベル -> 値の出所
+  // 穴のラベル -> 値の出所。
+  // 配列を書くと「when を満たす最初の出所」が使われる（同じ穴でも分岐によって出所が変わるとき用。
+  // 例: 委任状の日付は 就任なら総会日 / 辞任なら辞任日）
+  slots: Record<string, SlotBinding | SlotBinding[]>;
 }

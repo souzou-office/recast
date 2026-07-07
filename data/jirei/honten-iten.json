@@ -13,8 +13,7 @@
     { "id": "kettei_date", "label": "取締役決定書の決定日は？（例: 令和8年1月15日）", "kind": "date" },
     { "id": "teian_date", "label": "株主への提案書の発送日は？（例: 令和8年1月16日）", "kind": "date" },
     { "id": "doui_date", "label": "同意欄の日付は？（例: 令和8年1月23日）", "kind": "date" },
-    { "id": "minashi_date", "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年1月26日）", "kind": "date" },
-    { "id": "app_date", "label": "登記申請日は？（委任状の日付。例: 令和8年3月2日）", "kind": "date" }
+    { "id": "minashi_date", "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年1月26日）", "kind": "date" }
   ],
   "documents": [
     { "templateFile": "取締役決定書_本店移転.docx", "kind": "docx" },
@@ -60,7 +59,7 @@
     "提案日": { "type": "answer", "questionId": "teian_date" },
     "同意日": { "type": "answer", "questionId": "doui_date" },
     "みなし決議日": { "type": "answer", "questionId": "minashi_date" },
-    "申請日": { "type": "answer", "questionId": "app_date" },
+    "申請日": { "type": "answer", "questionId": "iten_date" },
     "証明日付": { "type": "answer", "questionId": "minashi_date" }
   }
 }

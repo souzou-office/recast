@@ -32,11 +32,27 @@ export function requiredDocuments(
 }
 
 // いま有効なスロット（when を満たすもの）だけを返す。
+// 配列バインディングは「when を満たす最初の出所」を採用する
+// （同じ穴でも分岐によって出所が変わるとき用。例: 委任状の日付 = 就任なら総会日/辞任なら辞任日）。
 export function activeSlots(
   jirei: Jirei,
   answers: Record<string, string>
 ): [string, SlotBinding][] {
-  return Object.entries(jirei.slots).filter(([, b]) => condOk(b.when, answers));
+  const out: [string, SlotBinding][] = [];
+  for (const [label, b] of Object.entries(jirei.slots)) {
+    if (Array.isArray(b)) {
+      const hit = b.find((x) => condOk(x.when, answers));
+      if (hit) out.push([label, hit]);
+    } else if (condOk(b.when, answers)) {
+      out.push([label, b]);
+    }
+  }
+  return out;
+}
+
+// slots の全バインディングをフラットに列挙（when の参照質問の収集用）
+function allBindings(jirei: Jirei): SlotBinding[] {
+  return Object.values(jirei.slots).flatMap((b) => (Array.isArray(b) ? b : [b]));
 }
 
 // スロットの binding を facts + answers で解決。決まらなければ null。
@@ -79,7 +95,7 @@ export function pendingQuestions(
   for (const q of jirei.questions) {
     if (q.when) needed.add(q.when.questionId);
   }
-  for (const binding of Object.values(jirei.slots)) {
+  for (const binding of allBindings(jirei)) {
     if (binding.when) needed.add(binding.when.questionId);
   }
   return jirei.questions.filter(

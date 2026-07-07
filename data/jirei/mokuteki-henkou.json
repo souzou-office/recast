@@ -8,10 +8,8 @@
     { "key": "kabunushi", "label": "株主名簿", "patterns": ["株主名簿"] }
   ],
   "questions": [
-    { "id": "new_purpose", "label": "変更後の事業目的（全文・1行1項目）を教えてください", "kind": "text" },
-    { "id": "meeting_date", "label": "株主総会の開催日はいつですか？（例: 令和8年6月20日）", "kind": "date" },
-    { "id": "app_date", "label": "登記申請日はいつですか？（例: 令和8年6月25日）", "kind": "date" },
-    { "id": "houmukyoku", "label": "管轄の法務局は？（例: 東京法務局）" }
+    { "id": "new_purpose", "label": "変更後の事業目的（全文・1行1項目）", "kind": "text" },
+    { "id": "meeting_date", "label": "株主総会の開催日（例: 令和8年6月20日）", "kind": "date" }
   ],
   "documents": [
     { "templateFile": "株主総会議事録_目的変更.docx", "kind": "docx" },
@@ -27,7 +25,6 @@
         "株主議決権割合": "議決権割合"
       }
     },
-    { "templateFile": "変更登記申請書_目的変更.docx", "kind": "docx" },
     { "templateFile": "委任状.docx", "kind": "docx" }
   ],
   "slots": {
@@ -50,8 +47,7 @@
     "開催日": { "type": "answer", "questionId": "meeting_date" },
     "作成日": { "type": "answer", "questionId": "meeting_date" },
     "証明日付": { "type": "answer", "questionId": "meeting_date" },
-    "申請日": { "type": "answer", "questionId": "app_date" },
-    "管轄法務局": { "type": "answer", "questionId": "houmukyoku" },
+    "申請日": { "type": "answer", "questionId": "meeting_date" },
     "登記の事由": { "type": "const", "value": "目的変更" }
   }
 }

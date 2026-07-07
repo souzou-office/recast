@@ -31,9 +31,7 @@
       "label": "辞任日はいつですか？（例: 令和8年6月20日）",
       "kind": "date",
       "when": { "questionId": "kind", "anyOf": ["取締役の辞任"] }
-    },
-    { "id": "app_date", "label": "登記申請日はいつですか？（例: 令和8年6月25日）", "kind": "date" },
-    { "id": "houmukyoku", "label": "管轄の法務局は？（例: 東京法務局）" }
+    }
   ],
   "documents": [
     {
@@ -73,21 +71,6 @@
         "株主議決権割合": "議決権割合"
       },
       "when": { "questionId": "kind", "anyOf": ["取締役の就任", "取締役の重任"] }
-    },
-    {
-      "templateFile": "変更登記申請書_役員就任.docx",
-      "kind": "docx",
-      "when": { "questionId": "kind", "anyOf": ["取締役の就任"] }
-    },
-    {
-      "templateFile": "変更登記申請書_役員辞任.docx",
-      "kind": "docx",
-      "when": { "questionId": "kind", "anyOf": ["取締役の辞任"] }
-    },
-    {
-      "templateFile": "変更登記申請書_役員重任.docx",
-      "kind": "docx",
-      "when": { "questionId": "kind", "anyOf": ["取締役の重任"] }
     },
     {
       "templateFile": "委任状_役員変更.docx",
@@ -163,7 +146,15 @@
       "type": "answer", "questionId": "resign_date",
       "when": { "questionId": "kind", "anyOf": ["取締役の辞任"] }
     },
-    "申請日": { "type": "answer", "questionId": "app_date" },
-    "管轄法務局": { "type": "answer", "questionId": "houmukyoku" }
+    "申請日": [
+      {
+        "type": "answer", "questionId": "meeting_date",
+        "when": { "questionId": "kind", "anyOf": ["取締役の就任", "取締役の重任"] }
+      },
+      {
+        "type": "answer", "questionId": "resign_date",
+        "when": { "questionId": "kind", "anyOf": ["取締役の辞任"] }
+      }
+    ]
   }
 }
