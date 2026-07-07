@@ -2,6 +2,11 @@
   "id": "daihyo-henkou",
   "name": "代表取締役の変更",
   "description": "取締役選任（書面決議・会社法319条1項方式）による代表取締役の変更登記。提案書兼同意書は株主ごとに1枚生成される。",
+  "requiredSources": [
+    { "key": "touki", "label": "登記情報（履歴事項全部証明書）", "patterns": ["履歴", "現在事項", "登記情報", "登記簿"] },
+    { "key": "teikan", "label": "定款", "patterns": ["定款"] },
+    { "key": "kabunushi", "label": "株主名簿", "patterns": ["株主名簿"] }
+  ],
   "questions": [
     {
       "id": "new_director_name",

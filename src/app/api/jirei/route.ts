@@ -13,8 +13,14 @@ import { listJirei, loadJirei } from "@/lib/jirei/loader";
 import { profileToFacts, factList } from "@/lib/event-filing/facts";
 import { pendingQuestions, buildFillMap, requiredDocuments, activeSlots } from "@/lib/event-filing/select";
 import { produceJireiDocuments } from "@/lib/event-filing/produce";
+import {
+  findSourceFiles,
+  extractFactsFromSources,
+  SourceFileInput,
+} from "@/lib/event-filing/source-facts";
 import { promises as fs } from "fs";
 import path from "path";
+import type { StructuredProfile } from "@/types";
 
 const TEMPLATE_DIR = path.join(process.cwd(), "data", "jirei-templates");
 
@@ -47,21 +53,69 @@ export async function POST(request: NextRequest) {
     const jirei = await loadJirei(jireiId);
     if (!jirei) return NextResponse.json({ error: "事由が見つかりません" }, { status: 404 });
 
-    const structured = company.profile?.structured;
-    if (!structured) {
-      return NextResponse.json(
-        { error: "基本情報がありません。先に「基本情報」タブで生成してください" },
-        { status: 400 }
+    // --- fact の出所を決める ---
+    // requiredSources が宣言された木 = 原本直読みモード（定款・登記情報そのものを読む）。
+    // 宣言が無い木 = 従来どおり保存済みの基本情報から。
+    let structured: Record<string, unknown> | undefined;
+    let evidence: Record<string, string> = {};
+    let sourceMeta: { files: string[]; cached: boolean } | null = null;
+
+    if (jirei.requiredSources && jirei.requiredSources.length > 0) {
+      // クライアントからドロップされた原本（base64）
+      const dropped: SourceFileInput[] = (body.sources || [])
+        .filter((s: { name?: string; base64?: string }) => s?.name && s?.base64)
+        .map((s: { name: string; base64: string }) => ({
+          name: s.name,
+          buffer: Buffer.from(s.base64, "base64"),
+        }));
+
+      // 共通フォルダから自動発見
+      const { found, missing } = await findSourceFiles(company, jirei.requiredSources);
+
+      // ドロップ分でカバーされた missing を除外
+      const stillMissing = missing.filter(
+        (m) => !m.optional && !dropped.some((d) => m.patterns.some((p) => d.name.includes(p)))
       );
+      if (stillMissing.length > 0) {
+        return NextResponse.json({
+          phase: "sources",
+          jireiName: jirei.name,
+          missing: stillMissing.map((m) => m.label),
+          found: found.map((f) => f.name),
+        });
+      }
+
+      const files: SourceFileInput[] = [...dropped];
+      for (const f of found) {
+        // 同名がドロップ済みならドロップ側を優先（取り寄せ直した最新を使う意図）
+        if (files.some((x) => x.name === f.name)) continue;
+        files.push({ name: f.name, buffer: await fs.readFile(f.path) });
+      }
+
+      const extracted = await extractFactsFromSources(files);
+      structured = extracted.structured;
+      evidence = extracted.evidence;
+      sourceMeta = { files: extracted.sourceNames, cached: extracted.cached };
+    } else {
+      structured = company.profile?.structured as Record<string, unknown> | undefined;
+      if (!structured) {
+        return NextResponse.json(
+          { error: "基本情報がありません。先に「基本情報」タブで生成してください" },
+          { status: 400 }
+        );
+      }
     }
 
-    const facts = profileToFacts(structured);
+    const facts = profileToFacts(structured as Partial<StructuredProfile>);
 
     // 資料から自動で埋まった値（UI で「読めた値」として見せる）。when を満たすスロットだけ。
+    // evidenceByLabel = 解釈を含む値の根拠（定款の条文引用）。人が原文で確認できる。
     const autoFilled: Record<string, string> = {};
+    const evidenceByLabel: Record<string, string> = {};
     for (const [label, binding] of activeSlots(jirei, answers)) {
       if (binding.type === "fact" && facts[binding.key]) {
         autoFilled[label] = facts[binding.key];
+        if (evidence[binding.key]) evidenceByLabel[label] = evidence[binding.key];
       }
     }
 
@@ -72,6 +126,8 @@ export async function POST(request: NextRequest) {
         jireiName: jirei.name,
         questions: pending,
         autoFilled,
+        evidenceByLabel,
+        sourceMeta,
       });
     }
 
@@ -95,7 +151,7 @@ export async function POST(request: NextRequest) {
       documents: docsToMake,
       templates,
       filled,
-      getList: (key) => factList(structured, key),
+      getList: (key) => factList(structured as Partial<StructuredProfile>, key),
     });
 
     return NextResponse.json({
@@ -104,6 +160,7 @@ export async function POST(request: NextRequest) {
       documents,
       filled,
       unresolved, // 値が決まらなかった穴（テンプレの文言がそのまま残る）
+      sourceMeta,
     });
   } catch (e) {
     return NextResponse.json(

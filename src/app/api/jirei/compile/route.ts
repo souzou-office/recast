@@ -74,6 +74,20 @@ const COMPILE_TOOL: Anthropic.Tool = {
           id: { type: "string", description: "kebab-case の事由ID (例: daihyo-henkou)" },
           name: { type: "string", description: "事由名 (例: 代表取締役の変更)" },
           description: { type: "string" },
+          requiredSources: {
+            type: "array",
+            description: "この事由の fact を読むのに必要な原本。通常は 登記情報・定款・株主名簿",
+            items: {
+              type: "object",
+              properties: {
+                key: { type: "string" },
+                label: { type: "string" },
+                patterns: { type: "array", items: { type: "string" }, description: "ファイル名に含まれる文字列" },
+                optional: { type: "boolean" },
+              },
+              required: ["key", "label", "patterns"],
+            },
+          },
           questions: {
             type: "array",
             items: {
@@ -236,6 +250,10 @@ ${FACT_KEYS}
 - 委任状の代理人（事務所の住所・氏名）は固定文なので触らない
 - 日付は questions で聞く（例示形式「令和8年6月20日」を label に入れる）
 - questions の id は snake_case、jirei.id は kebab-case
+- requiredSources には fact の読み取りに必要な原本を宣言する。標準は
+  登記情報 { key: "touki", patterns: ["履歴", "現在事項", "登記情報", "登記簿"] } /
+  定款 { key: "teikan", patterns: ["定款"] } / 株主名簿 { key: "kabunushi", patterns: ["株主名簿"] }。
+  株主の値を使わない事由なら株主名簿は不要
 - 出力テンプレ名 (outFile) は「元の書類名_${folder.replace(/[（(].*$/, "")}.docx」風の短い名前（数字プレフィックスは外す）
 - 対応できない書類・不確かな前提は warnings に日本語で書く（無理に対応しない）
 

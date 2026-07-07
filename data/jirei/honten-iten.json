@@ -2,6 +2,11 @@
   "id": "honten-iten",
   "name": "本店移転",
   "description": "株式会社の本店移転登記。書面決議（会社法319条1項）方式。提案書兼同意書は株主ごとに1枚生成される。",
+  "requiredSources": [
+    { "key": "touki", "label": "登記情報（履歴事項全部証明書）", "patterns": ["履歴", "現在事項", "登記情報", "登記簿"] },
+    { "key": "teikan", "label": "定款", "patterns": ["定款"] },
+    { "key": "kabunushi", "label": "株主名簿", "patterns": ["株主名簿"] }
+  ],
   "questions": [
     { "id": "new_address", "label": "移転先の本店所在地は？（ビル名まで全文。2行になる場合は改行）", "kind": "text" },
     { "id": "iten_date", "label": "移転年月日は？（例: 令和8年3月2日）", "kind": "date" },

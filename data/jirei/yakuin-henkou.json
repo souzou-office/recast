@@ -2,6 +2,11 @@
   "id": "yakuin-henkou",
   "name": "役員変更",
   "description": "取締役の就任・辞任・重任の登記。変更の内容によって必要書類と質問が変わる。",
+  "requiredSources": [
+    { "key": "touki", "label": "登記情報（履歴事項全部証明書）", "patterns": ["履歴", "現在事項", "登記情報", "登記簿"] },
+    { "key": "teikan", "label": "定款", "patterns": ["定款"] },
+    { "key": "kabunushi", "label": "株主名簿", "patterns": ["株主名簿"] }
+  ],
   "questions": [
     {
       "id": "kind",

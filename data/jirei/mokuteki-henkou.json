@@ -2,6 +2,11 @@
   "id": "mokuteki-henkou",
   "name": "目的変更",
   "description": "株式会社の事業目的を変更する登記。株主総会の特別決議で定款を変更する。",
+  "requiredSources": [
+    { "key": "touki", "label": "登記情報（履歴事項全部証明書）", "patterns": ["履歴", "現在事項", "登記情報", "登記簿"] },
+    { "key": "teikan", "label": "定款", "patterns": ["定款"] },
+    { "key": "kabunushi", "label": "株主名簿", "patterns": ["株主名簿"] }
+  ],
   "questions": [
     { "id": "new_purpose", "label": "変更後の事業目的（全文・1行1項目）を教えてください", "kind": "text" },
     { "id": "meeting_date", "label": "株主総会の開催日はいつですか？（例: 令和8年6月20日）", "kind": "date" },

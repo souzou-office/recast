@@ -37,6 +37,23 @@ const MIME: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 
+function readFilesAsBase64(fileList: FileList | File[]): Promise<{ name: string; base64: string }[]> {
+  return Promise.all(
+    Array.from(fileList).map(
+      (f) =>
+        new Promise<{ name: string; base64: string }>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result as string;
+            resolve({ name: f.name, base64: dataUrl.split(",")[1] || "" });
+          };
+          reader.onerror = () => reject(new Error(`読み込み失敗: ${f.name}`));
+          reader.readAsDataURL(f);
+        })
+    )
+  );
+}
+
 function downloadBase64(base64: string, fileName: string, kind: string) {
   const bytes = atob(base64);
   const arr = new Uint8Array(bytes.length);
@@ -67,8 +84,14 @@ export default function JireiPanel({
 }) {
   const [jireiList, setJireiList] = useState<JireiSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [phase, setPhase] = useState<"idle" | "questions" | "done">("idle");
+  const [phase, setPhase] = useState<"idle" | "sources" | "questions" | "done">("idle");
   const [autoFilled, setAutoFilled] = useState<Record<string, string>>({});
+  // 原本直読みモード: 不足している原本 / 使った原本 / 判断の根拠（定款の条文引用）
+  const [missingSources, setMissingSources] = useState<string[]>([]);
+  const [foundSources, setFoundSources] = useState<string[]>([]);
+  const [sourceFiles, setSourceFiles] = useState<{ name: string; base64: string }[]>([]);
+  const [sourceMeta, setSourceMeta] = useState<{ files: string[]; cached: boolean } | null>(null);
+  const [evidenceByLabel, setEvidenceByLabel] = useState<Record<string, string>>({});
   const [questions, setQuestions] = useState<JireiQuestionUI[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [documents, setDocuments] = useState<ProducedDocUI[]>([]);
@@ -91,6 +114,41 @@ export default function JireiPanel({
   const [compileResult, setCompileResult] = useState<{ name: string; warnings: string[] } | null>(null);
   // 木の可視化（ロジックツリー表示）
   const [treeViewId, setTreeViewId] = useState<string | null>(null);
+  // AI チェック（原本突合せ）
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<{
+    issues: { document: string; location: string; problem: string; correct?: string; severity: string }[];
+    sources: string[];
+  } | null>(null);
+
+  const runVerify = async () => {
+    if (!company || !selectedId || documents.length === 0) return;
+    setVerifying(true);
+    setVerifyResult(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/jirei/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyId: company.id,
+          jireiId: selectedId,
+          documents: documents.map((d) => ({ fileName: d.fileName, base64: d.base64 })),
+          sources: sourceFiles,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "チェックに失敗しました");
+        return;
+      }
+      setVerifyResult({ issues: data.issues || [], sources: data.sources || [] });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "通信に失敗しました");
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   const openCompile = async () => {
     setCompileOpen(true);
@@ -152,6 +210,13 @@ export default function JireiPanel({
     setExtractNote(null);
     setExtractSources({});
     setDragOver(false);
+    setMissingSources([]);
+    setFoundSources([]);
+    setSourceFiles([]);
+    setSourceMeta(null);
+    setEvidenceByLabel({});
+    setVerifying(false);
+    setVerifyResult(null);
   };
 
   // ドロップ/選択されたファイルをクライアントで読み (base64)、質問の答えを抽出してプレフィル。
@@ -223,15 +288,20 @@ export default function JireiPanel({
   );
 
   const callApi = useCallback(
-    async (jireiId: string, currentAnswers: Record<string, string>) => {
+    async (
+      jireiId: string,
+      currentAnswers: Record<string, string>,
+      extraSources?: { name: string; base64: string }[]
+    ) => {
       if (!company) return;
       setLoading(true);
       setError(null);
+      const sources = extraSources ?? sourceFiles;
       try {
         const res = await fetch("/api/jirei", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ companyId: company.id, jireiId, answers: currentAnswers }),
+          body: JSON.stringify({ companyId: company.id, jireiId, answers: currentAnswers, sources }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -239,7 +309,14 @@ export default function JireiPanel({
           return;
         }
         setAutoFilled(data.autoFilled || {});
-        if (data.phase === "questions") {
+        setEvidenceByLabel(data.evidenceByLabel || {});
+        if (data.sourceMeta) setSourceMeta(data.sourceMeta);
+        if (data.phase === "sources") {
+          // 原本が足りない → ドロップを求める
+          setPhase("sources");
+          setMissingSources(data.missing || []);
+          setFoundSources(data.found || []);
+        } else if (data.phase === "questions") {
           setPhase("questions");
           setQuestions(data.questions || []);
         } else {
@@ -254,7 +331,7 @@ export default function JireiPanel({
         setLoading(false);
       }
     },
-    [company]
+    [company, sourceFiles]
   );
 
   const handleSelectJirei = (id: string) => {
@@ -441,6 +518,67 @@ export default function JireiPanel({
           </div>
         )}
 
+        {/* 原本が足りない（原本直読みモード） */}
+        {phase === "sources" && (
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 space-y-2">
+            <div className="flex items-center gap-2 text-[12px] font-medium text-amber-900">
+              <Icon name="TriangleAlert" size={13} />
+              この事由に必要な原本が見つかりません
+            </div>
+            <ul className="list-disc pl-5 text-[12px] text-amber-900">
+              {missingSources.map((m) => (
+                <li key={m}>{m}</li>
+              ))}
+            </ul>
+            {foundSources.length > 0 && (
+              <p className="text-[11px] text-amber-800">
+                見つかっている原本: {foundSources.join("・")}
+              </p>
+            )}
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={async (e) => {
+                e.preventDefault();
+                setDragOver(false);
+                const arr = await readFilesAsBase64(e.dataTransfer.files);
+                const merged = [...sourceFiles, ...arr];
+                setSourceFiles(merged);
+                if (selectedId) callApi(selectedId, answers, merged);
+              }}
+              className={`cursor-pointer rounded-xl border border-dashed p-3 text-center text-[12px] ${
+                dragOver ? "border-amber-500 bg-amber-100" : "border-amber-300 text-amber-800"
+              }`}
+            >
+              <span className="inline-flex items-center gap-2">
+                <Icon name="FileUp" size={13} />
+                取り寄せた原本（PDF等）をここにドロップ（クリックで選択）
+              </span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={async (e) => {
+                  if (!e.target.files) return;
+                  const arr = await readFilesAsBase64(e.target.files);
+                  e.target.value = "";
+                  const merged = [...sourceFiles, ...arr];
+                  setSourceFiles(merged);
+                  if (selectedId) callApi(selectedId, answers, merged);
+                }}
+              />
+            </div>
+            <p className="text-[11px] text-amber-800">
+              または共通フォルダに入れてから事由を選び直してください
+            </p>
+          </div>
+        )}
+
         {/* 資料から読めた値 */}
         {selectedId && (phase === "questions" || phase === "done") && Object.keys(autoFilled).length > 0 && (
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4">
@@ -448,6 +586,12 @@ export default function JireiPanel({
               <Icon name="CheckCircle2" size={13} className="text-green-600" />
               資料から読めた値（入力不要）
             </div>
+            {sourceMeta && (
+              <p className="mt-1 text-[11px] text-[var(--color-fg-muted)]">
+                出典: {sourceMeta.files.join("・")}
+                {sourceMeta.cached ? "（前回と同じ原本のため読み取り結果を再利用）" : "（いま原本を読み取りました）"}
+              </p>
+            )}
             <table className="mt-2 w-full text-[12px]">
               <tbody>
                 {Object.entries(autoFilled).map(([label, value]) => (
@@ -457,6 +601,11 @@ export default function JireiPanel({
                     </td>
                     <td className="py-1 text-[var(--color-fg)] whitespace-pre-wrap break-words">
                       {value}
+                      {evidenceByLabel[label] && (
+                        <span className="mt-0.5 block text-[11px] text-[var(--color-fg-muted)]">
+                          根拠: {evidenceByLabel[label]}
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -600,6 +749,39 @@ export default function JireiPanel({
               <p className="text-[11px] text-amber-700">
                 値が決まらなかった穴: {unresolved.join("、")}（テンプレの文言のまま残っています）
               </p>
+            )}
+            {/* AI チェック（原本突合せ）。書き換えはしない、指摘だけ */}
+            <button
+              onClick={runVerify}
+              disabled={verifying}
+              className="w-full rounded-xl border border-[var(--color-accent)] px-4 py-2 text-[12px] font-medium text-[var(--color-accent-fg)] hover:bg-[var(--color-accent-soft)] disabled:opacity-40"
+            >
+              {verifying ? "原本と突き合わせています...（30秒ほど）" : "AI チェック（原本と突合せ・¥30程度）"}
+            </button>
+            {verifyResult && verifyResult.issues.length === 0 && (
+              <div className="rounded-xl border border-green-300 bg-green-50 p-3 text-[12px] text-green-900">
+                ✓ 原本（{verifyResult.sources.join("・")}）と突き合わせて、問題は見つかりませんでした
+              </div>
+            )}
+            {verifyResult && verifyResult.issues.length > 0 && (
+              <div className="rounded-xl border border-red-300 bg-red-50 p-3 space-y-2">
+                <p className="text-[12px] font-medium text-red-900">
+                  {verifyResult.issues.length}件の指摘があります（原本: {verifyResult.sources.join("・")}）
+                </p>
+                {verifyResult.issues.map((it, i) => (
+                  <div key={i} className="rounded-lg bg-white/70 p-2 text-[12px] text-red-900">
+                    <span
+                      className={`mr-1 rounded px-1.5 py-0.5 text-[10px] text-white ${
+                        it.severity === "高" ? "bg-red-600" : it.severity === "中" ? "bg-amber-500" : "bg-gray-400"
+                      }`}
+                    >
+                      {it.severity}
+                    </span>
+                    <span className="font-medium">{it.document}</span>（{it.location}）: {it.problem}
+                    {it.correct && <span className="block text-[11px]">→ 正: {it.correct}</span>}
+                  </div>
+                ))}
+              </div>
             )}
             <button
               onClick={reset}

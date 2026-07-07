@@ -61,6 +61,16 @@ export function profileToFacts(
     facts["現在の事業目的"] = p.事業目的.join("\n");
   }
 
+  // 定款由来の判断系キー（原本直読み抽出で入る。上の層の分岐が参照する）
+  const extra = p as Record<string, unknown>;
+  if (typeof extra["取締役会設置"] === "string") {
+    facts["取締役会設置"] = extra["取締役会設置"] as string;
+  }
+  if (typeof extra["代表取締役の選定機関"] === "string") {
+    facts["代表取締役の選定機関"] = extra["代表取締役の選定機関"] as string;
+  }
+  if (typeof extra["公告方法"] === "string") facts["公告方法"] = extra["公告方法"] as string;
+
   // 代表取締役の氏名を役員から導出（役職に「代表取締役」を含む先頭）
   const officers = pickArray<{ 役職?: string; 氏名?: string }>(
     p as Record<string, unknown>,

@@ -55,11 +55,22 @@ export interface JireiDocument {
   when?: JireiCondition;         // 条件を満たすときだけ必要な書類
 }
 
+// 事由が必要とする原本（添付書類の実務知識）。
+// 宣言されていると、fact は保存済みの基本情報ではなく「この原本をその場で読んだ結果」から来る。
+// 共通フォルダから patterns でファイル名検索し、見つからなければユーザーにドロップを求める。
+export interface JireiSource {
+  key: string;        // "touki" / "teikan" / "kabunushi"
+  label: string;      // "登記情報（履歴事項全部証明書）"
+  patterns: string[]; // ファイル名にこのいずれかを含めば該当
+  optional?: boolean; // true なら無くても進める（該当 fact は質問に落ちる）
+}
+
 // 事由（木）本体
 export interface Jirei {
   id: string;                    // "mokuteki-henkou"
   name: string;                  // "目的変更"
   description?: string;
+  requiredSources?: JireiSource[]; // 必要な原本（宣言があれば原本直読みモード）
   questions: JireiQuestion[];    // 聞く分岐
   documents: JireiDocument[];    // 必要書類
   slots: Record<string, SlotBinding>; // 穴のラベル -> 値の出所
