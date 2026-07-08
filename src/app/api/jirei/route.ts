@@ -23,6 +23,17 @@ import path from "path";
 import type { StructuredProfile } from "@/types";
 
 const TEMPLATE_DIR = path.join(process.cwd(), "data", "jirei-templates");
+const CORPORATE_REPS_PATH = path.join(process.cwd(), "data", "jirei", "corporate-reps.json");
+
+// 法人株主の代表者名（統一ルール⑦⑧の事務所知識）。名簿に載らないのでデータで補完する。
+async function loadCorporateReps(): Promise<Record<string, string>> {
+  try {
+    const raw = await fs.readFile(CORPORATE_REPS_PATH, "utf-8");
+    return JSON.parse(raw.replace(/^﻿/, ""));
+  } catch {
+    return {};
+  }
+}
 
 export async function GET() {
   const jirei = await listJirei();
@@ -158,11 +169,18 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // 株主一覧に法人代表者名を補完（統一ルール⑦⑧。名簿に載らない事務所知識）
+    const corporateReps = await loadCorporateReps();
+    const getList = (key: string) =>
+      factList(structured as Partial<StructuredProfile>, key).map((item) =>
+        key === "株主" ? { ...item, 代表者名: corporateReps[item.氏名] || "" } : item
+      );
+
     const documents = produceJireiDocuments({
       documents: docsToMake,
       templates,
       filled,
-      getList: (key) => factList(structured as Partial<StructuredProfile>, key),
+      getList,
       answers,
     });
 
