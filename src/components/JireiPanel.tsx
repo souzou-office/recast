@@ -81,6 +81,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   const [sourceFiles, setSourceFiles] = useState<{ name: string; base64: string }[]>([]);
   const [sourceMeta, setSourceMeta] = useState<{ files: string[]; cached: boolean } | null>(null);
   const [evidenceByLabel, setEvidenceByLabel] = useState<Record<string, string>>({});
+  // ガード: 木に載っている専門家の注意書き（分岐に応じて出る）
+  const [guards, setGuards] = useState<string[]>([]);
   const [questions, setQuestions] = useState<JireiQuestionUI[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [documents, setDocuments] = useState<ProducedDocUI[]>([]);
@@ -205,6 +207,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
     setSourceFiles([]);
     setSourceMeta(null);
     setEvidenceByLabel({});
+    setGuards([]);
     setVerifying(false);
     setVerifyResult(null);
   };
@@ -307,6 +310,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         }
         setAutoFilled(data.autoFilled || {});
         setEvidenceByLabel(data.evidenceByLabel || {});
+        setGuards(data.guards || []);
         if (data.sourceMeta) setSourceMeta(data.sourceMeta);
         if (data.phase === "sources") {
           // 必要書類の受付（実務の順番: まず資料を揃えて確認してから進む）
@@ -576,6 +580,18 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                 不足している資料をドロップするか、共通フォルダに入れてから事由を選び直してください
               </p>
             )}
+          </div>
+        )}
+
+        {/* ガード: 木に載っている専門家の注意書き（選んだ分岐に応じて出る） */}
+        {guards.length > 0 && (phase === "questions" || phase === "done") && (
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 space-y-1">
+            {guards.map((g, i) => (
+              <p key={i} className="flex items-start gap-2 text-[12px] text-amber-900">
+                <Icon name="TriangleAlert" size={13} className="mt-0.5 shrink-0" />
+                {g}
+              </p>
+            ))}
           </div>
         )}
 

@@ -55,6 +55,13 @@ function allBindings(jirei: Jirei): SlotBinding[] {
   return Object.values(jirei.slots).flatMap((b) => (Array.isArray(b) ? b : [b]));
 }
 
+// いま有効なガード（ユーザーへの注意・制止メッセージ）。
+export function activeGuards(jirei: Jirei, answers: Record<string, string>): string[] {
+  return (jirei.guards || [])
+    .filter((g) => condOk(g.when, answers))
+    .map((g) => g.message);
+}
+
 // スロットの binding を facts + answers で解決。決まらなければ null。
 export function resolveSlot(
   binding: SlotBinding,
@@ -107,6 +114,9 @@ export function pendingQuestions(
   }
   for (const binding of allBindings(jirei)) {
     if (binding.when) needed.add(binding.when.questionId);
+  }
+  for (const g of jirei.guards || []) {
+    if (g.when) needed.add(g.when.questionId);
   }
   return jirei.questions.filter(
     (q) =>

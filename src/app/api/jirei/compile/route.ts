@@ -149,6 +149,25 @@ const COMPILE_TOOL: Anthropic.Tool = {
             description: "スロット名 → 値の出所。{type:'fact',key} | {type:'answer',questionId} | {type:'const',value}。when も付けられる",
             additionalProperties: { type: "object" },
           },
+          guards: {
+            type: "array",
+            description: "分岐に応じてユーザーへ出す注意書き（雛形未登録の枝、法定の確認事項など）",
+            items: {
+              type: "object",
+              properties: {
+                when: {
+                  type: "object",
+                  properties: {
+                    questionId: { type: "string" },
+                    anyOf: { type: "array", items: { type: "string" } },
+                  },
+                  required: ["questionId", "anyOf"],
+                },
+                message: { type: "string" },
+              },
+              required: ["message"],
+            },
+          },
         },
         required: ["id", "name", "questions", "documents", "slots"],
       },
@@ -265,6 +284,10 @@ ${FACT_KEYS}
   itemFilter: { field: "種別", anyOf: ["個人"] } / ["法人"] で出し分ける（法人用の穴は 本店→住所, 商号→氏名 にマップ。代表取締役名は一覧に無いため 【…】のまま残してよい旨を warnings に書く）
 - 管轄法務局・登記申請日のような「書類に現れない値」「導出できる値」は質問にしない。
   委任状の日付は案件の基準日（総会日・効力発生日など）のスロットを充てる
+- ★テンプレ一式が暗黙に前提している手続き方式（例: 書面決議 vs 株主総会の実開催）を見抜き、
+  最初の choice 質問として顕在化させること★。一式が属する方式の書類・質問・スロットに when を付け、
+  雛形が無い方の枝には guards（{ when, message } の配列。jirei 直下）で
+  「〜用の雛形が未登録」と明示する。前提を無言で質問に焼き込んではならない
 - 委任状の代理人（事務所の住所・氏名）は固定文なので触らない
 - 日付は questions で聞く（例示形式「令和8年6月20日」を label に入れる）
 - questions の id は snake_case、jirei.id は kebab-case

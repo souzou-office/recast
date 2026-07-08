@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { listJirei, loadJirei } from "@/lib/jirei/loader";
 import { profileToFacts, factList } from "@/lib/event-filing/facts";
-import { pendingQuestions, buildFillMap, requiredDocuments, activeSlots } from "@/lib/event-filing/select";
+import { pendingQuestions, buildFillMap, requiredDocuments, activeSlots, activeGuards } from "@/lib/event-filing/select";
 import { produceJireiDocuments } from "@/lib/event-filing/produce";
 import {
   findSourceFiles,
@@ -155,6 +155,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const guards = activeGuards(jirei, answers);
     const pending = pendingQuestions(jirei, answers);
     if (pending.length > 0) {
       return NextResponse.json({
@@ -164,6 +165,7 @@ export async function POST(request: NextRequest) {
         autoFilled,
         evidenceByLabel,
         sourceMeta,
+        guards,
       });
     }
 
@@ -208,6 +210,7 @@ export async function POST(request: NextRequest) {
       filled,
       unresolved, // 値が決まらなかった穴（テンプレの文言がそのまま残る）
       sourceMeta,
+      guards,
     });
   } catch (e) {
     return NextResponse.json(

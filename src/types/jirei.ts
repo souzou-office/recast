@@ -84,6 +84,10 @@ export interface Jirei {
   requiredSources?: JireiSource[]; // 必要な原本（宣言があれば原本直読みモード）
   questions: JireiQuestion[];    // 聞く分岐
   documents: JireiDocument[];    // 必要書類
+  // ガード: 条件を満たすとき（when 省略時は常に）にユーザーへ伝える注意・制止。
+  // 例: 「実開催用の議事録の雛形が未登録」「辞任で取締役が0名になります」。
+  // 書類は出さない・値も埋めない、木に載る「専門家の注意書き」の一般形。
+  guards?: { when?: JireiCondition; message: string }[];
   // 穴のラベル -> 値の出所。
   // 配列を書くと「when を満たす最初の出所」が使われる（同じ穴でも分岐によって出所が変わるとき用。
   // 例: 委任状の日付は 就任なら総会日 / 辞任なら辞任日）

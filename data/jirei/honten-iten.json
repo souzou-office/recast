@@ -3,20 +3,107 @@
   "name": "本店移転",
   "description": "株式会社の本店移転登記。書面決議（会社法319条1項）方式。提案書兼同意書は株主ごとに1枚生成される。",
   "requiredSources": [
-    { "key": "touki", "label": "登記情報（履歴事項全部証明書）", "patterns": ["履歴", "現在事項", "登記情報", "登記簿"] },
-    { "key": "teikan", "label": "定款", "patterns": ["定款"] },
-    { "key": "kabunushi", "label": "株主名簿", "patterns": ["株主名簿"] }
+    {
+      "key": "touki",
+      "label": "登記情報（履歴事項全部証明書）",
+      "patterns": [
+        "履歴",
+        "現在事項",
+        "登記情報",
+        "登記簿"
+      ]
+    },
+    {
+      "key": "teikan",
+      "label": "定款",
+      "patterns": [
+        "定款"
+      ]
+    },
+    {
+      "key": "kabunushi",
+      "label": "株主名簿",
+      "patterns": [
+        "株主名簿"
+      ]
+    }
   ],
   "questions": [
-    { "id": "new_address", "label": "移転先の本店所在地は？（ビル名まで全文。2行になる場合は改行）", "kind": "text" },
-    { "id": "iten_date", "label": "移転年月日は？（例: 令和8年3月2日）", "kind": "date" },
-    { "id": "kettei_date", "label": "取締役決定書の決定日は？（例: 令和8年1月15日）", "kind": "date" },
-    { "id": "teian_date", "label": "株主への提案書の発送日は？（例: 令和8年1月16日）", "kind": "date" },
-    { "id": "doui_date", "label": "同意欄の日付は？（例: 令和8年1月23日）", "kind": "date" },
-    { "id": "minashi_date", "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年1月26日）", "kind": "date" }
+    {
+      "id": "kessai_hoho",
+      "label": "株主総会の決議方法は？",
+      "kind": "choice",
+      "choices": [
+        "書面決議（株主全員の同意・会社法319条1項）",
+        "株主総会を開催"
+      ]
+    },
+    {
+      "id": "new_address",
+      "label": "移転先の本店所在地は？（ビル名まで全文。2行になる場合は改行）",
+      "kind": "text"
+    },
+    {
+      "id": "iten_date",
+      "label": "移転年月日は？（例: 令和8年3月2日）",
+      "kind": "date"
+    },
+    {
+      "id": "kettei_date",
+      "label": "取締役決定書の決定日は？（例: 令和8年1月15日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "id": "teian_date",
+      "label": "株主への提案書の発送日は？（例: 令和8年1月16日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "id": "doui_date",
+      "label": "同意欄の日付は？（例: 令和8年1月23日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "id": "minashi_date",
+      "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年1月26日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    }
   ],
   "documents": [
-    { "templateFile": "取締役決定書_本店移転.docx", "kind": "docx" },
+    {
+      "templateFile": "取締役決定書_本店移転.docx",
+      "kind": "docx",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
     {
       "templateFile": "提案書兼同意書_本店移転.docx",
       "kind": "docx",
@@ -25,9 +112,24 @@
         "株主住所": "住所",
         "株主氏名": "氏名",
         "株主議決権数": "議決権数全角"
+      },
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
       }
     },
-    { "templateFile": "株主総会議事録_本店移転.docx", "kind": "docx" },
+    {
+      "templateFile": "株主総会議事録_本店移転.docx",
+      "kind": "docx",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
     {
       "templateFile": "株主リスト.xlsx",
       "kind": "xlsx",
@@ -40,26 +142,124 @@
         "株主議決権割合": "議決権割合"
       }
     },
-    { "templateFile": "委任状_本店移転.docx", "kind": "docx" }
+    {
+      "templateFile": "委任状_本店移転.docx",
+      "kind": "docx"
+    }
   ],
   "slots": {
-    "会社名": { "type": "fact", "key": "会社名" },
-    "本店所在地": { "type": "fact", "key": "本店所在地" },
-    "代表取締役氏名": { "type": "fact", "key": "代表取締役氏名" },
-    "取締役総数": { "type": "fact", "key": "取締役総数（全角）" },
-    "出席取締役数": { "type": "fact", "key": "出席取締役数（全角）" },
-    "議決権株主数": { "type": "fact", "key": "議決権株主数（全角）" },
-    "総議決権数": { "type": "fact", "key": "総議決権数（全角）" },
-    "合計株式数": { "type": "fact", "key": "株主株式数合計" },
-    "合計議決権数": { "type": "fact", "key": "株主議決権数合計" },
-    "合計議決権割合": { "type": "fact", "key": "株主議決権割合合計" },
-    "移転先本店": { "type": "answer", "questionId": "new_address" },
-    "移転年月日": { "type": "answer", "questionId": "iten_date" },
-    "決定日": { "type": "answer", "questionId": "kettei_date" },
-    "提案日": { "type": "answer", "questionId": "teian_date" },
-    "同意日": { "type": "answer", "questionId": "doui_date" },
-    "みなし決議日": { "type": "answer", "questionId": "minashi_date" },
-    "申請日": { "type": "answer", "questionId": "iten_date" },
-    "証明日付": { "type": "answer", "questionId": "minashi_date" }
-  }
+    "会社名": {
+      "type": "fact",
+      "key": "会社名"
+    },
+    "本店所在地": {
+      "type": "fact",
+      "key": "本店所在地"
+    },
+    "代表取締役氏名": {
+      "type": "fact",
+      "key": "代表取締役氏名"
+    },
+    "取締役総数": {
+      "type": "fact",
+      "key": "取締役総数（全角）"
+    },
+    "出席取締役数": {
+      "type": "fact",
+      "key": "出席取締役数（全角）"
+    },
+    "議決権株主数": {
+      "type": "fact",
+      "key": "議決権株主数（全角）"
+    },
+    "総議決権数": {
+      "type": "fact",
+      "key": "総議決権数（全角）"
+    },
+    "合計株式数": {
+      "type": "fact",
+      "key": "株主株式数合計"
+    },
+    "合計議決権数": {
+      "type": "fact",
+      "key": "株主議決権数合計"
+    },
+    "合計議決権割合": {
+      "type": "fact",
+      "key": "株主議決権割合合計"
+    },
+    "移転先本店": {
+      "type": "answer",
+      "questionId": "new_address"
+    },
+    "移転年月日": {
+      "type": "answer",
+      "questionId": "iten_date"
+    },
+    "決定日": {
+      "type": "answer",
+      "questionId": "kettei_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "提案日": {
+      "type": "answer",
+      "questionId": "teian_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "同意日": {
+      "type": "answer",
+      "questionId": "doui_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "みなし決議日": {
+      "type": "answer",
+      "questionId": "minashi_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "申請日": {
+      "type": "answer",
+      "questionId": "iten_date"
+    },
+    "証明日付": {
+      "type": "answer",
+      "questionId": "minashi_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    }
+  },
+  "guards": [
+    {
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "株主総会を開催"
+        ]
+      },
+      "message": "実開催（株主総会を開く）用の議事録・招集関係の雛形が未登録です。登録済みの一式は書面決議用のみ。このまま生成すると方式に依らない書類だけが出ます"
+    }
+  ]
 }
