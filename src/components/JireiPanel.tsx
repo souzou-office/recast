@@ -795,34 +795,23 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         )}
       </div>
 
-      {/* 右: 余白（プレビューは全画面オーバーレイで開く） */}
-      <div className="flex-1 overflow-hidden">
-        <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-fg-muted)]">
-          {phase === "done" ? "書類名をクリックすると全画面でプレビューします" : ""}
-        </div>
+      {/* 右（本体）: プレビュー常設。左の書類リストをクリックすると、ここに表示される */}
+      <div className="flex flex-1 overflow-hidden">
+        {previewDoc ? (
+          <FilePreview
+            docxBase64={previewDoc.base64}
+            fileName={previewDoc.fileName}
+            onClose={() => setPreviewDoc(null)}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-[13px] text-[var(--color-fg-muted)]">
+            {phase === "done" ? "左の書類名をクリックするとここにプレビューされます" : ""}
+          </div>
+        )}
       </div>
 
       {/* 木の可視化（全画面） */}
       {treeViewId && <JireiTreeView jireiId={treeViewId} onClose={() => setTreeViewId(null)} />}
-
-      {/* 全画面プレビュー（Esc または × で閉じる） */}
-      {previewDoc && (
-        <div
-          className="fixed inset-0 z-50 bg-black/50 p-4 md:p-8"
-          onClick={() => setPreviewDoc(null)}
-        >
-          <div
-            className="flex h-full w-full overflow-hidden rounded-2xl bg-[var(--color-panel)] shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <FilePreview
-              docxBase64={previewDoc.base64}
-              fileName={previewDoc.fileName}
-              onClose={() => setPreviewDoc(null)}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

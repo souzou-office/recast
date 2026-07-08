@@ -5,7 +5,7 @@ import type { WorkspaceConfig } from "@/types";
 import TemplateLabelsSection from "./TemplateLabelsSection";
 
 import { Icon } from "./ui/Icon";
-type SettingsSection = "basepath" | "templatepath" | "recordspath" | "common" | "template-labels";
+type SettingsSection = "basepath" | "templatepath" | "recordspath" | "common" | "template-labels" | "office-rules";
 
 interface BrowseDir {
   name: string;
@@ -54,7 +54,33 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
     { id: "recordspath", label: "作業記録の保存先" },
     { id: "template-labels", label: "テンプレート解釈" },
     { id: "common", label: "共通パターン" },
+    { id: "office-rules", label: "事務所ルール" },
   ];
+
+  // 事務所ルール（統一ルール）— 正はアプリ内。事由コンパイラと AI チェックが参照する
+  const [officeRules, setOfficeRules] = useState("");
+  const [officeRulesSaved, setOfficeRulesSaved] = useState<null | "saving" | "saved">(null);
+  useEffect(() => {
+    if (section !== "office-rules") return;
+    fetch("/api/jirei/office-rules")
+      .then((r) => r.json())
+      .then((d) => setOfficeRules(d.text || ""))
+      .catch(() => {});
+  }, [section]);
+  const saveOfficeRules = async () => {
+    setOfficeRulesSaved("saving");
+    try {
+      await fetch("/api/jirei/office-rules", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: officeRules }),
+      });
+      setOfficeRulesSaved("saved");
+      setTimeout(() => setOfficeRulesSaved(null), 2000);
+    } catch {
+      setOfficeRulesSaved(null);
+    }
+  };
 
   // フォルダブラウズ
   const browse = useCallback(async (dirPath?: string) => {
@@ -218,6 +244,33 @@ export default function SettingsView({ config, onUpdateConfig }: Props) {
 
       {/* 右: 内容 */}
       <div className="flex-1 overflow-hidden flex flex-col">
+        {section === "office-rules" && (
+          <div className="flex flex-col h-full">
+            <div className="px-6 pt-6 pb-3">
+              <h2 className="text-lg font-semibold text-[var(--color-fg)] mb-1">事務所ルール（統一ルール）</h2>
+              <p className="text-xs text-[var(--color-fg-muted)]">
+                書類作成の事務所内ルール。ここが正で、事由の追加（AI コンパイル）と生成後の AI チェックが常にこれを読みます。
+                法人株主の代表者などの固定情報は data\jirei\corporate-reps.json。
+              </p>
+            </div>
+            <div className="flex-1 overflow-hidden px-6 pb-3">
+              <textarea
+                value={officeRules}
+                onChange={(e) => setOfficeRules(e.target.value)}
+                className="h-full w-full resize-none rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-3 font-mono text-xs leading-relaxed focus:outline-none focus:border-[var(--color-accent)]"
+              />
+            </div>
+            <div className="px-6 pb-6">
+              <button
+                onClick={saveOfficeRules}
+                disabled={officeRulesSaved === "saving"}
+                className="rounded-xl bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+              >
+                {officeRulesSaved === "saving" ? "保存中..." : officeRulesSaved === "saved" ? "保存しました ✓" : "保存"}
+              </button>
+            </div>
+          </div>
+        )}
         {section === "basepath" && (
           <div className="flex flex-col h-full">
             <div className="px-6 pt-6 pb-3">

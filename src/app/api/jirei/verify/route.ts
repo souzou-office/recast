@@ -110,6 +110,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // 事務所の統一ルール（あれば観点に加える）
+    try {
+      const rules = await fs.readFile(path.join(process.cwd(), "data", "jirei", "office-rules.txt"), "utf-8");
+      blocks.push({ type: "text", text: `■ 事務所の統一ルール（書式の決まり。これに反する記載も指摘対象）\n${rules}` });
+    } catch {
+      /* 無ければスキップ */
+    }
+
     blocks.push({
       type: "text",
       text: `あなたは司法書士事務所のベテラン校正者です。生成された書類を、原本と突き合わせてチェックしてください。

@@ -222,12 +222,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "フォルダに docx がありません" }, { status: 400 });
     }
 
-    // 共通ルール（あれば添付）
+    // 事務所の統一ルール（正はアプリ内 data/jirei/office-rules.txt。無ければ H: の共通ルールを fallback）
     try {
-      const rules = await fs.readFile(path.join(base, "共通ルール", "統一ルール.txt"), "utf-8");
+      const rules = await fs.readFile(path.join(process.cwd(), "data", "jirei", "office-rules.txt"), "utf-8");
       sections.push(`【事務所の統一ルール】\n${rules}`);
     } catch {
-      /* 無ければスキップ */
+      try {
+        const rules = await fs.readFile(path.join(base, "共通ルール", "統一ルール.txt"), "utf-8");
+        sections.push(`【事務所の統一ルール】\n${rules}`);
+      } catch {
+        /* 無ければスキップ */
+      }
     }
 
     // 既存の木を few-shot として1つ添付（形式の実例）
