@@ -24,12 +24,25 @@ import type { StructuredProfile } from "@/types";
 
 const TEMPLATE_DIR = path.join(process.cwd(), "data", "jirei-templates");
 const CORPORATE_REPS_PATH = path.join(process.cwd(), "data", "jirei", "corporate-reps.json");
+const SPECIAL_PARTIES_PATH = path.join(process.cwd(), "data", "jirei", "special-parties.json");
 
 // 法人株主の代表者名（統一ルール⑦⑧の事務所知識）。名簿に載らないのでデータで補完する。
 async function loadCorporateReps(): Promise<Record<string, string>> {
   try {
     const raw = await fs.readFile(CORPORATE_REPS_PATH, "utf-8");
     return JSON.parse(raw.replace(/^﻿/, ""));
+  } catch {
+    return {};
+  }
+}
+
+// 組合等の特殊同意欄（統一ルール④）。名称 → 同意欄の各行（主たる事務所/名称/無限責任組合員/組合員/代表取締役）。
+async function loadSpecialParties(): Promise<Record<string, Record<string, string>>> {
+  try {
+    const raw = await fs.readFile(SPECIAL_PARTIES_PATH, "utf-8");
+    const data = JSON.parse(raw.replace(/^﻿/, ""));
+    delete data._comment;
+    return data;
   } catch {
     return {};
   }
@@ -54,12 +67,13 @@ export async function POST(request: NextRequest) {
     const jireiId: string | undefined = body.jireiId;
     const answers: Record<string, string> = body.answers || {};
 
-    if (!companyId) return NextResponse.json({ error: "companyId は必須です" }, { status: 400 });
     if (!jireiId) return NextResponse.json({ error: "jireiId は必須です" }, { status: 400 });
 
+    // ★会社レス運用★: companyId は任意。会社が選ばれていれば共通フォルダから原本を自動発見し、
+    // 選ばれていなければ全部ドロップで賄う（会社が誰かは原本＝登記情報が知っている）。
     const config = await getWorkspaceConfig();
-    const company = config.companies.find((c) => c.id === companyId);
-    if (!company) return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
+    const company = companyId ? config.companies.find((c) => c.id === companyId) : null;
+    if (companyId && !company) return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
 
     const jirei = await loadJirei(jireiId);
     if (!jirei) return NextResponse.json({ error: "事由が見つかりません" }, { status: 404 });
@@ -80,8 +94,10 @@ export async function POST(request: NextRequest) {
           buffer: Buffer.from(s.base64, "base64"),
         }));
 
-      // 共通フォルダから自動発見
-      const { found } = await findSourceFiles(company, jirei.requiredSources);
+      // 共通フォルダから自動発見（会社未選択ならスキップ = ドロップのみ）
+      const { found } = company
+        ? await findSourceFiles(company, jirei.requiredSources)
+        : { found: [] as Awaited<ReturnType<typeof findSourceFiles>>["found"] };
 
       // 原本の受付状況（種類ごと）。ドロップが自動発見より優先（取り寄せ直した最新を使う意図）
       const droppedFor = (src: (typeof jirei.requiredSources)[number]) =>
@@ -119,10 +135,14 @@ export async function POST(request: NextRequest) {
       evidence = extracted.evidence;
       sourceMeta = { files: extracted.sourceNames, cached: extracted.cached };
     } else {
-      structured = company.profile?.structured as Record<string, unknown> | undefined;
+      structured = company?.profile?.structured as Record<string, unknown> | undefined;
       if (!structured) {
         return NextResponse.json(
-          { error: "基本情報がありません。先に「基本情報」タブで生成してください" },
+          {
+            error: company
+              ? "基本情報がありません。先に「基本情報」タブで生成してください"
+              : "この事由は原本の宣言が無いため、会社を選択してください",
+          },
           { status: 400 }
         );
       }
@@ -169,11 +189,19 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 株主一覧に法人代表者名を補完（統一ルール⑦⑧。名簿に載らない事務所知識）
+    // 株主一覧に事務所知識を補完:
+    //   代表者名（統一ルール⑦⑧）+ 組合の特殊同意欄の各行（統一ルール④）
     const corporateReps = await loadCorporateReps();
+    const specialParties = await loadSpecialParties();
     const getList = (key: string) =>
       factList(structured as Partial<StructuredProfile>, key).map((item) =>
-        key === "株主" ? { ...item, 代表者名: corporateReps[item.氏名] || "" } : item
+        key === "株主"
+          ? {
+              ...item,
+              代表者名: corporateReps[item.氏名] || "",
+              ...(specialParties[item.氏名] || {}),
+            }
+          : item
       );
 
     const documents = produceJireiDocuments({

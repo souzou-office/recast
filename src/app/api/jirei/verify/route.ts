@@ -51,12 +51,13 @@ export async function POST(request: NextRequest) {
     const companyId: string | undefined = body.companyId;
     const jireiId: string | undefined = body.jireiId;
     const documents: { fileName: string; base64: string }[] = body.documents || [];
-    if (!companyId || !jireiId) return NextResponse.json({ error: "companyId / jireiId は必須です" }, { status: 400 });
+    if (!jireiId) return NextResponse.json({ error: "jireiId は必須です" }, { status: 400 });
     if (documents.length === 0) return NextResponse.json({ error: "documents は必須です" }, { status: 400 });
 
+    // 会社レス運用対応: 会社未選択でも、ドロップされた原本があれば突合せできる
     const config = await getWorkspaceConfig();
-    const company = config.companies.find((c) => c.id === companyId);
-    if (!company) return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
+    const company = companyId ? config.companies.find((c) => c.id === companyId) : null;
+    if (companyId && !company) return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
     const jirei = await loadJirei(jireiId);
     if (!jirei) return NextResponse.json({ error: "事由が見つかりません" }, { status: 404 });
 
@@ -65,7 +66,7 @@ export async function POST(request: NextRequest) {
       .filter((s: { name?: string; base64?: string }) => s?.name && s?.base64)
       .map((s: { name: string; base64: string }) => ({ name: s.name, buffer: Buffer.from(s.base64, "base64") }));
     const sources: SourceFileInput[] = [...dropped];
-    if (jirei.requiredSources && jirei.requiredSources.length > 0) {
+    if (company && jirei.requiredSources && jirei.requiredSources.length > 0) {
       const { found } = await findSourceFiles(company, jirei.requiredSources);
       for (const f of found) {
         if (sources.some((x) => x.name === f.name)) continue;

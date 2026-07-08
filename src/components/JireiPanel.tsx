@@ -111,7 +111,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   } | null>(null);
 
   const runVerify = async () => {
-    if (!company || !selectedId || documents.length === 0) return;
+    if (!selectedId || documents.length === 0) return;
     setVerifying(true);
     setVerifyResult(null);
     setError(null);
@@ -120,7 +120,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          companyId: company.id,
+          companyId: company?.id,
           jireiId: selectedId,
           documents: documents.map((d) => ({ fileName: d.fileName, base64: d.base64 })),
           sources: sourceFiles,
@@ -284,7 +284,6 @@ export default function JireiPanel({ company }: { company: Company | null }) {
       extraSources?: { name: string; base64: string }[],
       confirmedOverride?: boolean
     ) => {
-      if (!company) return;
       setLoading(true);
       setError(null);
       const sources = extraSources ?? sourceFiles;
@@ -294,7 +293,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            companyId: company.id,
+            companyId: company?.id,
             jireiId,
             answers: currentAnswers,
             sources,
@@ -353,13 +352,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
     callApi(selectedId, answers);
   };
 
-  if (!company) {
-    return (
-      <div className="flex h-full items-center justify-center text-[13px] text-[var(--color-fg-muted)]">
-        サイドバーから会社を選択してください
-      </div>
-    );
-  }
+  // 会社レス運用: 会社を選ばなくても、必要書類の受付に原本をドロップすれば作成できる
 
   const selectedJirei = jireiList.find((j) => j.id === selectedId);
 
@@ -372,6 +365,11 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
             何が起きたかを選ぶと、必要書類が自動で組み上がります
           </p>
+          {!company && (
+            <p className="mt-1 text-[11px] text-[var(--color-fg-muted)]">
+              会社未選択でも使えます（必要書類の受付に原本をドロップしてください）
+            </p>
+          )}
         </div>
 
         {/* 事由ボタン */}

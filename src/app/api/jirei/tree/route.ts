@@ -53,7 +53,11 @@ async function xlsxHoles(buf: Buffer): Promise<string[]> {
 
 // 穴ラベル → 出所ノード
 function holeNode(jirei: Jirei, doc: JireiDocument, hole: string): TreeNode {
-  const LIST_FIELDS = new Set(["氏名", "住所", "株式数", "議決権数", "議決権数全角", "議決権割合", "種別", "代表者名", "役職", "就任日"]);
+  const LIST_FIELDS = new Set([
+    "氏名", "住所", "株式数", "議決権数", "議決権数全角", "議決権割合", "種別", "代表者名",
+    "主たる事務所", "名称", "無限責任組合員", "組合員", "代表取締役",
+    "役職", "就任日",
+  ]);
   // placeholders / rowSlots の対応表（空白無視）で引く
   let mapped: string | undefined;
   for (const [ph, label] of Object.entries({ ...(doc.placeholders || {}), ...(doc.rowSlots || {}) })) {
