@@ -23,25 +23,19 @@ import path from "path";
 import type { StructuredProfile } from "@/types";
 
 const TEMPLATE_DIR = path.join(process.cwd(), "data", "jirei-templates");
-const CORPORATE_REPS_PATH = path.join(process.cwd(), "data", "jirei", "corporate-reps.json");
-const SPECIAL_PARTIES_PATH = path.join(process.cwd(), "data", "jirei", "special-parties.json");
+const PARTIES_PATH = path.join(process.cwd(), "data", "parties.json");
 
-// 法人株主の代表者名（統一ルール⑦⑧の事務所知識）。名簿に載らないのでデータで補完する。
-async function loadCorporateReps(): Promise<Record<string, string>> {
+// 当事者マスタ: 案件をまたいで登場する人・組織の属性（名称 → 任意の属性キー→値）。
+// 一覧（株主・役員・将来は従業員等）の要素を、名称一致で属性補完する汎用の仕組み。
+// 登記専用の概念ではない。個別ルール用のファイルを増やさず、知識は全部ここに足す。
+async function loadParties(): Promise<Record<string, Record<string, string>>> {
   try {
-    const raw = await fs.readFile(CORPORATE_REPS_PATH, "utf-8");
-    return JSON.parse(raw.replace(/^﻿/, ""));
-  } catch {
-    return {};
-  }
-}
-
-// 組合等の特殊同意欄（統一ルール④）。名称 → 同意欄の各行（主たる事務所/名称/無限責任組合員/組合員/代表取締役）。
-async function loadSpecialParties(): Promise<Record<string, Record<string, string>>> {
-  try {
-    const raw = await fs.readFile(SPECIAL_PARTIES_PATH, "utf-8");
+    const raw = await fs.readFile(PARTIES_PATH, "utf-8");
     const data = JSON.parse(raw.replace(/^﻿/, ""));
     delete data._comment;
+    for (const v of Object.values(data)) {
+      if (v && typeof v === "object") delete (v as Record<string, string>)._出典;
+    }
     return data;
   } catch {
     return {};
@@ -189,20 +183,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 株主一覧に事務所知識を補完:
-    //   代表者名（統一ルール⑦⑧）+ 組合の特殊同意欄の各行（統一ルール④）
-    const corporateReps = await loadCorporateReps();
-    const specialParties = await loadSpecialParties();
+    // 一覧の要素を当事者マスタで補完する（汎用）。
+    // 名称が一致する当事者の属性（代表者名・組合の構成・種別の上書き等）をマージする。
+    // どの一覧（株主・役員・将来は従業員等）にも同じ仕組みが効く。
+    const parties = await loadParties();
     const getList = (key: string) =>
-      factList(structured as Partial<StructuredProfile>, key).map((item) =>
-        key === "株主"
-          ? {
-              ...item,
-              代表者名: corporateReps[item.氏名] || "",
-              ...(specialParties[item.氏名] || {}),
-            }
-          : item
-      );
+      factList(structured as Partial<StructuredProfile>, key).map((item) => ({
+        ...item,
+        ...(parties[item.氏名] || {}),
+      }));
 
     const documents = produceJireiDocuments({
       documents: docsToMake,
