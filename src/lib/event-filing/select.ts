@@ -126,6 +126,33 @@ export function pendingQuestions(
   );
 }
 
+// いま有効な質問すべて（回答済みも含む）。UI の表示用。
+//   pendingQuestions は「未回答だけ」なので、回答した瞬間に画面から消えてしまう。
+//   判断（choice）は答えた後も見え続け、選び直せる必要がある — そのための表示集合。
+//   生成のゲートは従来どおり pendingQuestions（未回答ゼロ）で判定する。
+export function activeQuestions(
+  jirei: Jirei,
+  answers: Record<string, string>
+): JireiQuestion[] {
+  const needed = new Set<string>();
+  for (const [, binding] of activeSlots(jirei, answers)) {
+    if (binding.type === "answer") needed.add(binding.questionId);
+  }
+  for (const d of jirei.documents) {
+    if (d.when) needed.add(d.when.questionId);
+  }
+  for (const q of jirei.questions) {
+    if (q.when) needed.add(q.when.questionId);
+  }
+  for (const binding of allBindings(jirei)) {
+    if (binding.when) needed.add(binding.when.questionId);
+  }
+  for (const g of jirei.guards || []) {
+    if (g.when) needed.add(g.when.questionId);
+  }
+  return jirei.questions.filter((q) => needed.has(q.id) && condOk(q.when, answers));
+}
+
 // 各穴 -> 値。既存の穴埋めエンジンに渡す fill map。
 //   filled     : 解決できた穴 (ラベル -> 値)
 //   unresolved : 値が決まらなかった穴のラベル（呼び出し側で警告 / 空扱い）

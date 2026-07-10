@@ -51,6 +51,11 @@ export async function POST(request: NextRequest) {
     const companyId: string | undefined = body.companyId;
     const jireiId: string | undefined = body.jireiId;
     const documents: { fileName: string; base64: string }[] = body.documents || [];
+    // 依頼内容（案件連絡: メール・電話メモ）。あれば「事由レベルの当否」も観点に加える。
+    // 誤分類は下流の書類が綺麗に出てしまい原本突合せでは捕まらないため、ここが最後の網。
+    const intent: { name: string; base64: string }[] = (body.intent || []).filter(
+      (s: { name?: string; base64?: string }) => s?.name && s?.base64
+    );
     if (!jireiId) return NextResponse.json({ error: "jireiId は必須です" }, { status: 400 });
     if (documents.length === 0) return NextResponse.json({ error: "documents は必須です" }, { status: 400 });
 
@@ -101,6 +106,18 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // 依頼内容（あれば）— 生成一式が「頼まれたこと」と合っているかの照合材料
+    if (intent.length > 0) {
+      blocks.push({ type: "text", text: "■ 依頼内容（この案件で何を頼まれたか。メール・電話メモ）" });
+      for (const s of intent) {
+        const buf = Buffer.from(s.base64, "base64");
+        const parsed = await parseBuffer(buf, s.name, s.name, mimeFromExtension(path.extname(s.name)));
+        if (parsed?.content) {
+          blocks.push({ type: "text", text: `【依頼: ${s.name}】\n${parsed.content}` });
+        }
+      }
+    }
+
     blocks.push({ type: "text", text: "■ 生成された書類（チェック対象）" });
     for (const d of documents) {
       const buf = Buffer.from(d.base64, "base64");
@@ -127,7 +144,8 @@ export async function POST(request: NextRequest) {
 - 原本との不一致: 会社名・本店・氏名・住所・株式数・議決権数・目的の文言が原本と一字一句合っているか
 - 書類間の不整合: 同じ値（日付・氏名・数値）が書類によって食い違っていないか
 - 日付の前後関係: 決定日 ≦ 提案日 ≦ 同意日 ≦ みなし決議日 ≦ 申請日 のような順序が破綻していないか
-- 明らかな置換漏れ: 【…】やテンプレの文言がそのまま残っていないか
+- 明らかな置換漏れ: 【…】やテンプレの文言がそのまま残っていないか${intent.length > 0 ? `
+- 依頼内容との整合（事由の当否）: 生成一式が依頼内容と合っているか。頼まれた変更が漏れていないか・依頼に無い変更が入っていないか・人物や役職の取り違えがないか` : ""}
 
 【指摘しないこと】
 - 文体・体裁の好み

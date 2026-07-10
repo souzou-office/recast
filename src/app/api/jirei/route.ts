@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { listJirei, loadJirei } from "@/lib/jirei/loader";
 import { profileToFacts, factList } from "@/lib/event-filing/facts";
-import { pendingQuestions, buildFillMap, requiredDocuments, activeSlots, activeGuards } from "@/lib/event-filing/select";
+import { pendingQuestions, activeQuestions, buildFillMap, requiredDocuments, activeSlots, activeGuards } from "@/lib/event-filing/select";
 import { produceJireiDocuments } from "@/lib/event-filing/produce";
 import {
   findSourceFiles,
@@ -80,12 +80,16 @@ export async function POST(request: NextRequest) {
     let sourceMeta: { files: string[]; cached: boolean } | null = null;
 
     if (jirei.requiredSources && jirei.requiredSources.length > 0) {
-      // クライアントからドロップされた原本（base64）
-      const dropped: SourceFileInput[] = (body.sources || [])
+      // クライアントからドロップされた原本（base64）。
+      // kind = /api/jirei/suggest の中身ベース分類（あれば充当の正）。
+      // 客由来のファイル名（scan001.pdf 等）は名前パターンが効かないため、
+      // kind 付きは kind でのみ照合し、kind 無し（従来経路）だけ名前パターンで照合する。
+      const dropped: (SourceFileInput & { kind?: string })[] = (body.sources || [])
         .filter((s: { name?: string; base64?: string }) => s?.name && s?.base64)
-        .map((s: { name: string; base64: string }) => ({
+        .map((s: { name: string; base64: string; kind?: string }) => ({
           name: s.name,
           buffer: Buffer.from(s.base64, "base64"),
+          kind: typeof s.kind === "string" && s.kind ? s.kind : undefined,
         }));
 
       // 共通フォルダから自動発見（会社未選択ならスキップ = ドロップのみ）
@@ -95,7 +99,8 @@ export async function POST(request: NextRequest) {
 
       // 原本の受付状況（種類ごと）。ドロップが自動発見より優先（取り寄せ直した最新を使う意図）
       const droppedFor = (src: (typeof jirei.requiredSources)[number]) =>
-        dropped.find((d) => src.patterns.some((p) => d.name.includes(p)));
+        dropped.find((d) => d.kind === src.key) ??
+        dropped.find((d) => !d.kind && src.patterns.some((p) => d.name.includes(p)));
       const status = jirei.requiredSources.map((src) => {
         const drop = droppedFor(src);
         if (drop) return { label: src.label, optional: !!src.optional, kind: "dropped" as const, name: drop.name };
@@ -116,12 +121,22 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // 読み取り対象を確定（ドロップ優先。ドロップでカバーされた種類の自動発見分は使わない）
-      const files: SourceFileInput[] = [...dropped];
-      for (const f of found) {
-        if (droppedFor(f.source)) continue;
-        if (files.some((x) => x.name === f.name)) continue;
-        files.push({ name: f.name, buffer: await fs.readFile(f.path) });
+      // 読み取り対象を確定（ドロップ優先。ドロップでカバーされた種類の自動発見分は使わない）。
+      // ★requiredSources に充当された資料だけを fact 抽出に渡す★ — インボックスの雑多な資料
+      // （メール・メモ・見積り等）を混ぜると、案件連絡の記載が原本由来の顔をする上、
+      // キャッシュキーが揺れて「同じ原本なら2回目以降 AI ゼロ」が死ぬため。
+      const files: SourceFileInput[] = [];
+      const pushUnique = (f: SourceFileInput) => {
+        if (!files.some((x) => x.name === f.name)) files.push(f);
+      };
+      for (const src of jirei.requiredSources) {
+        const drop = droppedFor(src);
+        if (drop) {
+          pushUnique({ name: drop.name, buffer: drop.buffer });
+          continue;
+        }
+        const hit = found.find((f) => f.source.key === src.key);
+        if (hit) pushUnique({ name: hit.name, buffer: await fs.readFile(hit.path) });
       }
 
       const extracted = await extractFactsFromSources(files);
@@ -158,10 +173,13 @@ export async function POST(request: NextRequest) {
     const guards = activeGuards(jirei, answers);
     const pending = pendingQuestions(jirei, answers);
     if (pending.length > 0) {
+      // questions = いま有効な質問すべて（回答済み含む）。
+      // 判断（choice）は答えた後も表示され続け、選び直すと従属質問が波状に入れ替わる。
+      // 生成に進むかのゲートは pending（未回答）がゼロかどうか。
       return NextResponse.json({
         phase: "questions",
         jireiName: jirei.name,
-        questions: pending,
+        questions: activeQuestions(jirei, answers),
         autoFilled,
         evidenceByLabel,
         sourceMeta,

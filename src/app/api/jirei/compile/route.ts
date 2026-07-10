@@ -73,7 +73,11 @@ const COMPILE_TOOL: Anthropic.Tool = {
         properties: {
           id: { type: "string", description: "kebab-case の事由ID (例: daihyo-henkou)" },
           name: { type: "string", description: "事由名 (例: 代表取締役の変更)" },
-          description: { type: "string" },
+          description: {
+            type: "string",
+            description:
+              "事由の説明。★この事由の前提（会社形態・決議方式等）と、当たる依頼の言い回し（例:「取締役を増やしたい」）を必ず含める★（資料からの事由推定の手がかりになる）",
+          },
           requiredSources: {
             type: "array",
             description: "この事由の fact を読むのに必要な原本。通常は 登記情報・定款・株主名簿",
@@ -288,6 +292,9 @@ ${FACT_KEYS}
   最初の choice 質問として顕在化させること★。一式が属する方式の書類・質問・スロットに when を付け、
   雛形が無い方の枝には guards（{ when, message } の配列。jirei 直下）で
   「〜用の雛形が未登録」と明示する。前提を無言で質問に焼き込んではならない
+- description には (a) この事由の前提（会社形態・決議方式等）と (b) 当たる依頼の言い回し
+  （例:「取締役を増やしたい」「役員を追加したい」）を含めること。資料先行フローの
+  事由推定（案件資料→どの事由か）は description を手がかりに分類する
 - 委任状の代理人（事務所の住所・氏名）は固定文なので触らない
 - 日付は questions で聞く（例示形式「令和8年6月20日」を label に入れる）
 - questions の id は snake_case、jirei.id は kebab-case

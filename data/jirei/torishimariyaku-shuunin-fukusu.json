@@ -1,7 +1,7 @@
 {
   "id": "torishimariyaku-shuunin-fukusu",
   "name": "取締役就任",
-  "description": "取締役が1名の株式会社において、書面決議（会社法319条1項）により複数名の取締役・代表取締役を選任する登記。提案書兼同意書は株主ごとに1枚生成される（個人用・法人用を種別で出し分け）。",
+  "description": "取締役が1名の株式会社において、書面決議（会社法319条1項）により複数名の取締役・代表取締役を選任する登記。提案書兼同意書は株主ごとに1枚生成される（個人用・法人用を種別で出し分け）。 当たる依頼の言い回し: 「取締役を増やしたい」「役員を追加したい」「新しく取締役に入れたい」「◯◯さんを取締役にしたい」（新任者の選任。代表取締役の選定を含む場合もこちら）",
   "requiredSources": [
     {
       "key": "touki",
@@ -33,31 +33,54 @@
       "id": "kessai_hoho",
       "label": "株主総会の決議方法は？",
       "kind": "choice",
-      "choices": ["書面決議（株主全員の同意・会社法319条1項）", "株主総会を開催"]
+      "choices": [
+        "書面決議（株主全員の同意・会社法319条1項）",
+        "株主総会を開催"
+      ]
     },
     {
       "id": "kettei_date",
       "label": "取締役決定書の決定日は？（例: 令和8年2月11日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     {
       "id": "teian_date",
       "label": "株主への提案書の発送日は？（例: 令和8年2月11日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     {
       "id": "doui_date",
       "label": "同意欄の日付は？（例: 令和8年2月15日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     {
       "id": "minashi_date",
       "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年2月16日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     {
       "id": "shunin_date",
@@ -92,7 +115,12 @@
   ],
   "guards": [
     {
-      "when": { "questionId": "kessai_hoho", "anyOf": ["株主総会を開催"] },
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "株主総会を開催"
+        ]
+      },
       "message": "実開催（株主総会を開く）用の議事録・招集関係の雛形が未登録です。登録済みの一式は書面決議用のみ。このまま生成すると方式に依らない書類（就任承諾書・株主リスト・委任状）だけが出ます"
     }
   ],
@@ -100,12 +128,22 @@
     {
       "templateFile": "取締役決定書_取締役就任.docx",
       "kind": "docx",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     {
       "templateFile": "提案書兼同意書_個人_取締役就任.docx",
       "kind": "docx",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] },
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      },
       "repeatOverFactList": "株主",
       "itemFilter": {
         "field": "種別",
@@ -122,7 +160,12 @@
     {
       "templateFile": "提案書兼同意書_法人_取締役就任.docx",
       "kind": "docx",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] },
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      },
       "repeatOverFactList": "株主",
       "itemFilter": {
         "field": "種別",
@@ -140,7 +183,12 @@
     {
       "templateFile": "提案書兼同意書_組合_取締役就任.docx",
       "kind": "docx",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] },
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      },
       "repeatOverFactList": "株主",
       "itemFilter": {
         "field": "種別",
@@ -160,7 +208,12 @@
     {
       "templateFile": "株主総会議事録_取締役就任.docx",
       "kind": "docx",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     {
       "templateFile": "株主リスト.xlsx",
@@ -179,7 +232,10 @@
       "kind": "docx",
       "repeatOverAnswerList": {
         "questionId": "new_directors",
-        "fields": ["氏名", "住所"]
+        "fields": [
+          "氏名",
+          "住所"
+        ]
       },
       "placeholders": {
         "役員氏名": "氏名",
@@ -235,22 +291,42 @@
     "決定日": {
       "type": "answer",
       "questionId": "kettei_date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     "提案日": {
       "type": "answer",
       "questionId": "teian_date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     "同意日": {
       "type": "answer",
       "questionId": "doui_date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     "みなし決議日": {
       "type": "answer",
       "questionId": "minashi_date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     },
     "就任日": {
       "type": "answer",
@@ -280,7 +356,12 @@
     "申請日": {
       "type": "answer",
       "questionId": "minashi_date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     }
   }
 }

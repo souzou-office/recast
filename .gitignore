@@ -37,3 +37,6 @@ next-env.d.ts
 dev.*
 
 data/fact-cache/
+
+data/suggest-cache/
+data/jirei-inbox/

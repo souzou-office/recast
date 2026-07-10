@@ -1,14 +1,37 @@
 {
   "id": "tori-jinin",
   "name": "取締役の辞任",
-  "description": "取締役の辞任の登記。実物テンプレ（辞任届・登記委任状）に基づく。総会決議は不要。",
+  "description": "取締役の辞任の登記。実物テンプレ（辞任届・登記委任状）に基づく。総会決議は不要。 当たる依頼の言い回し: 「取締役を辞めたい」「◯◯が辞任する」「役員を減らしたい」（辞任のみ。後任の選任を伴う場合は他の事由と併せて検討）",
   "requiredSources": [
-    { "key": "touki", "label": "登記情報（履歴事項全部証明書）", "patterns": ["履歴", "現在事項", "登記情報", "登記簿"] },
-    { "key": "teikan", "label": "定款", "patterns": ["定款"], "optional": true }
+    {
+      "key": "touki",
+      "label": "登記情報（履歴事項全部証明書）",
+      "patterns": [
+        "履歴",
+        "現在事項",
+        "登記情報",
+        "登記簿"
+      ]
+    },
+    {
+      "key": "teikan",
+      "label": "定款",
+      "patterns": [
+        "定款"
+      ],
+      "optional": true
+    }
   ],
   "questions": [
-    { "id": "target_name", "label": "辞任する取締役の氏名は？" },
-    { "id": "resign_date", "label": "辞任日は？（例: 令和8年6月20日）", "kind": "date" }
+    {
+      "id": "target_name",
+      "label": "辞任する取締役の氏名は？"
+    },
+    {
+      "id": "resign_date",
+      "label": "辞任日は？（例: 令和8年6月20日）",
+      "kind": "date"
+    }
   ],
   "documents": [
     {
@@ -32,11 +55,29 @@
     }
   ],
   "slots": {
-    "会社名": { "type": "fact", "key": "会社名" },
-    "本店所在地": { "type": "fact", "key": "本店所在地" },
-    "代表取締役氏名": { "type": "fact", "key": "代表取締役氏名" },
-    "対象取締役氏名": { "type": "answer", "questionId": "target_name" },
-    "辞任日": { "type": "answer", "questionId": "resign_date" },
-    "申請日": { "type": "answer", "questionId": "resign_date" }
+    "会社名": {
+      "type": "fact",
+      "key": "会社名"
+    },
+    "本店所在地": {
+      "type": "fact",
+      "key": "本店所在地"
+    },
+    "代表取締役氏名": {
+      "type": "fact",
+      "key": "代表取締役氏名"
+    },
+    "対象取締役氏名": {
+      "type": "answer",
+      "questionId": "target_name"
+    },
+    "辞任日": {
+      "type": "answer",
+      "questionId": "resign_date"
+    },
+    "申請日": {
+      "type": "answer",
+      "questionId": "resign_date"
+    }
   }
 }
