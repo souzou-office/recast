@@ -362,6 +362,16 @@
           "書面決議（株主全員の同意・会社法319条1項）"
         ]
       }
+    },
+    "証明日付": {
+      "type": "answer",
+      "questionId": "minashi_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
     }
   }
 }

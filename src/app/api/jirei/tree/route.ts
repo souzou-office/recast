@@ -77,6 +77,16 @@ function holeNode(jirei: Jirei, doc: JireiDocument, hole: string): TreeNode {
       detail: `${doc.repeatOverFactList}ごと: ${target}`,
     };
   }
+  // 回答から作る一覧のフィールド（新任者ごと等: repeatOverAnswerList）
+  if (doc.repeatOverAnswerList && doc.repeatOverAnswerList.fields.includes(target)) {
+    const q = jirei.questions.find((x) => x.id === doc.repeatOverAnswerList!.questionId);
+    return {
+      label: hole,
+      kind: "hole",
+      source: "list",
+      detail: `回答の1行ごと: ${target}（${q?.label || doc.repeatOverAnswerList.questionId}）`,
+    };
+  }
   // スロット（空白無視で照合）。配列 = 分岐で出所が変わる穴（表示は先頭 + 注記）
   const slotEntry = Object.entries(jirei.slots).find(([k]) => norm(k) === norm(target));
   if (slotEntry) {
@@ -101,7 +111,11 @@ async function docNode(jirei: Jirei, doc: JireiDocument): Promise<TreeNode> {
     const buf = await fs.readFile(path.join(TEMPLATE_DIR, doc.templateFile));
     if (doc.kind === "docx") {
       const { brackets, yellow } = scanTemplateHoles(buf);
-      holes = [...brackets, ...yellow];
+      // 黄色マーカーのランに【…】が含まれるものは、ブラケット走査側で既に穴として
+      // 把握済み（同じ穴の二重報告 = 偽の「出所なし」になる）ので除外する。
+      const bset = new Set(brackets.map(norm));
+      const yellowOnly = yellow.filter((y) => !/【[^】]*】/.test(y) && !bset.has(norm(y)));
+      holes = [...brackets, ...yellowOnly];
     } else {
       holes = await xlsxHoles(buf);
       // 黄色データ行（株主ごとの列）は rowSlots のキーで表す
@@ -129,6 +143,13 @@ export async function GET(request: NextRequest) {
   if (!id) return NextResponse.json({ error: "id は必須です" }, { status: 400 });
   const jirei = await loadJirei(id);
   if (!jirei) return NextResponse.json({ error: "事由が見つかりません" }, { status: 404 });
+
+  // 聞くことの一覧（レビュー用の概観。分岐条件付きの質問は「いつ聞かれるか」を添える）
+  const questions = jirei.questions.map((q) => ({
+    label: q.label,
+    kind: q.kind || "text",
+    when: q.when ? `「${q.when.anyOf.join("・")}」のとき` : undefined,
+  }));
 
   // 分岐を決める choice 質問（documents の when が参照しているもの）
   const branchQ = jirei.questions.find(
@@ -158,5 +179,5 @@ export async function GET(request: NextRequest) {
     for (const d of jirei.documents) root.children!.push(await docNode(jirei, d));
   }
 
-  return NextResponse.json({ tree: root });
+  return NextResponse.json({ tree: root, questions, description: jirei.description || "" });
 }
