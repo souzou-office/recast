@@ -732,16 +732,26 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                 : `${suggestResult.candidates.length}つの事由が考えられます — 確認して選んでください`}
             </div>
             {suggestResult.candidates.map((c) => (
-              <button
+              <div
                 key={c.jireiId}
                 onClick={() => setPickedCandidate(c.jireiId)}
-                className={`w-full rounded-xl border p-3 text-left transition-colors ${
+                className={`relative w-full cursor-pointer rounded-xl border p-3 text-left transition-colors ${
                   pickedCandidate === c.jireiId
                     ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
                     : "border-[var(--color-border)] hover:border-[var(--color-accent)]"
                 }`}
               >
-                <div className="flex items-center gap-2">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTreeViewId(c.jireiId);
+                  }}
+                  title="木を見る（何を聞いて何が出るか）"
+                  className="absolute right-2 top-2 rounded-lg p-1 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-accent-fg)]"
+                >
+                  <Icon name="Network" size={13} />
+                </button>
+                <div className="flex items-center gap-2 pr-6">
                   <span
                     className={`h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
                       pickedCandidate === c.jireiId
@@ -795,7 +805,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                     );
                   })}
                 </div>
-              </button>
+              </div>
             ))}
             {/* 会社の紐付け提案（確定は人） */}
             {suggestResult.companyMatch && !company && (
@@ -914,8 +924,15 @@ export default function JireiPanel({ company }: { company: Company | null }) {
             <span className="text-[13px] font-semibold">{selectedJirei?.name || selectedId}</span>
             <span className="ml-1 text-[11px] text-[var(--color-fg-muted)]">資料{inbox.length}点</span>
             <button
+              onClick={() => setTreeViewId(selectedId)}
+              title="木を見る（何を聞いて何が出るか）"
+              className="ml-auto rounded-lg p-1.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-accent-fg)]"
+            >
+              <Icon name="Network" size={14} />
+            </button>
+            <button
               onClick={resetCase}
-              className="ml-auto rounded-lg px-2 py-1 text-[11px] text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
+              className="rounded-lg px-2 py-1 text-[11px] text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
             >
               事由を選び直す
             </button>
