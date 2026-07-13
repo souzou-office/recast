@@ -11,13 +11,18 @@
 //     → 各書類の穴(slots) を facts / answers から埋める
 //   穴埋め自体は既存エンジン(docx/xlsx marker parser)を再利用。木はその「前段の判断」。
 
-// 条件（分岐）。「この質問の回答が anyOf のいずれかのとき有効」。
-// 例: 役員変更で { questionId: "kind", anyOf: ["取締役の就任"] } → 就任のときだけ。
-// questions / documents / slots のどれにでも付けられる。付いていなければ常に有効。
-export interface JireiCondition {
-  questionId: string;
-  anyOf: string[];
-}
+// 条件（分岐）。questions / documents / slots / guards のどれにでも付けられる。
+// 付いていなければ常に有効。
+//
+// 基本形: { questionId, anyOf } —「この質問の回答が anyOf のいずれかのとき有効」。
+// 組合せ: { all: [...] } すべて満たす（かつ） / { any: [...] } どれか満たす（または）。
+//   例: 株主リストは「定款変更が必要 または 総会で決めると選んだ」→ any
+//       議事録(書面決議)は「総会あり かつ 書面決議」→ 質問の連鎖で書けるなら all は不要
+// 語彙はこの2つだけに固定する（増やすと専門家が木を読めなくなる）。
+export type JireiCondition =
+  | { questionId: string; anyOf: string[] }
+  | { all: JireiCondition[] }
+  | { any: JireiCondition[] };
 
 // 穴(スロット)に入れる値の出所
 export type SlotBinding = (

@@ -21,6 +21,7 @@ interface TreeNode {
   source?: "fact" | "answer" | "const" | "list" | "unknown";
   detail?: string;
   badge?: string;
+  cond?: string; // 出る条件（主分岐レーンで表しきれない分。日本語）
   children?: TreeNode[];
 }
 
@@ -86,6 +87,11 @@ function DocCard({ doc, expandAll }: { doc: TreeNode; expandAll: boolean }) {
         <span className="mt-1 inline-block rounded-full bg-[var(--color-accent)] px-2 py-0.5 text-[10px] text-white">
           {doc.badge}
         </span>
+      )}
+      {doc.cond && (
+        <p className="mt-1 rounded-md border border-purple-200 bg-purple-50 px-2 py-1 text-[10.5px] leading-snug text-purple-900">
+          出る条件: {doc.cond}
+        </p>
       )}
       {groups.length === 0 && (
         <p className="mt-1 text-[11px] text-[var(--color-fg-muted)]">穴なし（固定文のみ or テンプレ未配置）</p>

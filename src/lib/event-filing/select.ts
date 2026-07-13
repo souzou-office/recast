@@ -15,13 +15,24 @@
 import type { Jirei, JireiCondition, JireiDocument, JireiQuestion, SlotBinding } from "@/types/jirei";
 
 // when 条件の評価。when が無ければ常に有効。
+// all = すべて満たす（かつ）/ any = どれか満たす（または）/ 基本形 = 回答の等値。
 export function condOk(
   when: JireiCondition | undefined,
   answers: Record<string, string>
 ): boolean {
   if (!when) return true;
+  if ("all" in when) return when.all.every((c) => condOk(c, answers));
+  if ("any" in when) return when.any.some((c) => condOk(c, answers));
   const v = (answers[when.questionId] || "").trim();
   return v !== "" && when.anyOf.includes(v);
+}
+
+// when 条件が参照している questionId をすべて集める（分岐を決める質問 = 先に聞く対象）。
+export function condQuestionIds(when: JireiCondition | undefined): string[] {
+  if (!when) return [];
+  if ("all" in when) return when.all.flatMap(condQuestionIds);
+  if ("any" in when) return when.any.flatMap(condQuestionIds);
+  return [when.questionId];
 }
 
 export function requiredDocuments(
@@ -107,16 +118,16 @@ export function pendingQuestions(
   }
   // ② 分岐を決める質問（何かの when に出てくる questionId は答えが要る）
   for (const d of jirei.documents) {
-    if (d.when) needed.add(d.when.questionId);
+    for (const qid of condQuestionIds(d.when)) needed.add(qid);
   }
   for (const q of jirei.questions) {
-    if (q.when) needed.add(q.when.questionId);
+    for (const qid of condQuestionIds(q.when)) needed.add(qid);
   }
   for (const binding of allBindings(jirei)) {
-    if (binding.when) needed.add(binding.when.questionId);
+    for (const qid of condQuestionIds(binding.when)) needed.add(qid);
   }
   for (const g of jirei.guards || []) {
-    if (g.when) needed.add(g.when.questionId);
+    for (const qid of condQuestionIds(g.when)) needed.add(qid);
   }
   return jirei.questions.filter(
     (q) =>
@@ -139,16 +150,16 @@ export function activeQuestions(
     if (binding.type === "answer") needed.add(binding.questionId);
   }
   for (const d of jirei.documents) {
-    if (d.when) needed.add(d.when.questionId);
+    for (const qid of condQuestionIds(d.when)) needed.add(qid);
   }
   for (const q of jirei.questions) {
-    if (q.when) needed.add(q.when.questionId);
+    for (const qid of condQuestionIds(q.when)) needed.add(qid);
   }
   for (const binding of allBindings(jirei)) {
-    if (binding.when) needed.add(binding.when.questionId);
+    for (const qid of condQuestionIds(binding.when)) needed.add(qid);
   }
   for (const g of jirei.guards || []) {
-    if (g.when) needed.add(g.when.questionId);
+    for (const qid of condQuestionIds(g.when)) needed.add(qid);
   }
   return jirei.questions.filter((q) => needed.has(q.id) && condOk(q.when, answers));
 }

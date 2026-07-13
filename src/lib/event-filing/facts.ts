@@ -71,13 +71,14 @@ export function profileToFacts(
   }
   if (typeof extra["公告方法"] === "string") facts["公告方法"] = extra["公告方法"] as string;
 
-  // 代表取締役の氏名を役員から導出（役職に「代表取締役」を含む先頭）
-  const officers = pickArray<{ 役職?: string; 氏名?: string }>(
+  // 代表取締役の氏名・住所を役員から導出（役職に「代表取締役」を含む先頭。住所は登記事項）
+  const officers = pickArray<{ 役職?: string; 氏名?: string; 住所?: string }>(
     p as Record<string, unknown>,
     "役員"
   );
   const rep = officers.find((o) => (o.役職 || "").includes("代表取締役"));
   if (rep?.氏名) facts["代表取締役氏名"] = rep.氏名;
+  if (rep?.住所) facts["代表取締役住所"] = rep.住所;
 
   // 取締役の数（代表取締役を含む・監査役は含まない）。
   // v1 前提: 取締役決定書は「全員一致」= 出席取締役数も同数（書面決議の典型）。

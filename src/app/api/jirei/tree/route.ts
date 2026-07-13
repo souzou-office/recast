@@ -13,7 +13,8 @@ import { promises as fs } from "fs";
 import path from "path";
 import { loadJirei } from "@/lib/jirei/loader";
 import { scanTemplateHoles } from "@/lib/event-filing/template-ops";
-import type { Jirei, JireiDocument } from "@/types/jirei";
+import { condQuestionIds } from "@/lib/event-filing/select";
+import type { Jirei, JireiCondition, JireiDocument } from "@/types/jirei";
 import PizZip from "pizzip";
 
 const TEMPLATE_DIR = path.join(process.cwd(), "data", "jirei-templates");
@@ -24,7 +25,24 @@ export interface TreeNode {
   source?: "fact" | "answer" | "const" | "list" | "unknown";
   detail?: string; // 出所の説明（「資料: 会社名」「質問: 開催日は？」等）
   badge?: string;  // 「株主ごとに1枚」等
+  cond?: string;   // 出る条件の日本語表記（主分岐レーンで表しきれない条件）
   children?: TreeNode[];
+}
+
+// 条件の日本語化（all=かつ / any=または / 基本形=回答の値）
+function humanizeCond(when: JireiCondition | undefined): string {
+  if (!when) return "";
+  if ("all" in when) return when.all.map(humanizeCond).join(" かつ ");
+  if ("any" in when) return `（${when.any.map(humanizeCond).join(" または ")}）`;
+  return `「${when.anyOf.join("・")}」のとき`;
+}
+
+// when の中に「qid の回答が choice を含む」原子条件があるか（レーン割当て用）
+function refersChoice(when: JireiCondition | undefined, qid: string, choice: string): boolean {
+  if (!when) return false;
+  if ("all" in when) return when.all.some((c) => refersChoice(c, qid, choice));
+  if ("any" in when) return when.any.some((c) => refersChoice(c, qid, choice));
+  return when.questionId === qid && when.anyOf.includes(choice);
 }
 
 const norm = (s: string) => s.replace(/[\s　]/g, "");
@@ -148,35 +166,55 @@ export async function GET(request: NextRequest) {
   const questions = jirei.questions.map((q) => ({
     label: q.label,
     kind: q.kind || "text",
-    when: q.when ? `「${q.when.anyOf.join("・")}」のとき` : undefined,
+    when: q.when ? humanizeCond(q.when) : undefined,
   }));
 
-  // 分岐を決める choice 質問（documents の when が参照しているもの）
-  const branchQ = jirei.questions.find(
-    (q) => q.kind === "choice" && jirei.documents.some((d) => d.when?.questionId === q.id)
-  );
+  // 主分岐 = documents の when が最も多く参照する choice 質問。
+  // その選択肢でレーンを分け、主分岐以外の条件は書類カードの cond（日本語）で示す。
+  // 多次元の分岐（定款変更 × 決定機関 × 方式 × 管轄）でもレーンが破綻しない表現。
+  const refCount = new Map<string, number>();
+  for (const d of jirei.documents) {
+    for (const qid of condQuestionIds(d.when)) refCount.set(qid, (refCount.get(qid) || 0) + 1);
+  }
+  const branchQ = jirei.questions
+    .filter((q) => q.kind === "choice" && (refCount.get(q.id) || 0) > 0)
+    .sort((a, b) => (refCount.get(b.id) || 0) - (refCount.get(a.id) || 0))[0];
 
-  const commonDocs = jirei.documents.filter((d) => !d.when);
   const root: TreeNode = { label: jirei.name, kind: "jirei", children: [] };
 
   if (branchQ && branchQ.choices) {
     const branchNode: TreeNode = { label: branchQ.label, kind: "branch", children: [] };
+    const assigned = new Set<JireiDocument>();
     for (const c of branchQ.choices) {
-      const docs = jirei.documents.filter(
-        (d) => d.when && d.when.questionId === branchQ.id && d.when.anyOf.includes(c)
-      );
+      const docs = jirei.documents.filter((d) => refersChoice(d.when, branchQ.id, c));
       const choiceNode: TreeNode = { label: c, kind: "choice", children: [] };
-      for (const d of docs) choiceNode.children!.push(await docNode(jirei, d));
+      for (const d of docs) {
+        assigned.add(d);
+        const node = await docNode(jirei, d);
+        // 主分岐以外の条件も持つ書類は、その条件をカードに明記
+        const otherQids = condQuestionIds(d.when).filter((x) => x !== branchQ.id);
+        if (otherQids.length > 0) node.cond = humanizeCond(d.when);
+        choiceNode.children!.push(node);
+      }
       branchNode.children!.push(choiceNode);
     }
     root.children!.push(branchNode);
-    if (commonDocs.length > 0) {
-      const commonNode: TreeNode = { label: "共通（どの分岐でも）", kind: "choice", children: [] };
-      for (const d of commonDocs) commonNode.children!.push(await docNode(jirei, d));
+    const rest = jirei.documents.filter((d) => !assigned.has(d));
+    if (rest.length > 0) {
+      const commonNode: TreeNode = { label: "共通・その他の条件", kind: "choice", children: [] };
+      for (const d of rest) {
+        const node = await docNode(jirei, d);
+        if (d.when) node.cond = humanizeCond(d.when);
+        commonNode.children!.push(node);
+      }
       root.children!.push(commonNode);
     }
   } else {
-    for (const d of jirei.documents) root.children!.push(await docNode(jirei, d));
+    for (const d of jirei.documents) {
+      const node = await docNode(jirei, d);
+      if (d.when) node.cond = humanizeCond(d.when);
+      root.children!.push(node);
+    }
   }
 
   return NextResponse.json({ tree: root, questions, description: jirei.description || "" });

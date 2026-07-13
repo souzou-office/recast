@@ -1,42 +1,55 @@
 {
   "id": "honten-iten",
   "name": "本店移転",
-  "description": "株式会社の本店移転登記。書面決議（会社法319条1項）方式。提案書兼同意書は株主ごとに1枚生成される。 当たる依頼の言い回し: 「本店を移転する」「事務所を移す」「住所が変わる」（管轄内の移転）",
+  "description": "株式会社の本店移転登記。定款変更の要否 × 決定機関 × 決議方法（書面決議/実開催）× 管轄（内/外）で分岐する。登録済みの雛形: 書面決議一式（決定書・提案書兼同意書・議事録・株主リスト）＋委任状＋管轄外の印鑑カード交付申請書。 当たる依頼の言い回し: 「本店を移転する」「事務所を移す」「住所が変わる」「オフィスを引っ越す」",
   "requiredSources": [
     {
       "key": "touki",
       "label": "登記情報（履歴事項全部証明書）",
-      "patterns": [
-        "履歴",
-        "現在事項",
-        "登記情報",
-        "登記簿"
-      ]
+      "patterns": ["履歴", "現在事項", "登記情報", "登記簿"]
     },
     {
       "key": "teikan",
       "label": "定款",
-      "patterns": [
-        "定款"
-      ]
+      "patterns": ["定款"]
     },
     {
       "key": "kabunushi",
       "label": "株主名簿",
-      "patterns": [
-        "株主名簿"
-      ]
+      "patterns": ["株主名簿"]
     }
   ],
   "questions": [
     {
+      "id": "teikan_henko",
+      "label": "定款の変更は必要ですか？（定款の本店の定めが市区町村までで、その区画内の移転なら不要。区画の外へ出る、または定款に番地まで書いてあるなら必要）",
+      "kind": "choice",
+      "choices": ["必要（株主総会で定款変更を決議する）", "不要（定款の定める市区町村内の移転）"]
+    },
+    {
+      "id": "kettei_hoho",
+      "label": "移転を誰が決めますか？",
+      "kind": "choice",
+      "choices": ["取締役の決定", "株主総会で決める", "取締役会の決議（設置会社）"],
+      "when": { "questionId": "teikan_henko", "anyOf": ["不要（定款の定める市区町村内の移転）"] }
+    },
+    {
       "id": "kessai_hoho",
       "label": "株主総会の決議方法は？",
       "kind": "choice",
-      "choices": [
-        "書面決議（株主全員の同意・会社法319条1項）",
-        "株主総会を開催"
-      ]
+      "choices": ["書面決議（株主全員の同意・会社法319条1項）", "株主総会を開催"],
+      "when": {
+        "any": [
+          { "questionId": "teikan_henko", "anyOf": ["必要（株主総会で定款変更を決議する）"] },
+          { "questionId": "kettei_hoho", "anyOf": ["株主総会で決める"] }
+        ]
+      }
+    },
+    {
+      "id": "kankatsu",
+      "label": "法務局の管轄は変わりますか？（移転先が同じ法務局の管轄内かどうか）",
+      "kind": "choice",
+      "choices": ["管轄内（同じ法務局）", "管轄外（法務局が変わる）"]
     },
     {
       "id": "new_address",
@@ -52,57 +65,56 @@
       "id": "kettei_date",
       "label": "取締役決定書の決定日は？（例: 令和8年1月15日）",
       "kind": "date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     {
       "id": "teian_date",
       "label": "株主への提案書の発送日は？（例: 令和8年1月16日）",
       "kind": "date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     {
       "id": "doui_date",
       "label": "同意欄の日付は？（例: 令和8年1月23日）",
       "kind": "date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     {
       "id": "minashi_date",
       "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年1月26日）",
       "kind": "date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+    },
+    {
+      "id": "kankatsu_kyoku",
+      "label": "移転先を管轄する法務局名は？（例: 東京法務局）",
+      "kind": "text",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    {
+      "id": "kankatsu_shikyoku",
+      "label": "支局・出張所名は？（例: 港）",
+      "kind": "text",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    {
+      "id": "rep_birth",
+      "label": "代表取締役の生年月日は？（元号／年／月／日 の形で。例: 平成／10／11／13）",
+      "kind": "text",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    {
+      "id": "inkan_ininbi",
+      "label": "印鑑カード交付の委任日は？（令和の 年／月／日 の形で。例: 8／3／3）",
+      "kind": "text",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
     }
   ],
   "documents": [
     {
       "templateFile": "取締役決定書_本店移転.docx",
       "kind": "docx",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     {
       "templateFile": "提案書兼同意書_本店移転.docx",
@@ -113,22 +125,12 @@
         "株主氏名": "氏名",
         "株主議決権数": "議決権数全角"
       },
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     {
       "templateFile": "株主総会議事録_本店移転.docx",
       "kind": "docx",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     {
       "templateFile": "株主リスト.xlsx",
@@ -140,126 +142,144 @@
         "株主株式数": "株式数",
         "株主議決権数": "議決権数",
         "株主議決権割合": "議決権割合"
+      },
+      "when": {
+        "any": [
+          { "questionId": "teikan_henko", "anyOf": ["必要（株主総会で定款変更を決議する）"] },
+          { "questionId": "kettei_hoho", "anyOf": ["株主総会で決める"] }
+        ]
       }
     },
     {
       "templateFile": "委任状_本店移転.docx",
       "kind": "docx"
+    },
+    {
+      "templateFile": "印鑑カード交付申請書_本店移転.docx",
+      "kind": "docx",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    }
+  ],
+  "guards": [
+    {
+      "when": { "questionId": "kessai_hoho", "anyOf": ["株主総会を開催"] },
+      "message": "実開催（株主総会を開く）用の議事録・招集関係の雛形が未登録です。登録済みの一式は書面決議用のみ。このまま生成すると方式に依らない書類だけが出ます"
+    },
+    {
+      "when": { "questionId": "kettei_hoho", "anyOf": ["取締役会の決議（設置会社）"] },
+      "message": "取締役会議事録の雛形が未登録です。取締役会で移転を決める場合の議事録は作れません（委任状のみ出ます）。雛形を登録すればこの枝を実装できます"
+    },
+    {
+      "when": {
+        "all": [
+          { "questionId": "teikan_henko", "anyOf": ["不要（定款の定める市区町村内の移転）"] },
+          { "questionId": "kettei_hoho", "anyOf": ["取締役の決定"] }
+        ]
+      },
+      "message": "移転自体を決める取締役決定書の雛形が未登録です（登録済みの決定書は株主総会への提案用）。このまま生成すると委任状（管轄外なら＋印鑑カード交付申請書）だけが出ます"
     }
   ],
   "slots": {
-    "会社名": {
-      "type": "fact",
-      "key": "会社名"
-    },
-    "本店所在地": {
-      "type": "fact",
-      "key": "本店所在地"
-    },
-    "代表取締役氏名": {
-      "type": "fact",
-      "key": "代表取締役氏名"
-    },
-    "取締役総数": {
-      "type": "fact",
-      "key": "取締役総数（全角）"
-    },
-    "出席取締役数": {
-      "type": "fact",
-      "key": "出席取締役数（全角）"
-    },
-    "議決権株主数": {
-      "type": "fact",
-      "key": "議決権株主数（全角）"
-    },
-    "総議決権数": {
-      "type": "fact",
-      "key": "総議決権数（全角）"
-    },
-    "合計株式数": {
-      "type": "fact",
-      "key": "株主株式数合計"
-    },
-    "合計議決権数": {
-      "type": "fact",
-      "key": "株主議決権数合計"
-    },
-    "合計議決権割合": {
-      "type": "fact",
-      "key": "株主議決権割合合計"
-    },
-    "移転先本店": {
-      "type": "answer",
-      "questionId": "new_address"
-    },
-    "移転年月日": {
-      "type": "answer",
-      "questionId": "iten_date"
-    },
+    "会社名": { "type": "fact", "key": "会社名" },
+    "本店所在地": { "type": "fact", "key": "本店所在地" },
+    "代表取締役氏名": { "type": "fact", "key": "代表取締役氏名" },
+    "取締役総数": { "type": "fact", "key": "取締役総数（全角）" },
+    "出席取締役数": { "type": "fact", "key": "出席取締役数（全角）" },
+    "議決権株主数": { "type": "fact", "key": "議決権株主数（全角）" },
+    "総議決権数": { "type": "fact", "key": "総議決権数（全角）" },
+    "合計株式数": { "type": "fact", "key": "株主株式数合計" },
+    "合計議決権数": { "type": "fact", "key": "株主議決権数合計" },
+    "合計議決権割合": { "type": "fact", "key": "株主議決権割合合計" },
+    "移転先本店": { "type": "answer", "questionId": "new_address" },
+    "移転年月日": { "type": "answer", "questionId": "iten_date" },
+    "申請日": { "type": "answer", "questionId": "iten_date" },
     "決定日": {
       "type": "answer",
       "questionId": "kettei_date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     "提案日": {
       "type": "answer",
       "questionId": "teian_date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     "同意日": {
       "type": "answer",
       "questionId": "doui_date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     "みなし決議日": {
       "type": "answer",
       "questionId": "minashi_date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
-    },
-    "申請日": {
-      "type": "answer",
-      "questionId": "iten_date"
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
     },
     "証明日付": {
       "type": "answer",
       "questionId": "minashi_date",
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "書面決議（株主全員の同意・会社法319条1項）"
-        ]
-      }
-    }
-  },
-  "guards": [
-    {
-      "when": {
-        "questionId": "kessai_hoho",
-        "anyOf": [
-          "株主総会を開催"
-        ]
-      },
-      "message": "実開催（株主総会を開く）用の議事録・招集関係の雛形が未登録です。登録済みの一式は書面決議用のみ。このまま生成すると方式に依らない書類だけが出ます"
-    }
-  ]
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+    },
+    "管轄法務局名": {
+      "type": "answer",
+      "questionId": "kankatsu_kyoku",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "管轄支局名": {
+      "type": "answer",
+      "questionId": "kankatsu_shikyoku",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "会社法人等番号": {
+      "type": "fact",
+      "key": "会社法人等番号",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "代表取締役住所": {
+      "type": "fact",
+      "key": "代表取締役住所",
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "生年元号": {
+      "type": "answer",
+      "questionId": "rep_birth",
+      "lineField": 0,
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "生年": {
+      "type": "answer",
+      "questionId": "rep_birth",
+      "lineField": 1,
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "生月": {
+      "type": "answer",
+      "questionId": "rep_birth",
+      "lineField": 2,
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "生日": {
+      "type": "answer",
+      "questionId": "rep_birth",
+      "lineField": 3,
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "印鑑委任年": {
+      "type": "answer",
+      "questionId": "inkan_ininbi",
+      "lineField": 0,
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "印鑑委任月": {
+      "type": "answer",
+      "questionId": "inkan_ininbi",
+      "lineField": 1,
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "印鑑委任日": {
+      "type": "answer",
+      "questionId": "inkan_ininbi",
+      "lineField": 2,
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+    },
+    "令和": { "type": "const", "value": "令和" }
+  }
 }
