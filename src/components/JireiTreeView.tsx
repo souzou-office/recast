@@ -2,18 +2,17 @@
 
 // 事由の「木」のレビュー画面 + 編集モード（コンソール v2）。
 //
-// 表示: [聞くこと] | [分岐の選択肢ごとの書類レーン] | [共通]（レーン型。v1 の可視化）
-// 編集: 質問の文言・選択肢・分岐条件(when)・ガード・穴の出所を UI で編集し、
-//       data/jirei/<id>.json に保存する（JSON を開かずに木を育てられる）。
+// 編集モードの原則: ★画面はレビュー表示のまま。鉛筆を押した1箇所だけがフォームに開く★
+//   （全項目を一斉にフォーム化すると条件エディタが20個並んで読めなくなる — 実際になった）
 //
+// 表示: [聞くこと] | [分岐の選択肢ごとの書類レーン] | [共通]
+// 編集: 質問の文言・選択肢・分岐条件(when)・ガード・穴の出所を 1つずつ開いて編集 → 保存。
 // ★選択肢の文言を変えたら、それを参照する全 when を自動で追随させる★
-//   （「1字直したら分岐が全崩壊」の時限爆弾を編集 UI が握り潰す）
-// 削除は参照チェック付き（分岐や穴が使っている選択肢・質問は消せない）。
-// 保存はサーバー側でも検証し、旧版は data/jirei/history/ にバックアップされる。
+// 削除は参照チェック付き。保存はサーバー側でも検証、旧版は data/jirei/history/ に退避。
 
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
-import type { Jirei, JireiCondition, JireiDocument, JireiQuestion, SlotBinding } from "@/types/jirei";
+import type { Jirei, JireiCondition, JireiQuestion, SlotBinding } from "@/types/jirei";
 
 interface TreeNode {
   label: string;
@@ -55,7 +54,7 @@ const GROUP_TEXT: Record<SourceKind, string> = {
 const norm = (s: string) => s.replace(/[\s　]/g, "");
 
 // ============================================================
-// 条件（when）の解析・構築・日本語化・全域書き換え
+// 条件（when）ユーティリティ
 // ============================================================
 
 interface CondRow {
@@ -80,7 +79,7 @@ function parseCond(when: JireiCondition | undefined): CondModel {
       rows: kids.map((k) => ({ questionId: (k as CondRow).questionId, anyOf: [...(k as CondRow).anyOf] })),
     };
   }
-  return { mode: "complex", rows: [] }; // 2段以上の入れ子は JSON で（実データには無い）
+  return { mode: "complex", rows: [] };
 }
 
 function buildCond(m: CondModel): JireiCondition | undefined {
@@ -90,14 +89,13 @@ function buildCond(m: CondModel): JireiCondition | undefined {
   return m.mode === "all" ? { all: rows } : { any: rows };
 }
 
-function humanizeCond(when: JireiCondition | undefined, qById: Map<string, JireiQuestion>): string {
-  if (!when) return "常に";
-  if ("all" in when) return when.all.map((c) => humanizeCond(c, qById)).join(" かつ ");
-  if ("any" in when) return `（${when.any.map((c) => humanizeCond(c, qById)).join(" または ")}）`;
+function humanizeCond(when: JireiCondition | undefined): string {
+  if (!when) return "";
+  if ("all" in when) return when.all.map(humanizeCond).join(" かつ ");
+  if ("any" in when) return `（${when.any.map(humanizeCond).join(" または ")}）`;
   return `「${when.anyOf.join("・")}」のとき`;
 }
 
-// 木の中の全 when に fn を適用した新しい木を返す（選択肢リネームの追随用）
 function mapConds(j: Jirei, fn: (c: JireiCondition | undefined) => JireiCondition | undefined): Jirei {
   const mapBinding = (b: SlotBinding): SlotBinding => ({ ...b, when: fn(b.when) });
   return {
@@ -129,7 +127,6 @@ function collectAtoms(when: JireiCondition | undefined): CondRow[] {
   return [when];
 }
 
-// 選択肢/質問がどこから参照されているか（削除ガード用）
 function choiceRefs(j: Jirei, qid: string, val: string): string[] {
   const out: string[] = [];
   const hit = (w: JireiCondition | undefined, where: string) => {
@@ -163,8 +160,16 @@ function questionRefs(j: Jirei, qid: string): string[] {
 
 const newId = () => `q_${Math.random().toString(36).slice(2, 7)}`;
 
+// 編集中アイテムのキー
+const K = {
+  q: (id: string) => `q:${id}`,
+  guard: (i: number) => `g:${i}`,
+  doc: (f: string) => `d:${f}`,
+  hole: (f: string, label: string) => `h:${f}::${label}`,
+};
+
 // ============================================================
-// 条件エディタ（when）— 語彙は 常に / 単一 / すべて(かつ) / どれか(または) だけ
+// 条件エディタ（開いた1箇所にだけ出る）
 // ============================================================
 
 function CondEditor({
@@ -185,7 +190,7 @@ function CondEditor({
   if (model.mode === "complex") {
     return (
       <p className="rounded-md bg-[var(--color-hover)] px-2 py-1 text-[10.5px] text-[var(--color-fg-muted)]">
-        複雑な入れ子条件（{humanizeCond(when, qById)}）— JSON で編集してください
+        複雑な入れ子条件（{humanizeCond(when)}）— JSON で編集してください
       </p>
     );
   }
@@ -201,9 +206,8 @@ function CondEditor({
   };
 
   return (
-    <div className="space-y-1.5 rounded-lg border border-dashed border-[var(--color-border)] p-2">
+    <div className="space-y-1.5">
       <div className="flex items-center gap-1.5 text-[10.5px] text-[var(--color-fg-muted)]">
-        <Icon name="GitBranch" size={10} />
         出る条件:
         <select
           value={model.mode}
@@ -225,9 +229,7 @@ function CondEditor({
                 <select
                   value={row.questionId}
                   onChange={(e) => {
-                    const rows = model.rows.map((r, i) =>
-                      i === ri ? { questionId: e.target.value, anyOf: [] } : r
-                    );
+                    const rows = model.rows.map((r, i) => (i === ri ? { questionId: e.target.value, anyOf: [] } : r));
                     update({ ...model, rows });
                   }}
                   className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1 py-0.5 text-[10.5px]"
@@ -265,9 +267,7 @@ function CondEditor({
                     {c}
                   </label>
                 ))}
-                {row.anyOf.length === 0 && (
-                  <span className="text-[10px] text-red-600">選択肢に✓を入れてください</span>
-                )}
+                {row.anyOf.length === 0 && <span className="text-[10px] text-red-600">選択肢に✓を入れてください</span>}
               </div>
             </div>
           );
@@ -275,8 +275,7 @@ function CondEditor({
       {(model.mode === "all" || model.mode === "any") && (
         <button
           onClick={() =>
-            choiceQs.length > 0 &&
-            update({ ...model, rows: [...model.rows, { questionId: choiceQs[0].id, anyOf: [] }] })
+            choiceQs.length > 0 && update({ ...model, rows: [...model.rows, { questionId: choiceQs[0].id, anyOf: [] }] })
           }
           className="text-[10.5px] text-[var(--color-accent-fg)] hover:underline"
         >
@@ -287,86 +286,37 @@ function CondEditor({
   );
 }
 
-// ============================================================
-// 穴の出所エディタ
-// ============================================================
-
-function HoleEditor({
-  binding,
-  questions,
-  factKeys,
-  onChange,
-}: {
-  binding: SlotBinding;
-  questions: JireiQuestion[];
-  factKeys: string[];
-  onChange: (b: SlotBinding) => void;
-}) {
+// 鉛筆（編集の入口。開いているときは強調）
+function Pencil({ active, onClick, title }: { active: boolean; onClick: () => void; title: string }) {
   return (
-    <div className="mt-1 space-y-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] p-1.5 text-[10.5px]">
-      <div className="flex items-center gap-1.5">
-        出所:
-        <select
-          value={binding.type}
-          onChange={(e) => {
-            const t = e.target.value;
-            if (t === "fact") onChange({ type: "fact", key: "", when: binding.when });
-            else if (t === "answer") onChange({ type: "answer", questionId: questions[0]?.id || "", when: binding.when });
-            else onChange({ type: "const", value: "", when: binding.when });
-          }}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1 py-0.5 text-[10.5px]"
-        >
-          <option value="fact">資料から自動</option>
-          <option value="answer">質問で聞く</option>
-          <option value="const">固定値</option>
-        </select>
-      </div>
-      {binding.type === "fact" && (
-        <div>
-          <input
-            list="fact-keys"
-            value={binding.key}
-            onChange={(e) => onChange({ ...binding, key: e.target.value })}
-            placeholder="事実キー（例: 会社名・本店所在地・代表取締役氏名）"
-            className="w-full rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[10.5px]"
-          />
-          <datalist id="fact-keys">
-            {factKeys.map((k) => (
-              <option key={k} value={k} />
-            ))}
-          </datalist>
-        </div>
-      )}
-      {binding.type === "answer" && (
-        <div className="flex items-center gap-1.5">
-          <select
-            value={binding.questionId}
-            onChange={(e) => onChange({ ...binding, questionId: e.target.value })}
-            className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1 py-0.5 text-[10.5px]"
-          >
-            {questions.map((q) => (
-              <option key={q.id} value={q.id}>
-                {q.label.slice(0, 34)}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-      {binding.type === "const" && (
-        <input
-          value={binding.value}
-          onChange={(e) => onChange({ ...binding, value: e.target.value })}
-          placeholder="固定の文言"
-          className="w-full rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[10.5px]"
-        />
-      )}
-    </div>
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={title}
+      className={`shrink-0 rounded p-0.5 ${
+        active
+          ? "bg-[var(--color-accent)] text-white"
+          : "text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-accent-fg)]"
+      }`}
+    >
+      <Icon name="PencilLine" size={11} className={active ? "text-white" : undefined} />
+    </button>
   );
 }
 
-// ============================================================
-// 表示用（既存のレーン・書類カード）
-// ============================================================
+const Q_KIND: Record<string, { label: string; cls: string }> = {
+  choice: { label: "判断", cls: "bg-purple-100 text-purple-800 border-purple-300" },
+  date: { label: "日付", cls: "bg-amber-50 text-amber-800 border-amber-300" },
+  text: { label: "入力", cls: "bg-[var(--color-hover)] text-[var(--color-fg-muted)] border-[var(--color-border)]" },
+};
+
+interface QuestionOverview {
+  label: string;
+  kind: string;
+  when?: string;
+}
 
 function groupHoles(holes: TreeNode[]): { source: SourceKind; items: TreeNode[] }[] {
   return SOURCE_ORDER.map((s) => ({
@@ -375,17 +325,9 @@ function groupHoles(holes: TreeNode[]): { source: SourceKind; items: TreeNode[] 
   })).filter((g) => g.items.length > 0);
 }
 
-interface QuestionOverview {
-  label: string;
-  kind: string;
-  when?: string;
-}
-
-const Q_KIND: Record<string, { label: string; cls: string }> = {
-  choice: { label: "判断", cls: "bg-purple-100 text-purple-800 border-purple-300" },
-  date: { label: "日付", cls: "bg-amber-50 text-amber-800 border-amber-300" },
-  text: { label: "入力", cls: "bg-[var(--color-hover)] text-[var(--color-fg-muted)] border-[var(--color-border)]" },
-};
+// ============================================================
+// 本体
+// ============================================================
 
 export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; onClose: () => void }) {
   const [tree, setTree] = useState<TreeNode | null>(null);
@@ -399,7 +341,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ kind: "ok" | "error"; lines: string[] } | null>(null);
-  const [editingHole, setEditingHole] = useState<string | null>(null); // "docFile::slotLabel"
+  const [editing, setEditing] = useState<string | null>(null); // 開いている編集対象は常に1つ
 
   const fetchTree = () => {
     fetch(`/api/jirei/tree?id=${encodeURIComponent(jireiId)}`)
@@ -434,6 +376,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
       setRaw(d.jirei);
       setDirty(false);
       setSaveMsg(null);
+      setEditing(null);
       setEditMode(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "通信エラー");
@@ -463,7 +406,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
       }
       setDirty(false);
       setSaveMsg({ kind: "ok", lines: ["保存しました（旧版は data/jirei/history/ に退避）", ...(d.warnings || [])] });
-      fetchTree(); // 可視化を更新
+      fetchTree();
     } catch (e) {
       setSaveMsg({ kind: "error", lines: [e instanceof Error ? e.message : "通信に失敗しました"] });
     } finally {
@@ -471,7 +414,6 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
     }
   };
 
-  // 木 → レーン
   const lanes = useMemo(() => {
     if (!tree) return [];
     const out: { title: string; sub?: string; kind: "choice" | "common" | "flat"; docs: TreeNode[] }[] = [];
@@ -501,7 +443,6 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
     return { docs, counts, holes: Object.values(counts).reduce((a, b) => a + b, 0) };
   }, [lanes]);
 
-  const qById = useMemo(() => new Map((raw?.questions || []).map((q) => [q.id, q])), [raw]);
   const factKeys = useMemo(() => {
     if (!raw) return [];
     const keys = new Set<string>();
@@ -514,7 +455,6 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
     return [...keys].sort();
   }, [raw]);
 
-  // 穴 → スロットラベル（doc の placeholders 対応表 → 無ければそのまま）
   const slotLabelForHole = (docFile: string, hole: string): string => {
     const doc = raw?.documents.find((d) => d.templateFile === docFile);
     for (const [ph, lbl] of Object.entries(doc?.placeholders || {})) {
@@ -565,6 +505,8 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
       alert(`この質問は使われているため消せません:\n${refs.join("\n")}`);
       return;
     }
+    if (!confirm("この質問を削除しますか？")) return;
+    setEditing(null);
     mutate((j) => ({ ...j, questions: j.questions.filter((q) => q.id !== qid) }));
   };
 
@@ -578,28 +520,22 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
       return { ...j, questions: qs };
     });
 
-  const addQuestion = (kind: "text" | "date" | "choice") =>
+  const addQuestion = (kind: "text" | "date" | "choice") => {
+    const id = newId();
     mutate((j) => ({
       ...j,
       questions: [
         ...j.questions,
         {
-          id: newId(),
-          label: kind === "choice" ? "新しい判断（文言を書いてください）" : "新しい質問（文言を書いてください）",
+          id,
+          label: "",
           kind,
           ...(kind === "choice" ? { choices: ["選択肢A", "選択肢B"] } : {}),
         },
       ],
     }));
-
-  const setSlotBinding = (slotLabel: string, b: SlotBinding) =>
-    mutate((j) => ({ ...j, slots: { ...j.slots, [slotLabel]: b } }));
-
-  const setDocWhen = (docFile: string, w: JireiCondition | undefined) =>
-    mutate((j) => ({
-      ...j,
-      documents: j.documents.map((d) => (d.templateFile === docFile ? { ...d, when: w } : d)),
-    }));
+    setEditing(K.q(id));
+  };
 
   // ============================================================
   return (
@@ -611,17 +547,14 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
         {/* ヘッダー */}
         <div className="border-b border-[var(--color-border)] px-5 py-3">
           <div className="flex items-center gap-3">
-            {editMode && raw ? (
-              <input
-                value={raw.name}
-                onChange={(e) => mutate((j) => ({ ...j, name: e.target.value }))}
-                className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-0.5 text-[14px] font-semibold"
-              />
-            ) : (
-              <span className="text-[14px] font-semibold text-[var(--color-fg)]">{tree?.label || "事由の木"}</span>
+            <span className="text-[14px] font-semibold text-[var(--color-fg)]">
+              {editMode && raw ? raw.name : tree?.label || "事由の木"}
+            </span>
+            {editMode && raw && (
+              <Pencil active={editing === "meta"} onClick={() => setEditing(editing === "meta" ? null : "meta")} title="事由名・説明を編集" />
             )}
             <span className="text-[11px] text-[var(--color-fg-muted)]">
-              {editMode ? "編集モード — 保存するまでファイルは変わりません" : "何を聞いて、何が出て、どこから埋まるか"}
+              {editMode ? "編集モード — 鉛筆を押した箇所だけ開きます。保存するまでファイルは変わりません" : "何を聞いて、何が出て、どこから埋まるか"}
             </span>
             <span className="ml-auto" />
             {!editMode ? (
@@ -649,19 +582,20 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                   disabled={!dirty || saving}
                   className="rounded-lg bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white disabled:opacity-40"
                 >
-                  {saving ? "保存中..." : "保存"}
+                  {saving ? "保存中..." : dirty ? "保存" : "保存済み"}
                 </button>
                 <button
                   onClick={() => {
-                    if (dirty && !confirm("変更を捨てますか？")) return;
+                    if (dirty && !confirm("保存していない変更を捨てますか？")) return;
                     setEditMode(false);
                     setRaw(null);
                     setSaveMsg(null);
-                    setEditingHole(null);
+                    setEditing(null);
+                    fetchTree();
                   }}
                   className="rounded-lg border border-[var(--color-border)] px-2.5 py-1 text-[11px] text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                 >
-                  閉じる
+                  編集を終える
                 </button>
               </>
             )}
@@ -669,7 +603,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
               ×
             </button>
           </div>
-          {tree && !editMode && (
+          {tree && (
             <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-[var(--color-fg-muted)]">
               <span className="font-medium text-[var(--color-fg)]">
                 書類{summary.docs}種・穴{summary.holes}個
@@ -696,14 +630,23 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
               )}
             </div>
           )}
-          {editMode && raw && (
-            <textarea
-              value={raw.description || ""}
-              onChange={(e) => mutate((j) => ({ ...j, description: e.target.value }))}
-              rows={2}
-              placeholder="事由の説明（前提 + 当たる依頼の言い回し。事由推定の手がかりになります）"
-              className="mt-1.5 w-full rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-2 py-1 text-[11px]"
-            />
+          {/* 事由名・説明の編集（鉛筆を押したときだけ） */}
+          {editMode && raw && editing === "meta" && (
+            <div className="mt-2 space-y-1.5 rounded-xl border border-[var(--color-accent)] bg-[var(--color-panel)] p-2.5">
+              <input
+                value={raw.name}
+                onChange={(e) => mutate((j) => ({ ...j, name: e.target.value }))}
+                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] font-semibold"
+                placeholder="事由名"
+              />
+              <textarea
+                value={raw.description || ""}
+                onChange={(e) => mutate((j) => ({ ...j, description: e.target.value }))}
+                rows={3}
+                placeholder="説明（前提 + 当たる依頼の言い回し。事由推定の手がかりになります）"
+                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11px]"
+              />
+            </div>
           )}
           {saveMsg && (
             <div
@@ -724,111 +667,119 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
           {!tree && !error && <p className="animate-pulse text-[13px] text-[var(--color-fg-muted)]">読込中...</p>}
           {tree && (
             <div className="flex items-start gap-5">
-              {/* 聞くことレーン */}
-              <div className={`${editMode ? "w-[360px]" : "w-[290px]"} shrink-0 space-y-2`}>
+              {/* ============ 聞くことレーン ============ */}
+              <div className="w-[300px] shrink-0 space-y-2">
                 <div className="rounded-xl bg-[var(--color-accent)] px-3 py-1.5 text-[12px] font-semibold text-white">
-                  聞くこと（{(editMode ? raw?.questions.length : questions.length) || 0}問）
+                  聞くこと（{(editMode && raw ? raw.questions.length : questions.length) || 0}問）
                 </div>
 
-                {/* 表示モード */}
-                {!editMode &&
-                  questions.map((q, i) => {
-                    const k = Q_KIND[q.kind] || Q_KIND.text;
-                    return (
-                      <div key={i} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] px-3 py-2">
-                        <div className="flex items-start gap-1.5">
-                          <span className={`mt-0.5 shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium ${k.cls}`}>
-                            {k.label}
-                          </span>
-                          <span className="min-w-0 text-[11.5px] leading-snug text-[var(--color-fg)]">{q.label}</span>
-                        </div>
-                        {q.when && <p className="mt-0.5 pl-1 text-[10.5px] text-[var(--color-fg-muted)]">└ {q.when}</p>}
+                {/* 表示は常にレビュー体裁。編集モードでは鉛筆が付き、開いた1件だけフォームになる */}
+                {(editMode && raw
+                  ? raw.questions.map((q) => ({
+                      q,
+                      view: { label: q.label || "（文言未入力）", kind: q.kind || "text", when: q.when ? humanizeCond(q.when) : undefined },
+                    }))
+                  : questions.map((v) => ({ q: null as JireiQuestion | null, view: v }))
+                ).map(({ q, view }, qi) => {
+                  const k = Q_KIND[view.kind] || Q_KIND.text;
+                  const key = q ? K.q(q.id) : `view-${qi}`;
+                  const open = q && editing === key;
+                  return (
+                    <div
+                      key={key}
+                      className={`rounded-xl border bg-[var(--color-panel)] px-3 py-2 ${
+                        open ? "border-[var(--color-accent)]" : "border-[var(--color-border)]"
+                      }`}
+                    >
+                      <div className="flex items-start gap-1.5">
+                        <span className={`mt-0.5 shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium ${k.cls}`}>
+                          {k.label}
+                        </span>
+                        <span className="min-w-0 flex-1 text-[11.5px] leading-snug text-[var(--color-fg)]">{view.label}</span>
+                        {q && (
+                          <Pencil active={!!open} onClick={() => setEditing(open ? null : key)} title="この質問を編集" />
+                        )}
                       </div>
-                    );
-                  })}
+                      {!open && view.when && (
+                        <p className="mt-0.5 pl-1 text-[10.5px] text-[var(--color-fg-muted)]">└ {view.when}</p>
+                      )}
 
-                {/* 編集モード */}
-                {editMode &&
-                  raw &&
-                  raw.questions.map((q, qi) => {
-                    const k = Q_KIND[q.kind || "text"] || Q_KIND.text;
-                    return (
-                      <div key={q.id} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-2.5 space-y-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className={`shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium ${k.cls}`}>{k.label}</span>
-                          <span className="ml-auto flex items-center gap-0.5">
+                      {/* 開いた1件だけのフォーム */}
+                      {open && q && raw && (
+                        <div className="mt-2 space-y-2 border-t border-[var(--color-border)] pt-2">
+                          <textarea
+                            value={q.label}
+                            onChange={(e) => updateQuestion(q.id, { label: e.target.value })}
+                            rows={2}
+                            placeholder="質問の文言"
+                            className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[11.5px] leading-snug"
+                          />
+                          {q.kind === "choice" && (
+                            <div className="space-y-1">
+                              {(q.choices || []).map((c, ci) => (
+                                <div key={ci} className="flex items-center gap-1">
+                                  <span className="h-2 w-2 shrink-0 rounded-full border border-purple-400" />
+                                  <input
+                                    value={c}
+                                    onChange={(e) => renameChoice(q.id, ci, e.target.value)}
+                                    className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px]"
+                                  />
+                                  <button
+                                    onClick={() => deleteChoice(q.id, ci)}
+                                    className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-red-50 hover:text-red-600"
+                                    title="選択肢を削除（使用中なら止まります）"
+                                  >
+                                    <Icon name="X" size={11} />
+                                  </button>
+                                </div>
+                              ))}
+                              <button
+                                onClick={() =>
+                                  updateQuestion(q.id, { choices: [...(q.choices || []), `選択肢${(q.choices?.length || 0) + 1}`] })
+                                }
+                                className="text-[10.5px] text-[var(--color-accent-fg)] hover:underline"
+                              >
+                                ＋ 選択肢を足す
+                              </button>
+                              <p className="text-[10px] text-[var(--color-fg-muted)]">
+                                文言を変えると、参照している分岐も自動で追随します
+                              </p>
+                            </div>
+                          )}
+                          <CondEditor
+                            when={q.when}
+                            questions={raw.questions}
+                            selfId={q.id}
+                            onChange={(w) => updateQuestion(q.id, { when: w })}
+                          />
+                          <div className="flex items-center gap-1 border-t border-[var(--color-border)] pt-1.5">
                             <button
                               onClick={() => moveQuestion(q.id, -1)}
-                              disabled={qi === 0}
-                              className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] disabled:opacity-30"
+                              className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                               title="上へ"
                             >
-                              <Icon name="ChevronUp" size={12} />
+                              <Icon name="ChevronUp" size={13} />
                             </button>
                             <button
                               onClick={() => moveQuestion(q.id, 1)}
-                              disabled={qi === raw.questions.length - 1}
-                              className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] disabled:opacity-30"
+                              className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)]"
                               title="下へ"
                             >
-                              <Icon name="ChevronDown" size={12} />
+                              <Icon name="ChevronDown" size={13} />
                             </button>
                             <button
                               onClick={() => deleteQuestion(q.id)}
-                              className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-red-50 hover:text-red-600"
-                              title="質問を削除（参照チェック付き）"
+                              className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-[var(--color-fg-muted)] hover:bg-red-50 hover:text-red-600"
                             >
-                              <Icon name="Trash2" size={12} />
+                              <Icon name="Trash2" size={11} />
+                              質問を削除
                             </button>
-                          </span>
-                        </div>
-                        <textarea
-                          value={q.label}
-                          onChange={(e) => updateQuestion(q.id, { label: e.target.value })}
-                          rows={2}
-                          className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[11.5px] leading-snug"
-                        />
-                        {q.kind === "choice" && (
-                          <div className="space-y-1">
-                            {(q.choices || []).map((c, ci) => (
-                              <div key={ci} className="flex items-center gap-1">
-                                <span className="h-2 w-2 shrink-0 rounded-full border border-purple-400" />
-                                <input
-                                  value={c}
-                                  onChange={(e) => renameChoice(q.id, ci, e.target.value)}
-                                  className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px]"
-                                />
-                                <button
-                                  onClick={() => deleteChoice(q.id, ci)}
-                                  className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-red-50 hover:text-red-600"
-                                  title="選択肢を削除（参照チェック付き）"
-                                >
-                                  <Icon name="X" size={11} />
-                                </button>
-                              </div>
-                            ))}
-                            <button
-                              onClick={() =>
-                                updateQuestion(q.id, { choices: [...(q.choices || []), `選択肢${(q.choices?.length || 0) + 1}`] })
-                              }
-                              className="text-[10.5px] text-[var(--color-accent-fg)] hover:underline"
-                            >
-                              ＋ 選択肢を足す
-                            </button>
-                            <p className="text-[10px] text-[var(--color-fg-muted)]">
-                              文言を変えると、参照している分岐条件も自動で追随します
-                            </p>
                           </div>
-                        )}
-                        <CondEditor
-                          when={q.when}
-                          questions={raw.questions}
-                          selfId={q.id}
-                          onChange={(w) => updateQuestion(q.id, { when: w })}
-                        />
-                      </div>
-                    );
-                  })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 {editMode && (
                   <div className="flex gap-1.5">
                     {(["choice", "date", "text"] as const).map((kind) => (
@@ -837,24 +788,36 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                         onClick={() => addQuestion(kind)}
                         className="flex-1 rounded-xl border border-dashed border-[var(--color-border)] px-2 py-1.5 text-[10.5px] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)]"
                       >
-                        ＋ {kind === "choice" ? "判断" : kind === "date" ? "日付" : "入力"}を追加
+                        ＋ {kind === "choice" ? "判断" : kind === "date" ? "日付" : "入力"}
                       </button>
                     ))}
                   </div>
                 )}
 
-                {/* ガード（専門家の注意書き） */}
-                {(editMode ? true : (raw?.guards?.length ?? 0) > 0) && (
+                {/* ガード（注意書き） */}
+                {((editMode && raw) || (raw?.guards?.length ?? 0) > 0 || editMode) && editMode && raw && (
                   <>
                     <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5 text-[12px] font-semibold text-amber-900">
                       注意書き（ガード）
                     </div>
-                    {editMode && raw ? (
-                      <>
-                        {(raw.guards || []).map((g, gi) => (
-                          <div key={gi} className="rounded-xl border border-amber-200 bg-[var(--color-panel)] p-2.5 space-y-1.5">
-                            <div className="flex items-start gap-1.5">
-                              <Icon name="TriangleAlert" size={12} className="mt-1 shrink-0 text-amber-600" />
+                    {(raw.guards || []).map((g, gi) => {
+                      const key = K.guard(gi);
+                      const open = editing === key;
+                      return (
+                        <div
+                          key={gi}
+                          className={`rounded-xl border bg-amber-50 px-3 py-2 ${open ? "border-[var(--color-accent)]" : "border-amber-200"}`}
+                        >
+                          <div className="flex items-start gap-1.5">
+                            <Icon name="TriangleAlert" size={12} className="mt-0.5 shrink-0 text-amber-600" />
+                            <span className="min-w-0 flex-1 text-[11px] leading-snug text-amber-900">{g.message}</span>
+                            <Pencil active={open} onClick={() => setEditing(open ? null : key)} title="このガードを編集" />
+                          </div>
+                          {!open && g.when && (
+                            <p className="mt-0.5 pl-1 text-[10px] text-amber-700">└ {humanizeCond(g.when)}</p>
+                          )}
+                          {open && (
+                            <div className="mt-2 space-y-2 border-t border-amber-200 pt-2">
                               <textarea
                                 value={g.message}
                                 onChange={(e) =>
@@ -864,44 +827,43 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                                   }))
                                 }
                                 rows={2}
-                                className="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[11px] leading-snug"
+                                className="w-full rounded border border-amber-200 bg-white px-1.5 py-1 text-[11px] leading-snug"
+                              />
+                              <CondEditor
+                                when={g.when}
+                                questions={raw.questions}
+                                onChange={(w) =>
+                                  mutate((j) => ({
+                                    ...j,
+                                    guards: (j.guards || []).map((x, i) => (i === gi ? { ...x, when: w } : x)),
+                                  }))
+                                }
                               />
                               <button
-                                onClick={() => mutate((j) => ({ ...j, guards: (j.guards || []).filter((_, i) => i !== gi) }))}
-                                className="rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-red-50 hover:text-red-600"
-                                title="ガードを削除"
+                                onClick={() => {
+                                  setEditing(null);
+                                  mutate((j) => ({ ...j, guards: (j.guards || []).filter((_, i) => i !== gi) }));
+                                }}
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-amber-800 hover:bg-red-50 hover:text-red-600"
                               >
-                                <Icon name="Trash2" size={12} />
+                                <Icon name="Trash2" size={11} />
+                                ガードを削除
                               </button>
                             </div>
-                            <CondEditor
-                              when={g.when}
-                              questions={raw.questions}
-                              onChange={(w) =>
-                                mutate((j) => ({
-                                  ...j,
-                                  guards: (j.guards || []).map((x, i) => (i === gi ? { ...x, when: w } : x)),
-                                }))
-                              }
-                            />
-                          </div>
-                        ))}
-                        <button
-                          onClick={() =>
-                            mutate((j) => ({ ...j, guards: [...(j.guards || []), { message: "注意書きを書いてください" }] }))
-                          }
-                          className="w-full rounded-xl border border-dashed border-amber-300 px-2 py-1.5 text-[10.5px] text-amber-800 hover:bg-amber-50"
-                        >
-                          ＋ 注意書きを追加
-                        </button>
-                      </>
-                    ) : (
-                      (raw?.guards || []).map((g, gi) => (
-                        <div key={gi} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-                          {g.message}
+                          )}
                         </div>
-                      ))
-                    )}
+                      );
+                    })}
+                    <button
+                      onClick={() => {
+                        const idx = raw.guards?.length || 0;
+                        mutate((j) => ({ ...j, guards: [...(j.guards || []), { message: "" }] }));
+                        setEditing(K.guard(idx));
+                      }}
+                      className="w-full rounded-xl border border-dashed border-amber-300 px-2 py-1.5 text-[10.5px] text-amber-800 hover:bg-amber-50"
+                    >
+                      ＋ 注意書きを追加
+                    </button>
                   </>
                 )}
 
@@ -912,7 +874,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                 )}
               </div>
 
-              {/* 書類レーン */}
+              {/* ============ 書類レーン ============ */}
               {lanes.map((lane, i) => (
                 <div key={i} className="w-[330px] shrink-0 space-y-2">
                   <div
@@ -938,6 +900,8 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                   )}
                   {lane.docs.map((d, j) => {
                     const rawDoc = raw?.documents.find((x) => x.templateFile === d.label);
+                    const docKey = K.doc(d.label);
+                    const docOpen = editing === docKey;
                     const groups = groupHoles(d.children || []);
                     return (
                       <div key={j} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-3">
@@ -947,24 +911,34 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                             size={13}
                             className="mt-0.5 shrink-0 text-[var(--color-accent-fg)]"
                           />
-                          <span className="min-w-0 break-all">{d.label.replace(/\.(docx|xlsx)$/i, "")}</span>
+                          <span className="min-w-0 flex-1 break-all">{d.label.replace(/\.(docx|xlsx)$/i, "")}</span>
+                          {editMode && rawDoc && (
+                            <Pencil active={docOpen} onClick={() => setEditing(docOpen ? null : docKey)} title="出る条件を編集" />
+                          )}
                         </div>
                         {d.badge && (
                           <span className="mt-1 inline-block rounded-full bg-[var(--color-accent)] px-2 py-0.5 text-[10px] text-white">
                             {d.badge}
                           </span>
                         )}
-                        {!editMode && d.cond && (
+                        {!docOpen && (editMode && rawDoc ? rawDoc.when : d.cond) && (
                           <p className="mt-1 rounded-md border border-purple-200 bg-purple-50 px-2 py-1 text-[10.5px] leading-snug text-purple-900">
-                            出る条件: {d.cond}
+                            出る条件: {editMode && rawDoc ? humanizeCond(rawDoc.when) : d.cond}
                           </p>
                         )}
-                        {editMode && raw && rawDoc && (
-                          <div className="mt-1.5">
+                        {docOpen && raw && rawDoc && (
+                          <div className="mt-1.5 rounded-lg border border-[var(--color-accent)] bg-[var(--color-bg)] p-2">
                             <CondEditor
                               when={rawDoc.when}
                               questions={raw.questions}
-                              onChange={(w) => setDocWhen(rawDoc.templateFile, w)}
+                              onChange={(w) =>
+                                mutate((j2) => ({
+                                  ...j2,
+                                  documents: j2.documents.map((x) =>
+                                    x.templateFile === rawDoc.templateFile ? { ...x, when: w } : x
+                                  ),
+                                }))
+                              }
                             />
                           </div>
                         )}
@@ -983,18 +957,18 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                                     editMode={editMode}
                                     raw={raw}
                                     docFile={d.label}
-                                    editingHole={editingHole}
-                                    setEditingHole={setEditingHole}
+                                    editing={editing}
+                                    setEditing={setEditing}
                                     slotLabelForHole={slotLabelForHole}
-                                    setSlotBinding={setSlotBinding}
+                                    mutate={mutate}
                                     factKeys={factKeys}
                                   />
                                 ))}
                               </div>
                             ) : (
                               <details
-                                key={`${g.source}-${expandAll}-${editMode}`}
-                                open={editMode || expandAll || g.source === "answer"}
+                                key={`${g.source}-${expandAll}`}
+                                open={expandAll || g.source === "answer"}
                                 className="group rounded-lg border border-[var(--color-border)] px-2 py-1"
                               >
                                 <summary
@@ -1012,10 +986,10 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                                       editMode={editMode}
                                       raw={raw}
                                       docFile={d.label}
-                                      editingHole={editingHole}
-                                      setEditingHole={setEditingHole}
+                                      editing={editing}
+                                      setEditing={setEditing}
                                       slotLabelForHole={slotLabelForHole}
-                                      setSlotBinding={setSlotBinding}
+                                      mutate={mutate}
                                       factKeys={factKeys}
                                     />
                                   ))}
@@ -1035,7 +1009,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
 
         <div className="border-t border-[var(--color-border)] px-4 py-2 text-[11px] text-[var(--color-fg-muted)]">
           {editMode
-            ? "保存すると即反映されます（旧版は data/jirei/history/ に残ります）。穴の色は保存後に更新されます"
+            ? "穴の色分けは保存すると更新されます。旧版は data/jirei/history/ に残ります"
             : "「編集」から質問・選択肢・分岐・ガード・穴の出所を変更できます"}
         </div>
       </div>
@@ -1043,36 +1017,41 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
   );
 }
 
-// 穴1行（表示 + 編集ボタン + インライン出所エディタ）
+// ============================================================
+// 穴1行（表示 + 鉛筆。開いた1件だけ出所エディタ）
+// ============================================================
+
 function HoleLine({
   hole,
   editMode,
   raw,
   docFile,
-  editingHole,
-  setEditingHole,
+  editing,
+  setEditing,
   slotLabelForHole,
-  setSlotBinding,
+  mutate,
   factKeys,
 }: {
   hole: TreeNode;
   editMode: boolean;
   raw: Jirei | null;
   docFile: string;
-  editingHole: string | null;
-  setEditingHole: (k: string | null) => void;
+  editing: string | null;
+  setEditing: (k: string | null) => void;
   slotLabelForHole: (docFile: string, hole: string) => string;
-  setSlotBinding: (label: string, b: SlotBinding) => void;
+  mutate: (fn: (j: Jirei) => Jirei) => void;
   factKeys: string[];
 }) {
   const src = (hole.source || "unknown") as SourceKind;
   const editable = editMode && raw && src !== "list";
   const slotLabel = editable ? slotLabelForHole(docFile, hole.label) : "";
-  const key = `${docFile}::${slotLabel}`;
+  const key = K.hole(docFile, slotLabel);
+  const open = editable && editing === key;
   const rawBinding = editable ? raw!.slots[slotLabel] : undefined;
   const isArray = Array.isArray(rawBinding);
-  const current: SlotBinding =
-    !rawBinding || isArray ? { type: "const", value: "" } : (rawBinding as SlotBinding);
+  const current: SlotBinding = !rawBinding || isArray ? { type: "const", value: "" } : (rawBinding as SlotBinding);
+
+  const setBinding = (b: SlotBinding) => mutate((j) => ({ ...j, slots: { ...j.slots, [slotLabel]: b } }));
 
   return (
     <div className="py-0.5">
@@ -1081,26 +1060,71 @@ function HoleLine({
         <span className="shrink-0 font-medium text-[var(--color-fg)]">{hole.label}</span>
         {hole.detail && <span className="min-w-0 text-[var(--color-fg-muted)]">← {hole.detail}</span>}
         {editable && !isArray && (
-          <button
-            onClick={() => setEditingHole(editingHole === key ? null : key)}
-            className="ml-auto shrink-0 rounded p-0.5 text-[var(--color-fg-muted)] hover:bg-[var(--color-hover)] hover:text-[var(--color-accent-fg)]"
-            title="出所を編集"
-          >
-            <Icon name="PencilLine" size={11} />
-          </button>
+          <span className="ml-auto">
+            <Pencil active={!!open} onClick={() => setEditing(open ? null : key)} title="出所を編集" />
+          </span>
         )}
       </div>
-      {editable && isArray && editingHole === key && null}
       {editable && isArray && (
         <p className="pl-3 text-[10px] text-[var(--color-fg-muted)]">分岐で出所が変わる穴（JSON で編集）</p>
       )}
-      {editable && !isArray && editingHole === key && (
-        <HoleEditor
-          binding={current}
-          questions={raw!.questions}
-          factKeys={factKeys}
-          onChange={(b) => setSlotBinding(slotLabel, b)}
-        />
+      {open && (
+        <div className="mt-1 space-y-1 rounded-md border border-[var(--color-accent)] bg-[var(--color-bg)] p-1.5 text-[10.5px]">
+          <div className="flex items-center gap-1.5">
+            出所:
+            <select
+              value={current.type}
+              onChange={(e) => {
+                const t = e.target.value;
+                if (t === "fact") setBinding({ type: "fact", key: "", when: current.when });
+                else if (t === "answer") setBinding({ type: "answer", questionId: raw!.questions[0]?.id || "", when: current.when });
+                else setBinding({ type: "const", value: "", when: current.when });
+              }}
+              className="rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1 py-0.5 text-[10.5px]"
+            >
+              <option value="fact">資料から自動</option>
+              <option value="answer">質問で聞く</option>
+              <option value="const">固定値</option>
+            </select>
+          </div>
+          {current.type === "fact" && (
+            <div>
+              <input
+                list="fact-keys"
+                value={current.key}
+                onChange={(e) => setBinding({ ...current, key: e.target.value })}
+                placeholder="事実キー（例: 会社名・本店所在地）"
+                className="w-full rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[10.5px]"
+              />
+              <datalist id="fact-keys">
+                {factKeys.map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+            </div>
+          )}
+          {current.type === "answer" && (
+            <select
+              value={current.questionId}
+              onChange={(e) => setBinding({ ...current, questionId: e.target.value })}
+              className="w-full rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1 py-0.5 text-[10.5px]"
+            >
+              {raw!.questions.map((q) => (
+                <option key={q.id} value={q.id}>
+                  {q.label.slice(0, 34)}
+                </option>
+              ))}
+            </select>
+          )}
+          {current.type === "const" && (
+            <input
+              value={current.value}
+              onChange={(e) => setBinding({ ...current, value: e.target.value })}
+              placeholder="固定の文言"
+              className="w-full rounded border border-[var(--color-border)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[10.5px]"
+            />
+          )}
+        </div>
       )}
     </div>
   );
