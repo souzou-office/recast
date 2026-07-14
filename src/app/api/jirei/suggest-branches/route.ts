@@ -98,15 +98,22 @@ function applyProposal(cur: Jirei, p: ProposalInput): { merged: Jirei; warnings:
     seen.add(aq.id);
     const exist = curById.get(aq.id);
     if (exist) {
-      // 既存: kind と choices は温存（スロット・分岐が参照するため）。文言と when は提案を採用
-      if (exist.kind === "choice" && JSON.stringify(exist.choices) !== JSON.stringify(aq.choices)) {
-        warnings.push(`質問「${exist.label.slice(0, 18)}…」の選択肢の変更は無視しました（分岐が参照するため。変更は編集画面のカスケード機能で）`);
+      // 既存: kind は温存。choices は既存を全部残した上で★追加だけ許可★
+      // （既存値の削除・変更はスロットや分岐の when が壊れるため禁止。リネームは編集UIのカスケードで）
+      let choices = exist.choices;
+      if (exist.kind === "choice" && exist.choices) {
+        const additions = (aq.choices || []).filter((c) => c?.trim() && !exist.choices!.includes(c));
+        const removed = exist.choices.filter((c) => !(aq.choices || []).includes(c));
+        choices = [...exist.choices, ...additions];
+        if (removed.length > 0) {
+          warnings.push(`質問「${exist.label.slice(0, 18)}…」の選択肢の削除・変更は無視しました（分岐が参照するため）`);
+        }
       }
       questions.push({
         id: exist.id,
         label: aq.label?.trim() || exist.label,
         kind: exist.kind,
-        ...(exist.choices ? { choices: exist.choices } : {}),
+        ...(choices ? { choices } : {}),
         when: normalizeWhen(aq.when) ?? undefined,
       });
     } else {
@@ -133,9 +140,23 @@ function applyProposal(cur: Jirei, p: ProposalInput): { merged: Jirei; warnings:
     }
   }
 
-  const guards = (p.guards || [])
+  // ガードも既存を温存（質問と同じ方針: AI 提案からの削除は許さない。消すのは人が編集UIで）。
+  // AI の新しいガードは重複（正規化した文言一致）でなければ追加。
+  const normMsg = (s: string) => s.replace(/[\s　]/g, "");
+  const aiGuards = (p.guards || [])
     .filter((g) => g?.message?.trim())
     .map((g) => ({ message: g.message.trim(), when: normalizeWhen(g.when) }));
+  const guards = [...(cur.guards || [])];
+  let restoredGuards = 0;
+  for (const g of aiGuards) {
+    if (!guards.some((x) => normMsg(x.message) === normMsg(g.message))) guards.push(g);
+  }
+  restoredGuards = (cur.guards || []).filter(
+    (x) => !aiGuards.some((g) => normMsg(g.message) === normMsg(x.message))
+  ).length;
+  if (restoredGuards > 0) {
+    warnings.push(`AI 提案から落ちていた既存の注意書き${restoredGuards}本を温存しました（消す場合は編集画面で）`);
+  }
 
   const documents = cur.documents.map((d) => {
     const hit = (p.documentWhens || []).find((x) => x?.templateFile === d.templateFile);
@@ -156,9 +177,15 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const id: string | undefined = body.id;
     const instruction: string = (body.instruction || "").trim();
+    // 重点対象の判断（指定があれば「この判断の下の枝」を重点的に育てる。無ければ木全体）
+    const focusQuestionId: string | undefined = body.focusQuestionId;
     if (!id) return NextResponse.json({ error: "id は必須です" }, { status: 400 });
     const jirei = await loadJirei(id);
     if (!jirei) return NextResponse.json({ error: "事由が見つかりません" }, { status: 404 });
+    const focusQ = focusQuestionId ? jirei.questions.find((q) => q.id === focusQuestionId) : undefined;
+    if (focusQuestionId && !focusQ) {
+      return NextResponse.json({ error: "focusQuestionId が見つかりません" }, { status: 404 });
+    }
 
     // 事務所の統一ルール（あれば実務前提として渡す）
     let officeRules = "";
@@ -213,7 +240,8 @@ export async function POST(request: NextRequest) {
           notes: {
             type: "array",
             items: { type: "string" },
-            description: "提案の要点と、専門家が確認すべきこと（3〜6行）",
+            minItems: 2,
+            description: "提案の要点と、専門家が確認すべきこと（必ず2行以上）",
           },
         },
         required: ["questions", "guards", "notes"],
@@ -257,7 +285,23 @@ ${officeRules ? `\n【事務所の統一ルール（実務の前提）】\n${off
 - 書類（documents）に無い枝 = 生成できない枝。その枝には guards で「雛形が未登録」を明示する
 - 前提を無言で焼き込まない（テンプレ一式が暗黙に前提する方式・状況は判断として顕在化する）
 - 選択肢は短い専門家の言葉（必要なら括弧で補足）。判断→従属質問の順に並べる
-- 聞かなくても資料（登記情報・定款・株主名簿）から分かることは質問にしない${instruction ? `\n\n【ユーザーの追加指示】\n${instruction}` : ""}`;
+- ★資料から自動で分かることは質問にしない★。この木は 登記情報・定款・株主名簿 を自動で読む。
+  つまり次は質問禁止: 取締役の人数・役員構成・監査役の有無・代表取締役が誰か・
+  株主の構成や種別（個人/法人/組合。書式の出し分けも自動）・定款の定め・資本金・発行済株式数。
+  質問してよいのは「人にしか決められないこと」（方式の選択・日付・新しく決める値）だけ
+- notes には提案の要点と専門家の確認事項を必ず2行以上書く${
+      focusQ
+        ? `
+
+【重点対象】
+判断「${focusQ.label}」（id: ${focusQ.id}${focusQ.choices ? `、選択肢: ${focusQ.choices.join(" / ")}` : ""}）の
+★下の枝分かれ★を重点的に充実させること:
+- この判断の各選択肢について、その選択で必要になる従属質問（when でこの判断にぶら下げる）と、
+  雛形が無い・法的に注意が要る枝のガードを提案する
+- 選択肢が足りなければ追加してよい（既存の選択肢はそのまま残すこと）
+- この判断に関係しない既存の構造は原則そのまま維持する`
+        : ""
+    }${instruction ? `\n\n【ユーザーの追加指示】\n${instruction}` : ""}`;
 
     // 生成 → 検証 → エラーがあれば1回だけエラーを見せて再生成
     let merged: Jirei | null = null;

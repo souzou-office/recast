@@ -417,6 +417,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiRunning, setAiRunning] = useState(false);
   const [aiNotes, setAiNotes] = useState<string[] | null>(null);
+  const [aiFor, setAiFor] = useState<string | null>(null); // "all" or 重点対象の質問id（結果表示の対応付け用）
 
   const fetchTree = () => {
     fetch(`/api/jirei/tree?id=${encodeURIComponent(jireiId)}`)
@@ -721,16 +722,18 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
     );
   };
 
-  // AI に枝分かれを下書きさせる（結果は編集バッファへ。保存するまでファイルは変わらない）
-  const runAiBranches = async () => {
+  // AI に枝分かれを下書きさせる（結果は編集バッファへ。保存するまでファイルは変わらない）。
+  // focusQuestionId を渡すと「この判断の下の枝」を重点的に育てる（判断カードから呼ぶ文脈付き仮生成）。
+  const runAiBranches = async (focusQuestionId?: string) => {
     setAiRunning(true);
     setAiNotes(null);
+    setAiFor(focusQuestionId || "all");
     setError(null);
     try {
       const r = await fetch("/api/jirei/suggest-branches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: jireiId, instruction: aiInstruction }),
+        body: JSON.stringify({ id: jireiId, instruction: aiInstruction, focusQuestionId }),
       });
       const d = await r.json();
       if (!r.ok) {
@@ -1157,7 +1160,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                     />
                   </div>
                   <button
-                    onClick={runAiBranches}
+                    onClick={() => runAiBranches()}
                     disabled={aiRunning}
                     className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-2 text-[12px] font-medium text-white disabled:opacity-40"
                   >
@@ -1252,6 +1255,36 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                       onChange={(w) => updateQuestion(editTarget.q.id, { when: w })}
                     />
                   </div>
+                  {/* 文脈付きの仮生成: この判断の下の枝（従属質問・ガード・足りない選択肢）を AI が下書き */}
+                  {editTarget.q.kind === "choice" && (
+                    <div className="rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent-soft)] p-2 space-y-1.5">
+                      <button
+                        onClick={() => runAiBranches(editTarget.q.id)}
+                        disabled={aiRunning}
+                        className="w-full rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-[11.5px] font-medium text-white disabled:opacity-40"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <Icon name="Sparkles" size={11} className="text-white" />
+                          {aiRunning && aiFor === editTarget.q.id
+                            ? "この判断の下の枝を考えています...（20秒ほど）"
+                            : "この判断の下の枝をAIで仮生成"}
+                        </span>
+                      </button>
+                      <p className="text-[10px] leading-snug text-[var(--color-fg-muted)]">
+                        各選択肢の先に必要な従属質問・注意書き（足りない選択肢も）を下書きして左のツリーに反映します。
+                        保存するまでファイルは変わりません
+                      </p>
+                      {aiNotes && aiFor === editTarget.q.id && (
+                        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-2 text-[10.5px] leading-relaxed space-y-0.5">
+                          {aiNotes.map((n, i) => (
+                            <p key={i} className={i === 0 ? "font-medium text-[var(--color-fg)]" : "text-[var(--color-fg-muted)]"}>
+                              {i === 0 ? n : `・${n}`}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="flex items-center gap-1 border-t border-[var(--color-border)] pt-2">
                     <button
                       onClick={() => moveQuestion(editTarget.q.id, -1)}
