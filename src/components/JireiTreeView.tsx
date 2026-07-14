@@ -675,8 +675,11 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
       const open = editing === K.guard(n.gi);
       return (
         <div
-          className={`w-[210px] rounded-xl border px-2.5 py-1.5 ${open ? "border-[var(--color-accent)]" : "border-amber-300"} bg-amber-50`}
-          title={n.g.message + (n.condNote ? `\n条件: ${n.condNote}` : "")}
+          onClick={() => editMode && setEditing(open ? null : K.guard(n.gi))}
+          className={`w-[210px] rounded-xl border px-2.5 py-1.5 ${open ? "border-[var(--color-accent)]" : "border-amber-300"} bg-amber-50 ${
+            editMode ? "cursor-pointer hover:border-[var(--color-accent)]" : ""
+          }`}
+          title={editMode ? "クリックで編集" : n.g.message + (n.condNote ? `\n条件: ${n.condNote}` : "")}
         >
           <div className="flex items-start gap-1.5">
             <Icon name="TriangleAlert" size={11} className="mt-0.5 shrink-0 text-amber-600" />
@@ -696,10 +699,11 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
     const open = editing === K.q(q.id);
     return (
       <div
+        onClick={() => editMode && setEditing(open ? null : K.q(q.id))}
         className={`w-[230px] rounded-xl border bg-[var(--color-panel)] px-2.5 py-1.5 ${
           open ? "border-[var(--color-accent)]" : "border-[var(--color-border)]"
-        }`}
-        title={q.label + (n.condNote ? `\n条件: ${n.condNote}` : "")}
+        } ${editMode ? "cursor-pointer hover:border-[var(--color-accent)]" : ""}`}
+        title={editMode ? "クリックで編集" : q.label + (n.condNote ? `\n条件: ${n.condNote}` : "")}
       >
         <div className="flex items-start gap-1.5">
           <span className={`mt-0.5 shrink-0 rounded border px-1.5 py-0 text-[10px] font-medium ${k.cls}`}>{k.label}</span>
@@ -771,7 +775,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                   disabled={!dirty || saving}
                   className="rounded-lg bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white disabled:opacity-40"
                 >
-                  {saving ? "保存中..." : dirty ? "保存" : "保存済み"}
+                  {saving ? "保存中..." : "保存"}
                 </button>
                 <button
                   onClick={() => {
@@ -828,6 +832,15 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
               {saveMsg.lines.map((l, i) => (
                 <p key={i}>{l}</p>
               ))}
+            </div>
+          )}
+          {/* 編集モードの案内（何をすればいいかが画面から分かるように。編集を始めたら消える） */}
+          {editMode && !editing && !dirty && !saveMsg && (
+            <div className="mt-1.5 rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent-soft)] p-2 text-[11.5px] text-[var(--color-fg)]">
+              <span className="inline-flex items-center gap-1.5">
+                <Icon name="MousePointerClick" size={13} className="text-[var(--color-accent-fg)]" />
+                変えたいカードをクリックしてください（質問・注意書き・書類名・穴の行）— エディタが開きます。「保存」を押すまでファイルは変わりません
+              </span>
             </div>
           )}
         </div>
@@ -937,7 +950,13 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                           const groups = groupHoles(d.children || []);
                           return (
                             <div key={j} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-panel)] p-3">
-                              <div className="flex items-start gap-1.5 text-[12.5px] font-semibold text-[var(--color-fg)]">
+                              <div
+                                onClick={() => editMode && rawDoc && setEditing(docOpen ? null : docKey)}
+                                title={editMode && rawDoc ? "クリックで出る条件を編集" : undefined}
+                                className={`flex items-start gap-1.5 text-[12.5px] font-semibold text-[var(--color-fg)] ${
+                                  editMode && rawDoc ? "cursor-pointer hover:text-[var(--color-accent-fg)]" : ""
+                                }`}
+                              >
                                 <Icon
                                   name={d.label.endsWith(".xlsx") ? "Sheet" : "FileText"}
                                   size={13}
@@ -1248,7 +1267,13 @@ function HoleLine({
 
   return (
     <div className="py-0.5">
-      <div className="flex items-baseline gap-1.5 text-[11.5px] leading-snug">
+      <div
+        onClick={() => editable && !isArray && setEditing(open ? null : key)}
+        title={editable && !isArray ? "クリックで出所を編集" : undefined}
+        className={`flex items-baseline gap-1.5 text-[11.5px] leading-snug ${
+          editable && !isArray ? "cursor-pointer rounded hover:bg-[var(--color-hover)]" : ""
+        }`}
+      >
         <span className={`mt-1 h-1.5 w-1.5 shrink-0 self-start rounded-full ${DOT[src]}`} />
         <span className="shrink-0 font-medium text-[var(--color-fg)]">{hole.label}</span>
         {hole.detail && <span className="min-w-0 text-[var(--color-fg-muted)]">← {hole.detail}</span>}
