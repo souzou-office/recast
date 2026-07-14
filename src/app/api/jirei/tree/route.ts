@@ -162,12 +162,10 @@ export async function GET(request: NextRequest) {
   const jirei = await loadJirei(id);
   if (!jirei) return NextResponse.json({ error: "事由が見つかりません" }, { status: 404 });
 
-  // 聞くことの一覧（レビュー用の概観。分岐条件付きの質問は「いつ聞かれるか」を添える）
-  const questions = jirei.questions.map((q) => ({
-    label: q.label,
-    kind: q.kind || "text",
-    when: q.when ? humanizeCond(q.when) : undefined,
-  }));
+  // 聞くことの構造（レビュー用）。クライアントが分岐ツリー（判断→選択肢→従属質問）を組むため、
+  // 質問は id・選択肢・when 込みの完全な形で、ガードもそのまま返す。
+  const questions = jirei.questions;
+  const guards = jirei.guards || [];
 
   // 主分岐 = documents の when が最も多く参照する choice 質問。
   // その選択肢でレーンを分け、主分岐以外の条件は書類カードの cond（日本語）で示す。
@@ -217,5 +215,5 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ tree: root, questions, description: jirei.description || "" });
+  return NextResponse.json({ tree: root, questions, guards, description: jirei.description || "" });
 }
