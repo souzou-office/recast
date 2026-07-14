@@ -351,6 +351,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
           setTree(d.tree);
           setQuestions(d.questions || []);
           setDescription(d.description || "");
+          setError(null); // 一時的な通信エラーの表示を成功時に消す
         } else setError(d.error || "木を読み込めませんでした");
       })
       .catch((e) => setError(e instanceof Error ? e.message : "通信エラー"));
