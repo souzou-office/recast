@@ -806,6 +806,19 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
             ) : (
               <>
                 <button
+                  onClick={() => setEditing(editing === "ai" ? null : "ai")}
+                  className={`rounded-lg border px-3 py-1 text-[11px] font-medium ${
+                    editing === "ai"
+                      ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-white"
+                      : "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)] hover:bg-[var(--color-accent)] hover:text-white"
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <Icon name="Sparkles" size={11} />
+                    AIで枝を仮生成
+                  </span>
+                </button>
+                <button
                   onClick={save}
                   disabled={!dirty || saving}
                   className="rounded-lg bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white disabled:opacity-40"
@@ -874,7 +887,8 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
             <div className="mt-1.5 rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent-soft)] p-2 text-[11.5px] text-[var(--color-fg)]">
               <span className="inline-flex items-center gap-1.5">
                 <Icon name="MousePointerClick" size={13} className="text-[var(--color-accent-fg)]" />
-                変えたいカードをクリックしてください（質問・注意書き・書類名・穴の行）— エディタが開きます。「保存」を押すまでファイルは変わりません
+                変えたいカードをクリックしてください（質問・注意書き・書類名・穴の行）— エディタが開きます。
+                枝分かれごと AI に下書きさせるなら右上の「AIで枝を仮生成」。「保存」を押すまでファイルは変わりません
               </span>
             </div>
           )}
