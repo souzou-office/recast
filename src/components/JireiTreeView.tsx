@@ -354,9 +354,12 @@ type FlowNode =
 const RAIL = "border-gray-400";
 function FlowBranch({ node, box }: { node: FlowNode; box: (n: FlowNode) => ReactNode }) {
   const kids = node.children || [];
+  const multi = kids.length > 1;
   return (
     <div className="flex items-center">
       <div className="shrink-0">{box(node)}</div>
+      {/* 分岐の付け根: 箱から横に出て（─）、縦の幹（│）に突き当たって上下の枝に割れる（┬ の形） */}
+      {multi && <div className={`w-4 shrink-0 border-t-2 ${RAIL}`} />}
       {kids.length > 0 && (
         <div className="flex flex-col justify-center">
           {kids.map((c, i) => {
@@ -367,15 +370,15 @@ function FlowBranch({ node, box }: { node: FlowNode; box: (n: FlowNode) => React
               <div key={i} className="flex items-center">
                 {single ? (
                   // 子が1つ → 箱から箱まで1本の横棒でつなぐ
-                  <div className={`w-7 shrink-0 border-t-2 ${RAIL}`} />
+                  <div className={`w-8 shrink-0 border-t-2 ${RAIL}`} />
                 ) : (
                   <>
-                    {/* 縦レール（兄弟の間を貫く） + 横枝 */}
+                    {/* 縦の幹（兄弟の間を貫く縦棒） + 各枝への横棒 */}
                     <div className="flex h-full flex-col self-stretch">
-                      <div className={`w-3.5 flex-1 ${!first ? `border-l-2 ${RAIL}` : ""}`} />
-                      <div className={`w-3.5 flex-1 ${!last ? `border-l-2 ${RAIL}` : ""}`} />
+                      <div className={`w-4 flex-1 ${!first ? `border-l-2 ${RAIL}` : ""}`} />
+                      <div className={`w-4 flex-1 ${!last ? `border-l-2 ${RAIL}` : ""}`} />
                     </div>
-                    <div className={`w-3.5 shrink-0 border-t-2 ${RAIL}`} />
+                    <div className={`w-4 shrink-0 border-t-2 ${RAIL}`} />
                   </>
                 )}
                 <div className="py-1.5">
