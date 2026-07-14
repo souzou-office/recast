@@ -413,6 +413,10 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ kind: "ok" | "error"; lines: string[] } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  // AI 仮生成（枝分かれの下書き。ファイルには書かない — レビューして保存で確定）
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiNotes, setAiNotes] = useState<string[] | null>(null);
 
   const fetchTree = () => {
     fetch(`/api/jirei/tree?id=${encodeURIComponent(jireiId)}`)
@@ -717,10 +721,41 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
     );
   };
 
+  // AI に枝分かれを下書きさせる（結果は編集バッファへ。保存するまでファイルは変わらない）
+  const runAiBranches = async () => {
+    setAiRunning(true);
+    setAiNotes(null);
+    setError(null);
+    try {
+      const r = await fetch("/api/jirei/suggest-branches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: jireiId, instruction: aiInstruction }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        setAiNotes([d.error || "仮生成に失敗しました", ...(d.errors || [])]);
+        return;
+      }
+      setRaw(d.jirei);
+      setDirty(true);
+      setAiNotes([
+        "枝分かれの下書きを木に反映しました（未保存）。左のツリーでレビューしてください。",
+        ...(d.notes || []),
+        ...(d.warnings || []),
+      ]);
+    } catch (e) {
+      setAiNotes([e instanceof Error ? e.message : "通信に失敗しました"]);
+    } finally {
+      setAiRunning(false);
+    }
+  };
+
   // ============ 右側の編集パネルの中身 ============
   const editTarget = useMemo(() => {
     if (!editMode || !raw || !editing) return null;
     if (editing === "meta") return { kind: "meta" as const };
+    if (editing === "ai") return { kind: "ai" as const };
     if (editing.startsWith("q:")) {
       const q = raw.questions.find((x) => x.id === editing.slice(2));
       return q ? { kind: "q" as const, q } : null;
@@ -903,6 +938,15 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                       >
                         ＋ 注意書きを追加
                       </button>
+                      <button
+                        onClick={() => setEditing("ai")}
+                        className="rounded-xl border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-[10.5px] font-medium text-[var(--color-accent-fg)] hover:bg-[var(--color-accent)] hover:text-white"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <Icon name="Sparkles" size={11} />
+                          AIで枝分かれを仮生成
+                        </span>
+                      </button>
                     </div>
                   )}
                   {!editMode && description && (
@@ -1065,7 +1109,13 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
             <div className="absolute bottom-0 right-0 top-0 z-10 w-[380px] overflow-y-auto border-l border-[var(--color-border)] bg-[var(--color-panel)] p-4 shadow-2xl">
               <div className="mb-3 flex items-center justify-between">
                 <span className="text-[12.5px] font-semibold text-[var(--color-fg)]">
-                  {editTarget.kind === "meta" ? "事由名・説明" : editTarget.kind === "q" ? "質問の編集" : "注意書きの編集"}
+                  {editTarget.kind === "meta"
+                    ? "事由名・説明"
+                    : editTarget.kind === "q"
+                      ? "質問の編集"
+                      : editTarget.kind === "ai"
+                        ? "AIで枝分かれを仮生成"
+                        : "注意書きの編集"}
                 </span>
                 <button
                   onClick={() => setEditing(null)}
@@ -1074,6 +1124,45 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                   ×
                 </button>
               </div>
+
+              {editTarget.kind === "ai" && (
+                <div className="space-y-3">
+                  <p className="text-[11.5px] leading-relaxed text-[var(--color-fg-muted)]">
+                    この手続きの判断の分かれ道（判断・従属質問・注意書き）を AI が下書きし、左のツリーに反映します。
+                    <span className="font-medium text-[var(--color-fg)]">ファイルは変わりません</span> —
+                    レビューして「保存」を押すまで仮の状態です。気に入らなければ「編集を終える」で捨てられます。
+                  </p>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-[var(--color-fg-muted)]">追加の指示（任意）</label>
+                    <textarea
+                      value={aiInstruction}
+                      onChange={(e) => setAiInstruction(e.target.value)}
+                      rows={3}
+                      placeholder="例: 後任の選任が必要なケースも考慮して / 監査役の辞任は対象外"
+                      className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11.5px]"
+                    />
+                  </div>
+                  <button
+                    onClick={runAiBranches}
+                    disabled={aiRunning}
+                    className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-2 text-[12px] font-medium text-white disabled:opacity-40"
+                  >
+                    {aiRunning ? "AI が判断の分かれ道を考えています...（20秒ほど）" : "仮生成する"}
+                  </button>
+                  <p className="text-[10.5px] text-[var(--color-fg-muted)]">
+                    既存の質問・選択肢は壊しません（id と選択肢はサーバー側で強制温存。雛形が無い枝は注意書きで明示されます）
+                  </p>
+                  {aiNotes && (
+                    <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)] p-2.5 text-[11px] leading-relaxed space-y-1">
+                      {aiNotes.map((n, i) => (
+                        <p key={i} className={i === 0 ? "font-medium text-[var(--color-fg)]" : "text-[var(--color-fg-muted)]"}>
+                          {i === 0 ? n : `・${n}`}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {editTarget.kind === "meta" && (
                 <div className="space-y-2">
