@@ -373,8 +373,9 @@ function FlowBranch({ node, box }: { node: FlowNode; box: (n: FlowNode) => React
                   <div className={`w-8 shrink-0 border-t-2 ${RAIL}`} />
                 ) : (
                   <>
-                    {/* 縦の幹（兄弟の間を貫く縦棒） + 各枝への横棒 */}
-                    <div className="flex h-full flex-col self-stretch">
+                    {/* 縦の幹（兄弟の間を貫く縦棒） + 各枝への横棒。
+                        h-full だと親が auto 高さのとき 0 に潰れて線が消える — self-stretch のみで伸ばす */}
+                    <div className="flex flex-col self-stretch">
                       <div className={`w-4 flex-1 ${!first ? `border-l-2 ${RAIL}` : ""}`} />
                       <div className={`w-4 flex-1 ${!last ? `border-l-2 ${RAIL}` : ""}`} />
                     </div>
