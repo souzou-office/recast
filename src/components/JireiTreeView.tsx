@@ -349,7 +349,9 @@ type FlowNode =
   | { t: "ref"; label: string; children: [] }
   | { t: "none"; children: [] };
 
-// 自分の箱 + 右側に子を縦に並べて罫線でつなぐ（横方向ツリー）
+// 自分の箱 + 右側に子を縦に並べて罫線でつなぐ（横方向ツリー）。
+// つなぎの棒は 2px のはっきりした線で描く（薄いと枝の対応が追えない）。
+const RAIL = "border-gray-400";
 function FlowBranch({ node, box }: { node: FlowNode; box: (n: FlowNode) => ReactNode }) {
   const kids = node.children || [];
   return (
@@ -363,12 +365,20 @@ function FlowBranch({ node, box }: { node: FlowNode; box: (n: FlowNode) => React
             const single = kids.length === 1;
             return (
               <div key={i} className="flex items-center">
-                <div className="flex h-full flex-col self-stretch">
-                  <div className={`w-3 flex-1 ${!first && !single ? "border-l" : ""} border-[var(--color-border)]`} />
-                  <div className={`w-3 flex-1 ${!last && !single ? "border-l" : ""} border-[var(--color-border)]`} />
-                </div>
-                <div className="w-3 shrink-0 border-t border-[var(--color-border)]" />
-                <div className="py-1">
+                {single ? (
+                  // 子が1つ → 箱から箱まで1本の横棒でつなぐ
+                  <div className={`w-7 shrink-0 border-t-2 ${RAIL}`} />
+                ) : (
+                  <>
+                    {/* 縦レール（兄弟の間を貫く） + 横枝 */}
+                    <div className="flex h-full flex-col self-stretch">
+                      <div className={`w-3.5 flex-1 ${!first ? `border-l-2 ${RAIL}` : ""}`} />
+                      <div className={`w-3.5 flex-1 ${!last ? `border-l-2 ${RAIL}` : ""}`} />
+                    </div>
+                    <div className={`w-3.5 shrink-0 border-t-2 ${RAIL}`} />
+                  </>
+                )}
+                <div className="py-1.5">
                   <FlowBranch node={c} box={box} />
                 </div>
               </div>
