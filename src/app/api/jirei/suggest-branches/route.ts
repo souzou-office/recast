@@ -177,6 +177,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const id: string | undefined = body.id;
     const instruction: string = (body.instruction || "").trim();
+    // まとめ文章: 手続きの実務解説・事務所メモ等。あれば★分岐表の正★として一気に木へ落とす
+    const sourceText: string = (body.sourceText || "").trim();
     // 重点対象の判断（指定があれば「この判断の下の枝」を重点的に育てる。無ければ木全体）
     const focusQuestionId: string | undefined = body.focusQuestionId;
     if (!id) return NextResponse.json({ error: "id は必須です" }, { status: 400 });
@@ -275,9 +277,20 @@ export async function POST(request: NextRequest) {
 【現在の木】
 ${treeSummary}
 ${officeRules ? `\n【事務所の統一ルール（実務の前提）】\n${officeRules.slice(0, 2000)}\n` : ""}
+${
+      sourceText
+        ? `【手続きのまとめ文章 — ★この内容が分岐表の正★】
+${sourceText.slice(0, 8000)}
+
 【仕事】
+上のまとめ文章に書かれている判断の分かれ道・条件・注意点・書類の出る条件を、
+★漏れなく★木の構造（判断 choice → 従属質問 → guards → documentWhens）に落としてください。
+文章に書かれていない分岐を創作しないこと。文章と既存の木が食い違う場合は文章を優先し、
+その旨を notes に書くこと。`
+        : `【仕事】
 この手続き（${jirei.name}）について、法律・実務上の判断の分かれ道を列挙し、
-判断（choice 質問）→ 従属質問 → 注意書き の枝分かれ構造を提案してください。
+判断（choice 質問）→ 従属質問 → 注意書き の枝分かれ構造を提案してください。`
+    }
 
 【厳守】
 - 既存の質問は id をそのまま使って全部残す（削除禁止。穴が参照している）。when の付与・並び替え・文言の改善は可

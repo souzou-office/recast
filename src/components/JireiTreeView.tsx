@@ -415,6 +415,7 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
   const [editing, setEditing] = useState<string | null>(null);
   // AI 仮生成（枝分かれの下書き。ファイルには書かない — レビューして保存で確定）
   const [aiInstruction, setAiInstruction] = useState("");
+  const [aiSourceText, setAiSourceText] = useState(""); // まとめ文章（あれば分岐表の正として一気に落とす）
   const [aiRunning, setAiRunning] = useState(false);
   const [aiNotes, setAiNotes] = useState<string[] | null>(null);
   const [aiFor, setAiFor] = useState<string | null>(null); // "all" or 重点対象の質問id（結果表示の対応付け用）
@@ -733,7 +734,12 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
       const r = await fetch("/api/jirei/suggest-branches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: jireiId, instruction: aiInstruction, focusQuestionId }),
+        body: JSON.stringify({
+          id: jireiId,
+          instruction: aiInstruction,
+          sourceText: focusQuestionId ? "" : aiSourceText, // まとめ文章は木全体の一気生成でのみ使う
+          focusQuestionId,
+        }),
       });
       const d = await r.json();
       if (!r.ok) {
@@ -1150,11 +1156,23 @@ export default function JireiTreeView({ jireiId, onClose }: { jireiId: string; o
                     レビューして「保存」を押すまで仮の状態です。気に入らなければ「編集を終える」で捨てられます。
                   </p>
                   <div>
+                    <label className="mb-1 block text-[11px] font-medium text-[var(--color-fg)]">
+                      手続きのまとめ文章（あれば ★これが分岐表の正★ になります）
+                    </label>
+                    <textarea
+                      value={aiSourceText}
+                      onChange={(e) => setAiSourceText(e.target.value)}
+                      rows={9}
+                      placeholder={"実務の判断・条件・注意点をまとめた文章を貼り付けてください。\n例: 「辞任する取締役が代表取締役を兼ねる場合は…。辞任により取締役が0名になる場合は後任選任が必要で…。辞任届の押印は実印+印鑑証明書か認印かで…」\n\n空のままなら、AI が法律・実務の一般知識で下書きします"}
+                      className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11.5px] leading-relaxed"
+                    />
+                  </div>
+                  <div>
                     <label className="mb-1 block text-[11px] text-[var(--color-fg-muted)]">追加の指示（任意）</label>
                     <textarea
                       value={aiInstruction}
                       onChange={(e) => setAiInstruction(e.target.value)}
-                      rows={3}
+                      rows={2}
                       placeholder="例: 後任の選任が必要なケースも考慮して / 監査役の辞任は対象外"
                       className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-[11.5px]"
                     />
