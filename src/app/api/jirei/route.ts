@@ -172,14 +172,18 @@ export async function POST(request: NextRequest) {
 
     const guards = activeGuards(jirei, answers);
     const pending = pendingQuestions(jirei, answers);
-    if (pending.length > 0) {
+    // ★生成は明示ボタンのみ★（generate: true のリクエストだけが書類を作る）。
+    // 回答のたびの再評価（波状の組み替え）で、最後の回答が揃った瞬間に
+    // 勝手に生成が走らないようにする — 人が「生成する」を押すまで questions フェーズに留まる。
+    const wantGenerate = body.generate === true;
+    if (pending.length > 0 || !wantGenerate) {
       // questions = いま有効な質問すべて（回答済み含む）。
       // 判断（choice）は答えた後も表示され続け、選び直すと従属質問が波状に入れ替わる。
-      // 生成に進むかのゲートは pending（未回答）がゼロかどうか。
       return NextResponse.json({
         phase: "questions",
         jireiName: jirei.name,
         questions: activeQuestions(jirei, answers),
+        ready: pending.length === 0, // 全部揃った（生成ボタンを出してよい）
         autoFilled,
         evidenceByLabel,
         sourceMeta,

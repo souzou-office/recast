@@ -12,6 +12,7 @@ import type { Company } from "@/types";
 import { Icon } from "@/components/ui/Icon";
 import FilePreview from "@/components/FilePreview";
 import JireiTreeView from "@/components/JireiTreeView";
+import JireiWizard from "@/components/JireiWizard";
 
 interface JireiSummary {
   id: string;
@@ -24,6 +25,7 @@ interface JireiQuestionUI {
   label: string;
   kind?: string;
   choices?: string[];
+  when?: unknown; // ウィザードのターン分け（同じ分岐の値を1ページにまとめる）に使う
 }
 
 interface ProducedDocUI {
@@ -126,6 +128,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   const [guards, setGuards] = useState<string[]>([]);
   const [questions, setQuestions] = useState<JireiQuestionUI[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // 質問フェーズの見せ方: chat = 一問一答の会話型（既定）/ form = 一覧（慣れた人向け）
+  const [qView, setQView] = useState<"chat" | "form">("chat");
   const [documents, setDocuments] = useState<ProducedDocUI[]>([]);
   const [unresolved, setUnresolved] = useState<string[]>([]);
   const [previewDoc, setPreviewDoc] = useState<ProducedDocUI | null>(null);
@@ -178,7 +182,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
       jireiId: string,
       currentAnswers: Record<string, string>,
       extraSources?: InboxFile[],
-      confirmedOverride?: boolean
+      confirmedOverride?: boolean,
+      generate = false // 生成は明示ボタンのときだけ true（回答の再評価では絶対に生成しない）
     ) => {
       setLoading(true);
       setError(null);
@@ -194,6 +199,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
             answers: currentAnswers,
             sources: files.map((f) => ({ name: f.name, base64: f.base64, kind: f.kind })),
             sourcesConfirmed: confirmed,
+            generate,
           }),
         });
         const data = await res.json();
@@ -580,7 +586,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
 
   const handleSubmitAnswers = () => {
     if (!selectedId) return;
-    callApi(selectedId, answers);
+    callApi(selectedId, answers, undefined, undefined, true); // 明示の生成
   };
 
   const selectedJirei = jireiList.find((j) => j.id === selectedId);
@@ -1091,8 +1097,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
-        {/* ガード: 木に載っている専門家の注意書き（選んだ分岐に応じて出る） */}
-        {guards.length > 0 && (phase === "questions" || phase === "done") && (
+        {/* ガード: 木に載っている専門家の注意書き（チャット表示中は会話側に出るので一覧時と生成後だけ） */}
+        {guards.length > 0 && (phase === "done" || (phase === "questions" && qView === "form")) && (
           <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 space-y-1">
             {guards.map((g, i) => (
               <p key={i} className="flex items-start gap-2 text-[12px] text-amber-900">
@@ -1103,8 +1109,18 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
+        {/* 一覧形式 ⇄ チャット形式の切替 */}
+        {phase === "questions" && qView === "form" && (
+          <button
+            onClick={() => setQView("chat")}
+            className="w-full rounded-xl border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11.5px] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)]"
+          >
+            💬 チャット形式（一問一答）で入力する
+          </button>
+        )}
+
         {/* ============ 段3-1: あなたの判断（choice。プレフィルは提案止まり・確定は人） ============ */}
-        {phase === "questions" && choiceQs.length > 0 && (
+        {phase === "questions" && qView === "form" && choiceQs.length > 0 && (
           <div
             className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-3"
             style={{ borderLeftWidth: 4, borderLeftColor: "var(--color-accent)" }}
@@ -1156,7 +1172,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
 
         {/* ============ 段3-2: 資料から読み取り済み（見るだけ。根拠付き） ============ */}
         {selectedId &&
-          (phase === "questions" || phase === "done") &&
+          (phase === "done" || (phase === "questions" && qView === "form")) &&
           (Object.keys(autoFilled).length > 0 || prefilledQs.length > 0) && (
             <div
               className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-2"
@@ -1208,7 +1224,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           )}
 
         {/* ============ 段3-3: 入力が必要（資料のどこにも無かった値だけ） ============ */}
-        {phase === "questions" && (
+        {phase === "questions" && qView === "form" && (
           <div
             className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-3"
             style={{ borderLeftWidth: 4, borderLeftColor: "var(--color-border)" }}
@@ -1373,9 +1389,30 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         )}
       </div>
 
-      {/* 右（本体）: プレビュー常設。左の書類リストをクリックすると、ここに表示される */}
+      {/* 右（本体）: 質問中はチャット形式のウィザード / 生成後はプレビュー */}
       <div className="flex flex-1 overflow-hidden">
-        {previewDoc ? (
+        {phase === "questions" && qView === "chat" ? (
+          <JireiWizard
+            jireiName={selectedJirei?.name || selectedId || ""}
+            questions={questions}
+            answers={answers}
+            onAnswer={(patch, reevaluate) => {
+              const next = { ...answers, ...patch };
+              setAnswers(next);
+              if (reevaluate && selectedId) callApi(selectedId, next);
+            }}
+            prefillAnswers={prefill?.answers || {}}
+            prefillSources={prefill?.sources || {}}
+            extractSources={extractSources}
+            autoFilled={autoFilled}
+            evidenceByLabel={evidenceByLabel}
+            sourceMeta={sourceMeta}
+            guards={guards}
+            loading={loading}
+            onGenerate={handleSubmitAnswers}
+            onSwitchView={() => setQView("form")}
+          />
+        ) : previewDoc ? (
           <FilePreview
             docxBase64={previewDoc.base64}
             fileName={previewDoc.fileName}
