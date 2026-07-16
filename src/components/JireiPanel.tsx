@@ -615,18 +615,20 @@ export default function JireiPanel({ company }: { company: Company | null }) {
     );
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* 左: フロー */}
-      <div className="w-[460px] shrink-0 overflow-y-auto border-r border-[var(--color-border)] p-5 space-y-4">
-        <div>
-          <h2 className="text-[15px] font-semibold text-[var(--color-fg)]">申請</h2>
-          <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
-            案件の資料を放り込むと、事由の方から名乗り出ます
-          </p>
-        </div>
+    <div className="h-full overflow-y-auto">
+      {/* 全段階を中央1カラム・1ページずつで進める（左右分割はしない） */}
+      <div className="mx-auto w-full max-w-[720px] px-6 py-6 space-y-4">
+        {!selectedId && !suggestResult && (
+          <div>
+            <h2 className="text-[15px] font-semibold text-[var(--color-fg)]">申請</h2>
+            <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
+              案件の資料を放り込むと、事由の方から名乗り出ます
+            </p>
+          </div>
+        )}
 
-        {/* ============ 段0: インボックス（事由が決まるまで表示） ============ */}
-        {!selectedId && (
+        {/* ============ ページ1: インボックス（推定前だけ表示 = 1ページ1義） ============ */}
+        {!selectedId && !suggestResult && (
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-3">
             <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--color-fg)]">
               <Icon name="Inbox" size={14} className="text-[var(--color-accent-fg)]" />
@@ -699,7 +701,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                               : "bg-green-100 text-green-800"
                         }`}
                       >
-                        {shortKind(f.kind, suggestResult?.kindLabels)}
+                        {shortKind(f.kind, undefined)}
                       </span>
                     )}
                     <button
@@ -713,11 +715,6 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                 ))}
               </div>
             )}
-            {suggestResult && suggestResult.unreadable.length > 0 && (
-              <p className="text-[11px] text-amber-700">
-                自動では読めない資料: {suggestResult.unreadable.join("、")}（値は質問で聞きます）
-              </p>
-            )}
             <button
               onClick={runSuggest}
               disabled={suggesting || (inbox.length === 0 && !pasteText.trim())}
@@ -728,9 +725,18 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
-        {/* ============ 段1: 提案カード ============ */}
+        {/* ============ ページ2: 提案（このページだけを表示。資料へは戻るリンクで） ============ */}
         {!selectedId && suggestResult && suggestResult.candidates.length > 0 && (
           <div className="rounded-2xl border-2 border-[var(--color-accent)] bg-[var(--color-panel)] p-4 space-y-3">
+            <button
+              onClick={() => {
+                setSuggestResult(null);
+                setPickedCandidate(null);
+              }}
+              className="text-[11.5px] text-[var(--color-fg-muted)] hover:underline"
+            >
+              ← 資料を追加・修正する
+            </button>
             <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--color-fg)]">
               <Icon name="Sparkles" size={13} className="text-[var(--color-accent-fg)]" />
               {suggestResult.candidates.length === 1
@@ -848,9 +854,18 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
-        {/* ============ 段1: 該当なし（a. 手動選択 / b. 覚えさせる / c. 新種） ============ */}
+        {/* ============ ページ2b: 該当なし（a. 手動選択 / b. 覚えさせる / c. 新種） ============ */}
         {!selectedId && suggestResult && suggestResult.candidates.length === 0 && (
           <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 space-y-2 text-[12px] text-amber-900">
+            <button
+              onClick={() => {
+                setSuggestResult(null);
+                setPickedCandidate(null);
+              }}
+              className="text-[11.5px] text-amber-800 hover:underline"
+            >
+              ← 資料を追加・修正する
+            </button>
             <p className="flex items-start gap-2 font-medium">
               <Icon name="TriangleAlert" size={13} className="mt-0.5 shrink-0" />
               登録済みの事由には当たりませんでした
@@ -876,8 +891,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
-        {/* ============ 従来の入口（フォールバック）: 事由を直接選ぶ ============ */}
-        {!selectedId && (
+        {/* ============ 従来の入口（フォールバック）: 事由を直接選ぶ（提案ページでは出さない） ============ */}
+        {!selectedId && (!suggestResult || suggestResult.candidates.length === 0) && (
           <details className="group" open={jireiList.length > 0 && !suggestResult && inbox.length === 0}>
             <summary className="cursor-pointer list-none text-[12px] font-medium text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]">
               <span className="inline-flex items-center gap-1">
@@ -945,8 +960,9 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
-        {/* 事由コンパイラ: テンプレフォルダ → AI が木を生成（登録時1回だけ AI が働く） */}
+        {/* 事由コンパイラ: テンプレフォルダ → AI が木を生成（提案ページでは出さない） */}
         {!selectedId &&
+          (!suggestResult || suggestResult.candidates.length === 0) &&
           (!compileOpen ? (
             <button
               onClick={() => openCompile()}
@@ -1014,6 +1030,40 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         )}
         {error && (
           <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-[12px] text-red-700">{error}</div>
+        )}
+
+        {/* ============ 受付〜質問: 会話型（1ページずつ。既定表示） ============ */}
+        {(phase === "questions" || phase === "sources") && qView === "chat" && (
+          <JireiWizard
+            jireiName={selectedJirei?.name || selectedId || ""}
+            stage={phase}
+            sourceStatus={sourceStatus}
+            sourcesReady={sourcesReady}
+            inboxFiles={inbox.map((f) => ({ name: f.name, kindLabel: shortKind(f.kind, suggestResult?.kindLabels) || undefined }))}
+            onAddSources={handleIntakeAdd}
+            onConfirmSources={() => {
+              if (!selectedId) return;
+              setSourcesConfirmed(true);
+              callApi(selectedId, answers, undefined, true);
+            }}
+            questions={questions}
+            answers={answers}
+            onAnswer={(patch, reevaluate) => {
+              const next = { ...answers, ...patch };
+              setAnswers(next);
+              if (reevaluate && selectedId) callApi(selectedId, next);
+            }}
+            prefillAnswers={prefill?.answers || {}}
+            prefillSources={prefill?.sources || {}}
+            extractSources={extractSources}
+            autoFilled={autoFilled}
+            evidenceByLabel={evidenceByLabel}
+            sourceMeta={sourceMeta}
+            guards={guards}
+            loading={loading}
+            onGenerate={handleSubmitAnswers}
+            onSwitchView={() => setQView("form")}
+          />
         )}
 
         {/* ============ 段2: 必要書類の受付（チャット表示中は会話の1ページ目に出るので一覧時だけ） ============ */}
@@ -1391,50 +1441,15 @@ export default function JireiPanel({ company }: { company: Company | null }) {
             最初からやり直す（下書きを破棄）
           </button>
         )}
-      </div>
 
-      {/* 右（本体）: 質問中はチャット形式のウィザード / 生成後はプレビュー */}
-      <div className="flex flex-1 overflow-hidden">
-        {(phase === "questions" || phase === "sources") && qView === "chat" ? (
-          <JireiWizard
-            jireiName={selectedJirei?.name || selectedId || ""}
-            stage={phase}
-            sourceStatus={sourceStatus}
-            sourcesReady={sourcesReady}
-            inboxFiles={inbox.map((f) => ({ name: f.name, kindLabel: shortKind(f.kind, suggestResult?.kindLabels) || undefined }))}
-            onAddSources={handleIntakeAdd}
-            onConfirmSources={() => {
-              if (!selectedId) return;
-              setSourcesConfirmed(true);
-              callApi(selectedId, answers, undefined, true);
-            }}
-            questions={questions}
-            answers={answers}
-            onAnswer={(patch, reevaluate) => {
-              const next = { ...answers, ...patch };
-              setAnswers(next);
-              if (reevaluate && selectedId) callApi(selectedId, next);
-            }}
-            prefillAnswers={prefill?.answers || {}}
-            prefillSources={prefill?.sources || {}}
-            extractSources={extractSources}
-            autoFilled={autoFilled}
-            evidenceByLabel={evidenceByLabel}
-            sourceMeta={sourceMeta}
-            guards={guards}
-            loading={loading}
-            onGenerate={handleSubmitAnswers}
-            onSwitchView={() => setQView("form")}
-          />
-        ) : previewDoc ? (
-          <FilePreview
-            docxBase64={previewDoc.base64}
-            fileName={previewDoc.fileName}
-            onClose={() => setPreviewDoc(null)}
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center text-[13px] text-[var(--color-fg-muted)]">
-            {phase === "done" ? "左の書類名をクリックするとここにプレビューされます" : ""}
+        {/* 生成後のプレビュー（書類リストの下に大きく。書類名クリックで切替） */}
+        {phase === "done" && previewDoc && (
+          <div className="h-[75vh] overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)]">
+            <FilePreview
+              docxBase64={previewDoc.base64}
+              fileName={previewDoc.fileName}
+              onClose={() => setPreviewDoc(null)}
+            />
           </div>
         )}
       </div>

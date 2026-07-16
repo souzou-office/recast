@@ -290,8 +290,8 @@ export default function JireiWizard({
   // ============ 段2: 必要な資料（会話の最初のターン。最初に「何が要るか」を言う） ============
   if (stage === "sources") {
     return (
-      <div className="h-full w-full overflow-y-auto">
-        <div className="mx-auto max-w-[640px] px-6 py-8 space-y-3">
+      <div>
+        <div className="space-y-3">
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4">
             <p className="text-[13.5px] font-semibold text-[var(--color-fg)]">
               {jireiName}には、次の資料が必要です
@@ -397,8 +397,8 @@ export default function JireiWizard({
   }
 
   return (
-    <div className="h-full w-full overflow-y-auto">
-      <div className="mx-auto max-w-[640px] px-6 py-8 space-y-3">
+    <div>
+      <div className="space-y-3">
         {/* 導入: 事由と読み取りサマリ */}
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4">
           <p className="text-[13.5px] font-semibold text-[var(--color-fg)]">{jireiName}の聞き取りを始めます</p>
