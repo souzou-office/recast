@@ -1016,8 +1016,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-[12px] text-red-700">{error}</div>
         )}
 
-        {/* ============ 段2: 必要書類の受付（不足があるときだけ止まる） ============ */}
-        {phase === "sources" && (
+        {/* ============ 段2: 必要書類の受付（チャット表示中は会話の1ページ目に出るので一覧時だけ） ============ */}
+        {phase === "sources" && qView === "form" && (
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-3">
             <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--color-fg)]">
               <Icon name="FolderOpen" size={13} className="text-[var(--color-accent-fg)]" />
@@ -1072,7 +1072,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                 className="hidden"
                 onChange={async (e) => {
                   if (!e.target.files) return;
-                  const files = e.target.files;
+                  // ★input.value を先にクリアすると FileList が空になる★ — 配列に取り出してから消す
+                  const files = Array.from(e.target.files);
                   e.target.value = "";
                   await handleIntakeAdd(files);
                 }}
@@ -1110,7 +1111,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         )}
 
         {/* 一覧形式 ⇄ チャット形式の切替 */}
-        {phase === "questions" && qView === "form" && (
+        {(phase === "questions" || phase === "sources") && qView === "form" && (
           <button
             onClick={() => setQView("chat")}
             className="w-full rounded-xl border border-dashed border-[var(--color-border)] px-3 py-1.5 text-[11.5px] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)]"
@@ -1270,8 +1271,11 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                 multiple
                 className="hidden"
                 onChange={(e) => {
-                  if (e.target.files) handleExtractAdd(e.target.files);
+                  if (!e.target.files) return;
+                  // ★input.value を先にクリアすると FileList が空になる★ — 配列に取り出してから消す
+                  const files = Array.from(e.target.files);
                   e.target.value = "";
+                  handleExtractAdd(files);
                 }}
               />
             </div>
@@ -1391,9 +1395,19 @@ export default function JireiPanel({ company }: { company: Company | null }) {
 
       {/* 右（本体）: 質問中はチャット形式のウィザード / 生成後はプレビュー */}
       <div className="flex flex-1 overflow-hidden">
-        {phase === "questions" && qView === "chat" ? (
+        {(phase === "questions" || phase === "sources") && qView === "chat" ? (
           <JireiWizard
             jireiName={selectedJirei?.name || selectedId || ""}
+            stage={phase}
+            sourceStatus={sourceStatus}
+            sourcesReady={sourcesReady}
+            inboxFiles={inbox.map((f) => ({ name: f.name, kindLabel: shortKind(f.kind, suggestResult?.kindLabels) || undefined }))}
+            onAddSources={handleIntakeAdd}
+            onConfirmSources={() => {
+              if (!selectedId) return;
+              setSourcesConfirmed(true);
+              callApi(selectedId, answers, undefined, true);
+            }}
             questions={questions}
             answers={answers}
             onAnswer={(patch, reevaluate) => {

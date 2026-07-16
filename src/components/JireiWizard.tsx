@@ -52,8 +52,16 @@ function buildTurns(questions: WizardQuestion[]): Turn[] {
   return turns;
 }
 
+export interface WizardSourceStatus {
+  label: string;
+  optional: boolean;
+  kind: "found" | "dropped" | "missing";
+  name: string | null;
+}
+
 export default function JireiWizard({
   jireiName,
+  stage,
   questions,
   answers,
   onAnswer,
@@ -67,8 +75,14 @@ export default function JireiWizard({
   loading,
   onGenerate,
   onSwitchView,
+  sourceStatus = [],
+  sourcesReady = false,
+  inboxFiles = [],
+  onAddSources,
+  onConfirmSources,
 }: {
   jireiName: string;
+  stage: "sources" | "questions";
   questions: WizardQuestion[];
   answers: Record<string, string>;
   onAnswer: (patch: Record<string, string>, reevaluate: boolean) => void;
@@ -82,11 +96,18 @@ export default function JireiWizard({
   loading: boolean;
   onGenerate: () => void;
   onSwitchView: () => void;
+  sourceStatus?: WizardSourceStatus[];
+  sourcesReady?: boolean;
+  inboxFiles?: { name: string; kindLabel?: string }[];
+  onAddSources?: (files: FileList | File[]) => void;
+  onConfirmSources?: () => void;
 }) {
   const [editingTurn, setEditingTurn] = useState<string | null>(null);
   // 値ターンの下書き（入力途中の値。次へ で answers に反映）
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [dragOver, setDragOver] = useState(false);
   const currentRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const turns = useMemo(() => buildTurns(questions), [questions]);
   const answered = (t: Turn) => t.qs.every((q) => (answers[q.id] || "").trim() !== "");
@@ -265,6 +286,115 @@ export default function JireiWizard({
       </div>
     );
   };
+
+  // ============ 段2: 必要な資料（会話の最初のターン。最初に「何が要るか」を言う） ============
+  if (stage === "sources") {
+    return (
+      <div className="h-full w-full overflow-y-auto">
+        <div className="mx-auto max-w-[640px] px-6 py-8 space-y-3">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4">
+            <p className="text-[13.5px] font-semibold text-[var(--color-fg)]">
+              {jireiName}には、次の資料が必要です
+            </p>
+            <p className="mt-0.5 text-[12px] text-[var(--color-fg-muted)]">
+              揃っているものは自動で見つけました。不足分は届いたときに追加すれば大丈夫です（この画面は閉じても消えません）
+            </p>
+          </div>
+
+          <div ref={currentRef} className="rounded-2xl border-2 border-[var(--color-accent)] bg-[var(--color-panel)] p-4 space-y-3">
+            <div className="space-y-1.5">
+              {sourceStatus.map((s) => (
+                <div
+                  key={s.label}
+                  className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-[12.5px] ${
+                    s.kind === "missing"
+                      ? "border-amber-300 bg-amber-50 text-amber-900"
+                      : "border-green-200 bg-green-50 text-green-900"
+                  }`}
+                >
+                  <Icon name={s.kind === "missing" ? "CircleAlert" : "CircleCheck"} size={14} className="shrink-0" />
+                  <span className="font-medium">{s.label}</span>
+                  <span className="ml-auto min-w-0 truncate text-right text-[11px] opacity-80">
+                    {s.kind === "found" && `${s.name}（フォルダから自動発見）`}
+                    {s.kind === "dropped" && `${s.name}`}
+                    {s.kind === "missing" && (s.optional ? "任意（無くても進めます）" : "不足 — 下に追加してください")}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div
+              onClick={() => fileRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                onAddSources?.(e.dataTransfer.files);
+              }}
+              className={`cursor-pointer rounded-xl border border-dashed p-4 text-center text-[12.5px] transition-colors ${
+                dragOver
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
+                  : "border-[var(--color-border)] text-[var(--color-fg-muted)] hover:border-[var(--color-accent)]"
+              }`}
+            >
+              <span className="inline-flex items-center gap-2">
+                <Icon name="FileUp" size={13} />
+                届いた資料をここに追加（クリックで選択も可。ファイル名はそのままでOK — 中身で判定します）
+              </span>
+              <input
+                ref={fileRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (!e.target.files) return;
+                  const files = Array.from(e.target.files);
+                  e.target.value = "";
+                  onAddSources?.(files);
+                }}
+              />
+            </div>
+
+            {/* 受け取った資料（入れたのに無視された、を作らない） */}
+            {inboxFiles.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-[11px] font-medium text-[var(--color-fg-muted)]">受け取った資料（{inboxFiles.length}点）</p>
+                {inboxFiles.map((f, i) => (
+                  <div key={`${f.name}-${i}`} className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-2.5 py-1 text-[11.5px]">
+                    <Icon name="FileText" size={11} className="shrink-0 text-[var(--color-fg-muted)]" />
+                    <span className="min-w-0 flex-1 truncate">{f.name}</span>
+                    {f.kindLabel && (
+                      <span className="shrink-0 rounded bg-[var(--color-hover)] px-1.5 text-[10px] text-[var(--color-fg-muted)]">
+                        {f.kindLabel}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => onConfirmSources?.()}
+              disabled={!sourcesReady || loading}
+              className="w-full rounded-xl bg-[var(--color-accent)] px-4 py-2.5 text-[13px] font-medium text-white disabled:opacity-40"
+            >
+              {loading ? "資料を確認しています..." : "この資料で読み取って、聞き取りを始める"}
+            </button>
+          </div>
+
+          <p className="pt-2 text-center">
+            <button onClick={onSwitchView} className="text-[11.5px] text-[var(--color-fg-muted)] hover:underline">
+              一覧形式で表示する
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full w-full overflow-y-auto">
