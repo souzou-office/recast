@@ -12,6 +12,7 @@ import { getWorkspaceConfig } from "@/lib/folders";
 import { listJirei, loadJirei } from "@/lib/jirei/loader";
 import { profileToFacts, factList } from "@/lib/event-filing/facts";
 import { pendingQuestions, activeQuestions, buildFillMap, requiredDocuments, activeSlots, activeGuards } from "@/lib/event-filing/select";
+import { deriveAnswers } from "@/lib/jirei/derive";
 import { produceJireiDocuments } from "@/lib/event-filing/produce";
 import {
   findSourceFiles,
@@ -159,19 +160,29 @@ export async function POST(request: NextRequest) {
 
     const facts = profileToFacts(structured as Partial<StructuredProfile>);
 
+    // ★機械導出★: derive の付いた質問を回答・事実から決定論で埋める（聞かない質問）。
+    // 導出値はユーザー回答が無いところだけを埋める（人の上書きが常に勝つ）。
+    // 以降の評価（分岐・pending・穴埋め）はすべて導出込みの実効回答で行う。
+    const derived = await deriveAnswers(jirei, facts, answers);
+    const effAnswers: Record<string, string> = { ...answers };
+    for (const [qid, d] of Object.entries(derived)) {
+      if (!(effAnswers[qid] || "").trim()) effAnswers[qid] = d.value;
+    }
+
     // 資料から自動で埋まった値（UI で「読めた値」として見せる）。when を満たすスロットだけ。
     // evidenceByLabel = 解釈を含む値の根拠（定款の条文引用）。人が原文で確認できる。
     const autoFilled: Record<string, string> = {};
     const evidenceByLabel: Record<string, string> = {};
-    for (const [label, binding] of activeSlots(jirei, answers)) {
+    for (const [label, binding] of activeSlots(jirei, effAnswers)) {
       if (binding.type === "fact" && facts[binding.key]) {
         autoFilled[label] = facts[binding.key];
         if (evidence[binding.key]) evidenceByLabel[label] = evidence[binding.key];
       }
     }
 
-    const guards = activeGuards(jirei, answers);
-    const pending = pendingQuestions(jirei, answers);
+    const guards = activeGuards(jirei, effAnswers);
+    // 導出済みの質問は「答えが要る」から除外（導出値が空欄（全角スペース等）でも聞かない）
+    const pending = pendingQuestions(jirei, effAnswers).filter((q) => !derived[q.id]);
     // ★生成は明示ボタンのみ★（generate: true のリクエストだけが書類を作る）。
     // 回答のたびの再評価（波状の組み替え）で、最後の回答が揃った瞬間に
     // 勝手に生成が走らないようにする — 人が「生成する」を押すまで questions フェーズに留まる。
@@ -182,18 +193,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         phase: "questions",
         jireiName: jirei.name,
-        questions: activeQuestions(jirei, answers),
+        questions: activeQuestions(jirei, effAnswers),
         ready: pending.length === 0, // 全部揃った（生成ボタンを出してよい）
         autoFilled,
         evidenceByLabel,
+        derived, // 機械導出した値（questionId → { value, basis }）。UI は「こちらで埋めた値」として見せる
         sourceMeta,
         guards,
       });
     }
 
     // 全て揃った → 生成（when を満たす書類だけ）
-    const { filled, unresolved } = buildFillMap(jirei, facts, answers);
-    const docsToMake = requiredDocuments(jirei, answers);
+    const { filled, unresolved } = buildFillMap(jirei, facts, effAnswers);
+    const docsToMake = requiredDocuments(jirei, effAnswers);
 
     const templates = new Map<string, Buffer>();
     for (const doc of docsToMake) {
@@ -222,7 +234,7 @@ export async function POST(request: NextRequest) {
       templates,
       filled,
       getList,
-      answers,
+      answers: effAnswers,
     });
 
     return NextResponse.json({
@@ -231,6 +243,7 @@ export async function POST(request: NextRequest) {
       documents,
       filled,
       unresolved, // 値が決まらなかった穴（テンプレの文言がそのまま残る）
+      derived,
       sourceMeta,
       guards,
     });

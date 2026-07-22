@@ -46,12 +46,6 @@
       }
     },
     {
-      "id": "kankatsu",
-      "label": "法務局の管轄は変わりますか？（移転先が同じ法務局の管轄内かどうか）",
-      "kind": "choice",
-      "choices": ["管轄内（同じ法務局）", "管轄外（法務局が変わる）"]
-    },
-    {
       "id": "new_address",
       "label": "移転先の本店所在地は？（ビル名まで全文。2行になる場合は改行）",
       "kind": "text"
@@ -62,40 +56,59 @@
       "kind": "date"
     },
     {
+      "id": "kankatsu",
+      "label": "法務局の管轄は変わりますか？（移転先が同じ法務局の管轄内かどうか）",
+      "kind": "choice",
+      "choices": ["管轄内（同じ法務局）", "管轄外（法務局が変わる）"],
+      "derive": {
+        "kind": "registry-office",
+        "address": { "answer": "new_address" },
+        "compareTo": { "fact": "本店所在地" },
+        "same": "管轄内（同じ法務局）",
+        "different": "管轄外（法務局が変わる）"
+      }
+    },
+    {
       "id": "kettei_date",
       "label": "取締役決定書の決定日は？（例: 令和8年1月15日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] },
+      "derive": { "kind": "copy", "from": { "answer": "iten_date" } }
     },
     {
       "id": "teian_date",
       "label": "株主への提案書の発送日は？（例: 令和8年1月16日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] },
+      "derive": { "kind": "copy", "from": { "answer": "iten_date" } }
     },
     {
       "id": "doui_date",
       "label": "同意欄の日付は？（例: 令和8年1月23日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] },
+      "derive": { "kind": "copy", "from": { "answer": "iten_date" } }
     },
     {
       "id": "minashi_date",
       "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年1月26日）",
       "kind": "date",
-      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] }
+      "when": { "questionId": "kessai_hoho", "anyOf": ["書面決議（株主全員の同意・会社法319条1項）"] },
+      "derive": { "kind": "copy", "from": { "answer": "iten_date" } }
     },
     {
       "id": "kankatsu_kyoku",
       "label": "移転先を管轄する法務局名は？（例: 東京法務局）",
       "kind": "text",
-      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] },
+      "derive": { "kind": "registry-office", "address": { "answer": "new_address" } }
     },
     {
       "id": "kankatsu_shikyoku",
       "label": "支局・出張所名は？（例: 港）",
       "kind": "text",
-      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] },
+      "derive": { "kind": "registry-office", "address": { "answer": "new_address" }, "part": "branch" }
     },
     {
       "id": "rep_birth",
@@ -107,7 +120,8 @@
       "id": "inkan_ininbi",
       "label": "印鑑カード交付の委任日は？（令和の 年／月／日 の形で。例: 8／3／3）",
       "kind": "text",
-      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] }
+      "when": { "questionId": "kankatsu", "anyOf": ["管轄外（法務局が変わる）"] },
+      "derive": { "kind": "copy", "from": { "answer": "iten_date" }, "format": "wareki-ymd" }
     }
   ],
   "documents": [

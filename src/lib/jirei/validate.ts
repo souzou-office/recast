@@ -44,6 +44,35 @@ export function validateJirei(j: Jirei): { errors: string[]; warnings: string[] 
       errors.push(`質問 ${q.id}: choice なのに選択肢が2つ未満です`);
     }
     checkCond(q.when, `質問「${(q.label || q.id).slice(0, 20)}」`);
+
+    // 機械導出（derive）の整合性
+    if (q.derive) {
+      const where = `質問 ${q.id} の導出`;
+      const checkSrc = (src: { answer: string } | { fact: string }, name: string) => {
+        if ("answer" in src && !qById.has(src.answer)) {
+          errors.push(`${where}: ${name}が存在しない質問（${src.answer}）を参照しています`);
+        }
+        if ("fact" in src && !src.fact.trim()) {
+          errors.push(`${where}: ${name}の fact キーが空です`);
+        }
+      };
+      if (q.derive.kind === "copy") {
+        checkSrc(q.derive.from, "コピー元");
+      } else if (q.derive.kind === "registry-office") {
+        checkSrc(q.derive.address, "住所");
+        if (q.derive.compareTo) {
+          checkSrc(q.derive.compareTo, "比較先の住所");
+          if (q.kind === "choice") {
+            for (const v of [q.derive.same, q.derive.different]) {
+              if (!v) errors.push(`${where}: 管轄比較なのに same / different の値がありません`);
+              else if (q.choices && !q.choices.includes(v)) {
+                errors.push(`${where}: 導出値「${v}」が選択肢にありません`);
+              }
+            }
+          }
+        }
+      }
+    }
   });
   const ids = j.questions.map((q) => q.id);
   const dup = ids.filter((x, i) => ids.indexOf(x) !== i);

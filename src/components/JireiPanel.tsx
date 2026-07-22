@@ -126,6 +126,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   const [evidenceByLabel, setEvidenceByLabel] = useState<Record<string, string>>({});
   // ガード: 木に載っている専門家の注意書き（分岐に応じて出る）
   const [guards, setGuards] = useState<string[]>([]);
+  // 機械導出で埋まった値（questionId → 値+根拠）。「客に聞くことじゃない」値はこちらで埋める
+  const [derived, setDerived] = useState<Record<string, { value: string; basis: string }>>({});
   const [questions, setQuestions] = useState<JireiQuestionUI[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   // 質問フェーズの見せ方: chat = 一問一答の会話型（既定）/ form = 一覧（慣れた人向け）
@@ -138,6 +140,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
 
   // --- インボックス（資料先行の入口。全段がこの器の資料を使い回す） ---
   const [inbox, setInbox] = useState<InboxFile[]>([]);
+  // 入口のページ。drop = 資料の投入（既定） / pick = 事由を直接選ぶ（1ページ1義で分ける）
+  const [entry, setEntry] = useState<"drop" | "pick">("drop");
   const [pasteText, setPasteText] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [suggestResult, setSuggestResult] = useState<SuggestResult | null>(null);
@@ -210,6 +214,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         setAutoFilled(data.autoFilled || {});
         setEvidenceByLabel(data.evidenceByLabel || {});
         setGuards(data.guards || []);
+        setDerived(data.derived || {});
         if (data.sourceMeta) setSourceMeta(data.sourceMeta);
         if (data.phase === "sources") {
           setPhase("sources");
@@ -547,6 +552,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
     setSourceMeta(null);
     setEvidenceByLabel({});
     setGuards([]);
+    setDerived({});
     setVerifying(false);
     setVerifyResult(null);
   };
@@ -554,6 +560,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
   // 全部消して最初から（下書きも破棄）
   const resetAll = () => {
     resetCase();
+    setEntry("drop");
     setInbox([]);
     setPasteText("");
     setSuggestResult(null);
@@ -618,7 +625,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
     <div className="h-full overflow-y-auto">
       {/* 全段階を中央1カラム・1ページずつで進める（左右分割はしない） */}
       <div className="mx-auto w-full max-w-[720px] px-6 py-6 space-y-4">
-        {!selectedId && !suggestResult && (
+        {!selectedId && !suggestResult && entry === "drop" && (
           <div>
             <h2 className="text-[15px] font-semibold text-[var(--color-fg)]">申請</h2>
             <p className="mt-1 text-[12px] text-[var(--color-fg-muted)]">
@@ -628,7 +635,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
         )}
 
         {/* ============ ページ1: インボックス（推定前だけ表示 = 1ページ1義） ============ */}
-        {!selectedId && !suggestResult && (
+        {!selectedId && !suggestResult && entry === "drop" && (
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-panel)] p-4 space-y-3">
             <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--color-fg)]">
               <Icon name="Inbox" size={14} className="text-[var(--color-accent-fg)]" />
@@ -723,6 +730,16 @@ export default function JireiPanel({ company }: { company: Company | null }) {
               {suggesting ? "資料を読んで事由を推定しています...（数秒）" : "事由を推定する"}
             </button>
           </div>
+        )}
+        {!selectedId && !suggestResult && entry === "drop" && (
+          <p className="pt-1 text-center">
+            <button
+              onClick={() => setEntry("pick")}
+              className="text-[11.5px] text-[var(--color-fg-muted)] hover:underline"
+            >
+              資料なしで進む — 事由を直接選ぶ
+            </button>
+          </p>
         )}
 
         {/* ============ ページ2: 提案（このページだけを表示。資料へは戻るリンクで） ============ */}
@@ -891,15 +908,22 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
-        {/* ============ 従来の入口（フォールバック）: 事由を直接選ぶ（提案ページでは出さない） ============ */}
-        {!selectedId && (!suggestResult || suggestResult.candidates.length === 0) && (
-          <details className="group" open={jireiList.length > 0 && !suggestResult && inbox.length === 0}>
-            <summary className="cursor-pointer list-none text-[12px] font-medium text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]">
-              <span className="inline-flex items-center gap-1">
-                <Icon name="ChevronRight" size={12} className="transition-transform group-open:rotate-90" />
-                事由を直接選ぶ（{jireiList.length}件）
-              </span>
-            </summary>
+        {/* ============ ページ1b: 事由を直接選ぶ（資料なしの入口。1ページ1義 — 該当なし時のフォールバックも兼ねる） ============ */}
+        {!selectedId &&
+          ((!suggestResult && entry === "pick") ||
+            (suggestResult && suggestResult.candidates.length === 0)) && (
+          <div>
+            {!suggestResult && (
+              <button
+                onClick={() => setEntry("drop")}
+                className="mb-2 text-[11.5px] text-[var(--color-fg-muted)] hover:underline"
+              >
+                ← 資料の投入に戻る
+              </button>
+            )}
+            <p className="text-[12px] font-medium text-[var(--color-fg)]">
+              事由を直接選ぶ（{jireiList.length}件）
+            </p>
             <div className="mt-2 grid grid-cols-2 gap-2">
               {jireiList.map((j) => (
                 <div
@@ -935,7 +959,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                 </p>
               )}
             </div>
-          </details>
+          </div>
         )}
 
         {/* 進行中の事由の見出し（確定後） */}
@@ -960,9 +984,10 @@ export default function JireiPanel({ company }: { company: Company | null }) {
           </div>
         )}
 
-        {/* 事由コンパイラ: テンプレフォルダ → AI が木を生成（提案ページでは出さない） */}
+        {/* 事由コンパイラ: テンプレフォルダ → AI が木を生成（事由選択ページと該当なしページだけ） */}
         {!selectedId &&
-          (!suggestResult || suggestResult.candidates.length === 0) &&
+          ((!suggestResult && entry === "pick") ||
+            (suggestResult && suggestResult.candidates.length === 0)) &&
           (!compileOpen ? (
             <button
               onClick={() => openCompile()}
@@ -1058,6 +1083,7 @@ export default function JireiPanel({ company }: { company: Company | null }) {
             extractSources={extractSources}
             autoFilled={autoFilled}
             evidenceByLabel={evidenceByLabel}
+            derived={derived}
             sourceMeta={sourceMeta}
             guards={guards}
             loading={loading}
@@ -1181,10 +1207,19 @@ export default function JireiPanel({ company }: { company: Company | null }) {
               あなたの判断
               <span className="font-normal text-[11px] text-[var(--color-fg-muted)]">— 専門家が決めること</span>
             </div>
-            {choiceQs.map((q) => (
+            {choiceQs.map((q) => {
+              // 実効値 = 人の回答 > 機械導出。導出だけのときは「自動判定」の注記を出す
+              const effVal = (answers[q.id] || "").trim() || derived[q.id]?.value || "";
+              const isAuto = !(answers[q.id] || "").trim() && !!derived[q.id];
+              return (
               <div key={q.id} className="space-y-1.5">
                 <p className="text-[12px] font-medium text-[var(--color-fg)]">{q.label}</p>
-                {prefill?.answers[q.id] && !(answers[q.id] || "").trim() && (
+                {isAuto && (
+                  <p className="rounded-lg border-l-2 border-[var(--color-accent)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px] text-[var(--color-fg-muted)]">
+                    自動判定: {derived[q.id].value}（{derived[q.id].basis}）— 違うならクリックで上書き
+                  </p>
+                )}
+                {prefill?.answers[q.id] && !(answers[q.id] || "").trim() && !isAuto && (
                   <p className="rounded-lg border-l-2 border-[var(--color-accent)] bg-[var(--color-bg)] px-2 py-1.5 text-[11.5px] text-[var(--color-fg-muted)]">
                     資料には「{prefill.answers[q.id]}」とあります
                     {prefill.sources[q.id] ? `（出典: ${prefill.sources[q.id]}）` : ""}
@@ -1201,14 +1236,14 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                       if (selectedId) callApi(selectedId, next);
                     }}
                     className={`flex w-full items-start gap-2 rounded-xl border p-2.5 text-left text-[12px] transition-colors ${
-                      answers[q.id] === c
+                      effVal === c
                         ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)] font-medium"
                         : "border-[var(--color-border)] hover:border-[var(--color-accent)]"
                     }`}
                   >
                     <span
                       className={`mt-0.5 h-3.5 w-3.5 shrink-0 rounded-full border-2 ${
-                        answers[q.id] === c
+                        effVal === c
                           ? "border-[var(--color-accent)] bg-[var(--color-accent)]"
                           : "border-[var(--color-border)]"
                       }`}
@@ -1217,7 +1252,8 @@ export default function JireiPanel({ company }: { company: Company | null }) {
                   </button>
                 ))}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -1341,6 +1377,11 @@ export default function JireiPanel({ company }: { company: Company | null }) {
               <div key={q.id}>
                 <label className="mb-1 block text-[12px] text-[var(--color-fg)]">{q.label}</label>
                 {questionInput(q)}
+                {!(answers[q.id] || "").trim() && derived[q.id] && (
+                  <p className="mt-0.5 text-[11px] text-[var(--color-fg-muted)]">
+                    自動で入れています: {derived[q.id].value}（{derived[q.id].basis}）— 直すならここに入力
+                  </p>
+                )}
               </div>
             ))}
             <button

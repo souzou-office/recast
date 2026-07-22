@@ -33,6 +33,28 @@ export type SlotBinding = (
   | { type: "const"; value: string }         // 固定値
 ) & { when?: JireiCondition };               // 条件を満たすときだけ有効な穴
 
+// ★機械導出★ — 「専門家なら客に聞かず自分で埋める値」を木に載せる語彙。
+// derive の付いた質問は、他の回答・事実から決定論で値が導ける限り★聞かれない★
+// （導出値は「こちらで埋めた値」として根拠付きで表示され、一覧形式で上書きできる）。
+// 導出できないとき（出典が未回答・住所から都道府県が読めない等）は従来どおり聞く。
+export type JireiDeriveSource = { answer: string } | { fact: string };
+export type JireiDerive =
+  // 他の回答/事実のコピー（例: 書面決議の各日付・委任日 ← 移転日）。
+  // format: "wareki-ymd" = 「令和8年3月2日」→「8／3／2」（lineField 分配用の ／区切り）
+  | { kind: "copy"; from: JireiDeriveSource; format?: "wareki-ymd" }
+  // 商業登記の管轄登記所の判定（data/jirei/houmukyoku.json の管轄表で決定論）。
+  // ★判定単位は都道府県ではなく登記所★（東京は区市町村単位の23庁。文京区→港区も管轄外）。
+  //   compareTo あり = 2住所の管轄比較 → choice の値（same / different のどちらか）を返す
+  //   compareTo なし = その住所の管轄の 法務局名（part 省略/bureau）or 支局・出張所名（part: branch。本局は空欄）
+  | {
+      kind: "registry-office";
+      address: JireiDeriveSource;
+      compareTo?: JireiDeriveSource;
+      same?: string;      // 同一管轄のとき選ぶ choice 値
+      different?: string; // 管轄が変わるとき選ぶ choice 値
+      part?: "bureau" | "branch";
+    };
+
 // 聞く分岐（資料で決まらない所だけ）
 export interface JireiQuestion {
   id: string;
@@ -40,6 +62,7 @@ export interface JireiQuestion {
   kind?: "text" | "date" | "choice";
   choices?: string[];
   when?: JireiCondition;         // 条件を満たすときだけ聞く（分岐の下の質問）
+  derive?: JireiDerive;          // 機械導出できるなら聞かない（上記）
 }
 
 // 必要書類（このテンプレを使う）

@@ -71,6 +71,7 @@ export default function JireiWizard({
   extractSources,
   autoFilled,
   evidenceByLabel,
+  derived = {},
   sourceMeta,
   guards,
   loading,
@@ -92,6 +93,7 @@ export default function JireiWizard({
   extractSources: Record<string, string>;
   autoFilled: Record<string, string>;
   evidenceByLabel: Record<string, string>;
+  derived?: Record<string, { value: string; basis: string }>;
   sourceMeta: { files: string[]; cached: boolean } | null;
   guards: string[];
   loading: boolean;
@@ -110,7 +112,14 @@ export default function JireiWizard({
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const turns = useMemo(() => buildTurns(questions), [questions]);
+  // 機械導出で埋まった質問（ユーザーが上書きしていないもの）= 聞かない。ページにも出さない。
+  const isDerived = (id: string) => !!derived[id] && !(answers[id] || "").trim();
+  const derivedQs = questions.filter((q) => isDerived(q.id));
+  const turns = useMemo(
+    () => buildTurns(questions.filter((q) => !isDerived(q.id))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [questions, derived, answers]
+  );
   const isAnswered = (t: Turn) => t.qs.every((q) => (answers[q.id] || "").trim() !== "");
   const currentIdx = turns.findIndex((t) => !isAnswered(t));
   const allDone = currentIdx === -1 && turns.length > 0;
@@ -312,6 +321,34 @@ export default function JireiWizard({
                       {evidenceByLabel[label] && (
                         <span className="mt-0.5 block text-[10.5px] text-green-800/70">根拠: {evidenceByLabel[label]}</span>
                       )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        )}
+
+        {/* こちらで埋めた値（機械導出。委任日・管轄など「客に聞くことじゃない」値） */}
+        {derivedQs.length > 0 && (
+          <details className="group rounded-xl border border-[var(--color-border)] bg-[var(--color-accent-soft)] px-3 py-1.5">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11.5px] font-medium text-[var(--color-accent-fg)]">
+              <Icon name="ChevronRight" size={10} className="transition-transform group-open:rotate-90" />
+              <Icon name="Wand2" size={11} />
+              こちらで埋めた値（{derivedQs.length}件）— 聞くまでもない値は自動で入れています
+            </summary>
+            <table className="mt-1.5 w-full text-[11.5px]">
+              <tbody>
+                {derivedQs.map((q) => (
+                  <tr key={q.id} className="border-t border-[var(--color-border)]">
+                    <td className="w-[150px] py-1 pr-2 align-top text-[var(--color-fg-muted)]">
+                      {q.label.replace(/[（(].*$/, "").replace(/は？.*$/, "")}
+                    </td>
+                    <td className="whitespace-pre-wrap break-words py-1 text-[var(--color-fg)]">
+                      {derived[q.id].value}
+                      <span className="mt-0.5 block text-[10.5px] text-[var(--color-fg-muted)]">
+                        根拠: {derived[q.id].basis} — 直す場合は一覧形式で
+                      </span>
                     </td>
                   </tr>
                 ))}
