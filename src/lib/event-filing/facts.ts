@@ -12,13 +12,37 @@
 import type { StructuredProfile } from "@/types";
 
 // "700株" "1,000" 等から数値を取り出す。数値が無ければ null。
-function toNumber(s?: string): number | null {
+// 基本情報の AI 生成では持株数が number で入ることもあるので両方受ける。
+function toNumber(s?: string | number): number | null {
+  if (typeof s === "number") return Number.isFinite(s) ? s : null;
   const m = (s || "").replace(/[,，]/g, "").match(/\d+/);
   return m ? parseInt(m[0], 10) : null;
 }
 
+// 基本情報の structured は AI 生成のため、キー名が「株主」ではなく
+// 「株主構成（氏名・住所・持株数・持株比率・メールアドレス）」のような
+// 記述的な形で保存されることがある。正規キー → 前方一致 の順で配列を探す。
+function pickArray<T>(
+  p: Record<string, unknown>,
+  canonical: string
+): T[] {
+  const exact = p[canonical];
+  if (Array.isArray(exact)) return exact as T[];
+  for (const k of Object.keys(p)) {
+    if (k.startsWith(canonical) && Array.isArray(p[k])) return p[k] as T[];
+  }
+  return [];
+}
+
 function fmt(n: number): string {
   return n.toLocaleString("ja-JP");
+}
+
+// 全角数字＋全角カンマ（統一ルール⑤: docx の数値は全角にカンマ。例: ３０，０００）
+function fmtZen(n: number): string {
+  return fmt(n).replace(/[0-9,]/g, (c) =>
+    c === "," ? "，" : String.fromCharCode(c.charCodeAt(0) + 0xfee0)
+  );
 }
 
 export function profileToFacts(
@@ -37,12 +61,40 @@ export function profileToFacts(
     facts["現在の事業目的"] = p.事業目的.join("\n");
   }
 
-  // 代表取締役の氏名を役員から導出（役職に「代表取締役」を含む先頭）
-  const rep = (p.役員 || []).find((o) => (o.役職 || "").includes("代表取締役"));
+  // 定款由来の判断系キー（原本直読み抽出で入る。上の層の分岐が参照する）
+  const extra = p as Record<string, unknown>;
+  if (typeof extra["取締役会設置"] === "string") {
+    facts["取締役会設置"] = extra["取締役会設置"] as string;
+  }
+  if (typeof extra["代表取締役の選定機関"] === "string") {
+    facts["代表取締役の選定機関"] = extra["代表取締役の選定機関"] as string;
+  }
+  if (typeof extra["公告方法"] === "string") facts["公告方法"] = extra["公告方法"] as string;
+
+  // 代表取締役の氏名・住所を役員から導出（役職に「代表取締役」を含む先頭。住所は登記事項）
+  const officers = pickArray<{ 役職?: string; 氏名?: string; 住所?: string }>(
+    p as Record<string, unknown>,
+    "役員"
+  );
+  const rep = officers.find((o) => (o.役職 || "").includes("代表取締役"));
   if (rep?.氏名) facts["代表取締役氏名"] = rep.氏名;
+  if (rep?.住所) facts["代表取締役住所"] = rep.住所;
+
+  // 取締役の数（代表取締役を含む・監査役は含まない）。
+  // v1 前提: 取締役決定書は「全員一致」= 出席取締役数も同数（書面決議の典型）。
+  const directors = officers.filter((o) => (o.役職 || "").includes("取締役"));
+  if (directors.length > 0) {
+    facts["取締役総数"] = String(directors.length);
+    facts["出席取締役数"] = String(directors.length);
+    facts["取締役総数（全角）"] = fmtZen(directors.length);
+    facts["出席取締役数（全角）"] = fmtZen(directors.length);
+  }
 
   // --- 株主リストからの派生事実 ---
-  const shareholders = p.株主 || [];
+  const shareholders = pickArray<{ 持株数?: string | number }>(
+    p as Record<string, unknown>,
+    "株主"
+  );
   if (shareholders.length > 0) {
     const n = shareholders.length;
     const totalShares = shareholders.reduce((sum, s) => sum + (toNumber(s.持株数) ?? 0), 0);
@@ -50,8 +102,10 @@ export function profileToFacts(
     facts["株主総数"] = String(n);
     // 議決権: 1株=1議決権の前提。議決権制限株式がある会社では手直しが要る。
     facts["議決権株主数"] = String(n);
+    facts["議決権株主数（全角）"] = fmtZen(n);
     if (totalShares > 0) {
       facts["総議決権数"] = fmt(totalShares);
+      facts["総議決権数（全角）"] = fmtZen(totalShares);
       facts["株主株式数合計"] = fmt(totalShares);
       facts["株主議決権数合計"] = fmt(totalShares);
     }
@@ -72,19 +126,37 @@ export function factList(
 ): Record<string, string>[] {
   if (!p) return [];
   if (key === "株主") {
-    return (p.株主 || []).map((s) => {
+    return pickArray<{
+      氏名?: string;
+      住所?: string;
+      持株数?: string | number;
+      持株比率?: string;
+    }>(p as Record<string, unknown>, "株主").map((s) => {
       const shares = toNumber(s.持株数);
       return {
         氏名: s.氏名 || "",
         住所: s.住所 || "",
         株式数: shares !== null ? fmt(shares) : "",
         議決権数: shares !== null ? fmt(shares) : "", // 1株=1議決権の前提
+        議決権数全角: shares !== null ? fmtZen(shares) : "", // docx 用（統一ルール⑤）
         議決権割合: s.持株比率 || "",
+        // 株主の種別（提案書兼同意書のテンプレ出し分けに使う。統一ルール③④）
+        // 名称から機械判定: 組合（投資事業有限責任組合等）→ 組合 / 会社・法人 → 法人 / それ以外 → 個人
+        種別: /組合/.test(s.氏名 || "")
+          ? "組合"
+          : /株式会社|有限会社|合同会社|合名会社|合資会社|法人|Inc\.|Corp\.|LLC/.test(s.氏名 || "")
+            ? "法人"
+            : "個人",
       };
     });
   }
   if (key === "役員") {
-    return (p.役員 || []).map((o) => ({
+    return pickArray<{
+      役職?: string;
+      氏名?: string;
+      住所?: string;
+      就任日?: string;
+    }>(p as Record<string, unknown>, "役員").map((o) => ({
       役職: o.役職 || "",
       氏名: o.氏名 || "",
       住所: o.住所 || "",

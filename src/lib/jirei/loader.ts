@@ -21,7 +21,7 @@ export async function listJirei(): Promise<Jirei[]> {
     if (!f.endsWith(".json")) continue;
     try {
       const raw = await fs.readFile(path.join(JIREI_DIR, f), "utf-8");
-      out.push(JSON.parse(raw) as Jirei);
+      out.push(JSON.parse(raw.replace(/^﻿/, "")) as Jirei); // BOM 耐性（PowerShell 編集対策）
     } catch {
       // 壊れた木は無視して続行
     }
@@ -32,7 +32,7 @@ export async function listJirei(): Promise<Jirei[]> {
 export async function loadJirei(id: string): Promise<Jirei | null> {
   try {
     const raw = await fs.readFile(path.join(JIREI_DIR, `${id}.json`), "utf-8");
-    return JSON.parse(raw) as Jirei;
+    return JSON.parse(raw.replace(/^﻿/, "")) as Jirei; // BOM 耐性
   } catch {
     return null;
   }

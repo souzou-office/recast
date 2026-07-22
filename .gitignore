@@ -35,3 +35,9 @@ next-env.d.ts
 
 # dev test artifacts
 dev.*
+
+data/fact-cache/
+
+data/suggest-cache/
+data/jirei-inbox/
+data/jirei/history/

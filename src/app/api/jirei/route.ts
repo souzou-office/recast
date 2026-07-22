@@ -11,12 +11,37 @@ import { NextRequest, NextResponse } from "next/server";
 import { getWorkspaceConfig } from "@/lib/folders";
 import { listJirei, loadJirei } from "@/lib/jirei/loader";
 import { profileToFacts, factList } from "@/lib/event-filing/facts";
-import { pendingQuestions, buildFillMap } from "@/lib/event-filing/select";
+import { pendingQuestions, activeQuestions, buildFillMap, requiredDocuments, activeSlots, activeGuards } from "@/lib/event-filing/select";
+import { deriveAnswers } from "@/lib/jirei/derive";
 import { produceJireiDocuments } from "@/lib/event-filing/produce";
+import {
+  findSourceFiles,
+  extractFactsFromSources,
+  SourceFileInput,
+} from "@/lib/event-filing/source-facts";
 import { promises as fs } from "fs";
 import path from "path";
+import type { StructuredProfile } from "@/types";
 
 const TEMPLATE_DIR = path.join(process.cwd(), "data", "jirei-templates");
+const PARTIES_PATH = path.join(process.cwd(), "data", "parties.json");
+
+// 当事者マスタ: 案件をまたいで登場する人・組織の属性（名称 → 任意の属性キー→値）。
+// 一覧（株主・役員・将来は従業員等）の要素を、名称一致で属性補完する汎用の仕組み。
+// 登記専用の概念ではない。個別ルール用のファイルを増やさず、知識は全部ここに足す。
+async function loadParties(): Promise<Record<string, Record<string, string>>> {
+  try {
+    const raw = await fs.readFile(PARTIES_PATH, "utf-8");
+    const data = JSON.parse(raw.replace(/^﻿/, ""));
+    delete data._comment;
+    for (const v of Object.values(data)) {
+      if (v && typeof v === "object") delete (v as Record<string, string>)._出典;
+    }
+    return data;
+  } catch {
+    return {};
+  }
+}
 
 export async function GET() {
   const jirei = await listJirei();
@@ -37,49 +62,153 @@ export async function POST(request: NextRequest) {
     const jireiId: string | undefined = body.jireiId;
     const answers: Record<string, string> = body.answers || {};
 
-    if (!companyId) return NextResponse.json({ error: "companyId は必須です" }, { status: 400 });
     if (!jireiId) return NextResponse.json({ error: "jireiId は必須です" }, { status: 400 });
 
+    // ★会社レス運用★: companyId は任意。会社が選ばれていれば共通フォルダから原本を自動発見し、
+    // 選ばれていなければ全部ドロップで賄う（会社が誰かは原本＝登記情報が知っている）。
     const config = await getWorkspaceConfig();
-    const company = config.companies.find((c) => c.id === companyId);
-    if (!company) return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
+    const company = companyId ? config.companies.find((c) => c.id === companyId) : null;
+    if (companyId && !company) return NextResponse.json({ error: "会社が見つかりません" }, { status: 404 });
 
     const jirei = await loadJirei(jireiId);
     if (!jirei) return NextResponse.json({ error: "事由が見つかりません" }, { status: 404 });
 
-    const structured = company.profile?.structured;
-    if (!structured) {
-      return NextResponse.json(
-        { error: "基本情報がありません。先に「基本情報」タブで生成してください" },
-        { status: 400 }
-      );
-    }
+    // --- fact の出所を決める ---
+    // requiredSources が宣言された木 = 原本直読みモード（定款・登記情報そのものを読む）。
+    // 宣言が無い木 = 従来どおり保存済みの基本情報から。
+    let structured: Record<string, unknown> | undefined;
+    let evidence: Record<string, string> = {};
+    let sourceMeta: { files: string[]; cached: boolean } | null = null;
 
-    const facts = profileToFacts(structured);
+    if (jirei.requiredSources && jirei.requiredSources.length > 0) {
+      // クライアントからドロップされた原本（base64）。
+      // kind = /api/jirei/suggest の中身ベース分類（あれば充当の正）。
+      // 客由来のファイル名（scan001.pdf 等）は名前パターンが効かないため、
+      // kind 付きは kind でのみ照合し、kind 無し（従来経路）だけ名前パターンで照合する。
+      const dropped: (SourceFileInput & { kind?: string })[] = (body.sources || [])
+        .filter((s: { name?: string; base64?: string }) => s?.name && s?.base64)
+        .map((s: { name: string; base64: string; kind?: string }) => ({
+          name: s.name,
+          buffer: Buffer.from(s.base64, "base64"),
+          kind: typeof s.kind === "string" && s.kind ? s.kind : undefined,
+        }));
 
-    // 資料から自動で埋まった値（UI で「読めた値」として見せる）
-    const autoFilled: Record<string, string> = {};
-    for (const [label, binding] of Object.entries(jirei.slots)) {
-      if (binding.type === "fact" && facts[binding.key]) {
-        autoFilled[label] = facts[binding.key];
+      // 共通フォルダから自動発見（会社未選択ならスキップ = ドロップのみ）
+      const { found } = company
+        ? await findSourceFiles(company, jirei.requiredSources)
+        : { found: [] as Awaited<ReturnType<typeof findSourceFiles>>["found"] };
+
+      // 原本の受付状況（種類ごと）。ドロップが自動発見より優先（取り寄せ直した最新を使う意図）
+      const droppedFor = (src: (typeof jirei.requiredSources)[number]) =>
+        dropped.find((d) => d.kind === src.key) ??
+        dropped.find((d) => !d.kind && src.patterns.some((p) => d.name.includes(p)));
+      const status = jirei.requiredSources.map((src) => {
+        const drop = droppedFor(src);
+        if (drop) return { label: src.label, optional: !!src.optional, kind: "dropped" as const, name: drop.name };
+        const hit = found.find((f) => f.source.key === src.key);
+        if (hit) return { label: src.label, optional: !!src.optional, kind: "found" as const, name: hit.name };
+        return { label: src.label, optional: !!src.optional, kind: "missing" as const, name: null };
+      });
+      const missingRequired = status.filter((s) => s.kind === "missing" && !s.optional);
+
+      // ★実務の順番★: 事由を選んだらまず「必要書類の受付」を出す。
+      // ユーザーが資料を確認して「この資料で読み取る」を押すまで（sourcesConfirmed）先へ進まない。
+      if (body.sourcesConfirmed !== true || missingRequired.length > 0) {
+        return NextResponse.json({
+          phase: "sources",
+          jireiName: jirei.name,
+          sources: status,
+          ready: missingRequired.length === 0,
+        });
+      }
+
+      // 読み取り対象を確定（ドロップ優先。ドロップでカバーされた種類の自動発見分は使わない）。
+      // ★requiredSources に充当された資料だけを fact 抽出に渡す★ — インボックスの雑多な資料
+      // （メール・メモ・見積り等）を混ぜると、案件連絡の記載が原本由来の顔をする上、
+      // キャッシュキーが揺れて「同じ原本なら2回目以降 AI ゼロ」が死ぬため。
+      const files: SourceFileInput[] = [];
+      const pushUnique = (f: SourceFileInput) => {
+        if (!files.some((x) => x.name === f.name)) files.push(f);
+      };
+      for (const src of jirei.requiredSources) {
+        const drop = droppedFor(src);
+        if (drop) {
+          pushUnique({ name: drop.name, buffer: drop.buffer });
+          continue;
+        }
+        const hit = found.find((f) => f.source.key === src.key);
+        if (hit) pushUnique({ name: hit.name, buffer: await fs.readFile(hit.path) });
+      }
+
+      const extracted = await extractFactsFromSources(files);
+      structured = extracted.structured;
+      evidence = extracted.evidence;
+      sourceMeta = { files: extracted.sourceNames, cached: extracted.cached };
+    } else {
+      structured = company?.profile?.structured as Record<string, unknown> | undefined;
+      if (!structured) {
+        return NextResponse.json(
+          {
+            error: company
+              ? "基本情報がありません。先に「基本情報」タブで生成してください"
+              : "この事由は原本の宣言が無いため、会社を選択してください",
+          },
+          { status: 400 }
+        );
       }
     }
 
-    const pending = pendingQuestions(jirei, answers);
-    if (pending.length > 0) {
+    const facts = profileToFacts(structured as Partial<StructuredProfile>);
+
+    // ★機械導出★: derive の付いた質問を回答・事実から決定論で埋める（聞かない質問）。
+    // 導出値はユーザー回答が無いところだけを埋める（人の上書きが常に勝つ）。
+    // 以降の評価（分岐・pending・穴埋め）はすべて導出込みの実効回答で行う。
+    const derived = await deriveAnswers(jirei, facts, answers);
+    const effAnswers: Record<string, string> = { ...answers };
+    for (const [qid, d] of Object.entries(derived)) {
+      if (!(effAnswers[qid] || "").trim()) effAnswers[qid] = d.value;
+    }
+
+    // 資料から自動で埋まった値（UI で「読めた値」として見せる）。when を満たすスロットだけ。
+    // evidenceByLabel = 解釈を含む値の根拠（定款の条文引用）。人が原文で確認できる。
+    const autoFilled: Record<string, string> = {};
+    const evidenceByLabel: Record<string, string> = {};
+    for (const [label, binding] of activeSlots(jirei, effAnswers)) {
+      if (binding.type === "fact" && facts[binding.key]) {
+        autoFilled[label] = facts[binding.key];
+        if (evidence[binding.key]) evidenceByLabel[label] = evidence[binding.key];
+      }
+    }
+
+    const guards = activeGuards(jirei, effAnswers);
+    // 導出済みの質問は「答えが要る」から除外（導出値が空欄（全角スペース等）でも聞かない）
+    const pending = pendingQuestions(jirei, effAnswers).filter((q) => !derived[q.id]);
+    // ★生成は明示ボタンのみ★（generate: true のリクエストだけが書類を作る）。
+    // 回答のたびの再評価（波状の組み替え）で、最後の回答が揃った瞬間に
+    // 勝手に生成が走らないようにする — 人が「生成する」を押すまで questions フェーズに留まる。
+    const wantGenerate = body.generate === true;
+    if (pending.length > 0 || !wantGenerate) {
+      // questions = いま有効な質問すべて（回答済み含む）。
+      // 判断（choice）は答えた後も表示され続け、選び直すと従属質問が波状に入れ替わる。
       return NextResponse.json({
         phase: "questions",
         jireiName: jirei.name,
-        questions: pending,
+        questions: activeQuestions(jirei, effAnswers),
+        ready: pending.length === 0, // 全部揃った（生成ボタンを出してよい）
         autoFilled,
+        evidenceByLabel,
+        derived, // 機械導出した値（questionId → { value, basis }）。UI は「こちらで埋めた値」として見せる
+        sourceMeta,
+        guards,
       });
     }
 
-    // 全て揃った → 生成
-    const { filled, unresolved } = buildFillMap(jirei, facts, answers);
+    // 全て揃った → 生成（when を満たす書類だけ）
+    const { filled, unresolved } = buildFillMap(jirei, facts, effAnswers);
+    const docsToMake = requiredDocuments(jirei, effAnswers);
 
     const templates = new Map<string, Buffer>();
-    for (const doc of jirei.documents) {
+    for (const doc of docsToMake) {
       try {
         templates.set(doc.templateFile, await fs.readFile(path.join(TEMPLATE_DIR, doc.templateFile)));
       } catch {
@@ -90,11 +219,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // 一覧の要素を当事者マスタで補完する（汎用）。
+    // 名称が一致する当事者の属性（代表者名・組合の構成・種別の上書き等）をマージする。
+    // どの一覧（株主・役員・将来は従業員等）にも同じ仕組みが効く。
+    const parties = await loadParties();
+    const getList = (key: string) =>
+      factList(structured as Partial<StructuredProfile>, key).map((item) => ({
+        ...item,
+        ...(parties[item.氏名] || {}),
+      }));
+
     const documents = produceJireiDocuments({
-      jirei,
+      documents: docsToMake,
       templates,
       filled,
-      getList: (key) => factList(structured, key),
+      getList,
+      answers: effAnswers,
     });
 
     return NextResponse.json({
@@ -103,6 +243,9 @@ export async function POST(request: NextRequest) {
       documents,
       filled,
       unresolved, // 値が決まらなかった穴（テンプレの文言がそのまま残る）
+      derived,
+      sourceMeta,
+      guards,
     });
   } catch (e) {
     return NextResponse.json(

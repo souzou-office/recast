@@ -1,0 +1,377 @@
+{
+  "id": "torishimariyaku-shuunin-fukusu",
+  "name": "取締役就任",
+  "description": "取締役が1名の株式会社において、書面決議（会社法319条1項）により複数名の取締役・代表取締役を選任する登記。提案書兼同意書は株主ごとに1枚生成される（個人用・法人用を種別で出し分け）。 当たる依頼の言い回し: 「取締役を増やしたい」「役員を追加したい」「新しく取締役に入れたい」「◯◯さんを取締役にしたい」（新任者の選任。代表取締役の選定を含む場合もこちら）",
+  "requiredSources": [
+    {
+      "key": "touki",
+      "label": "登記情報（履歴事項全部証明書）",
+      "patterns": [
+        "履歴",
+        "現在事項",
+        "登記情報",
+        "登記簿"
+      ]
+    },
+    {
+      "key": "teikan",
+      "label": "定款",
+      "patterns": [
+        "定款"
+      ]
+    },
+    {
+      "key": "kabunushi",
+      "label": "株主名簿",
+      "patterns": [
+        "株主名簿"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "kessai_hoho",
+      "label": "株主総会の決議方法は？",
+      "kind": "choice",
+      "choices": [
+        "書面決議（株主全員の同意・会社法319条1項）",
+        "株主総会を開催"
+      ]
+    },
+    {
+      "id": "kettei_date",
+      "label": "取締役決定書の決定日は？（例: 令和8年2月11日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "id": "teian_date",
+      "label": "株主への提案書の発送日は？（例: 令和8年2月11日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "id": "doui_date",
+      "label": "同意欄の日付は？（例: 令和8年2月15日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "id": "minashi_date",
+      "label": "株主総会の決議があったものとみなされる日は？（例: 令和8年2月16日）",
+      "kind": "date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "id": "shunin_date",
+      "label": "取締役の就任日（みなし決議日と同じ場合が多い）は？（例: 令和8年2月16日）",
+      "kind": "date"
+    },
+    {
+      "id": "new_directors",
+      "label": "新たに選任する取締役（1行に1人、氏名／住所。例: 山田太郎／東京都港区南麻布四丁目9番34-107号）",
+      "kind": "text"
+    },
+    {
+      "id": "new_daihyo_address",
+      "label": "新代表取締役の住所は？（例: 東京都港区南麻布四丁目９番３４－１０７号）",
+      "kind": "text"
+    },
+    {
+      "id": "new_daihyo_name",
+      "label": "新代表取締役の氏名は？（例: 安部和志）",
+      "kind": "text"
+    },
+    {
+      "id": "hoshu_gaku",
+      "label": "取締役の報酬額（月額）は？（例: 月額金６万円）",
+      "kind": "text"
+    },
+    {
+      "id": "hoshu_kaishi",
+      "label": "報酬の支給開始時期は？（例: 令和８年２月分より）",
+      "kind": "text"
+    }
+  ],
+  "guards": [
+    {
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "株主総会を開催"
+        ]
+      },
+      "message": "実開催（株主総会を開く）用の議事録・招集関係の雛形が未登録です。登録済みの一式は書面決議用のみ。このまま生成すると方式に依らない書類（就任承諾書・株主リスト・委任状）だけが出ます"
+    }
+  ],
+  "documents": [
+    {
+      "templateFile": "取締役決定書_取締役就任.docx",
+      "kind": "docx",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "templateFile": "提案書兼同意書_個人_取締役就任.docx",
+      "kind": "docx",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      },
+      "repeatOverFactList": "株主",
+      "itemFilter": {
+        "field": "種別",
+        "anyOf": [
+          "個人"
+        ]
+      },
+      "placeholders": {
+        "株主住所": "住所",
+        "株主氏名": "氏名",
+        "株主議決権数": "議決権数全角"
+      }
+    },
+    {
+      "templateFile": "提案書兼同意書_法人_取締役就任.docx",
+      "kind": "docx",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      },
+      "repeatOverFactList": "株主",
+      "itemFilter": {
+        "field": "種別",
+        "anyOf": [
+          "法人"
+        ]
+      },
+      "placeholders": {
+        "株主本店": "住所",
+        "株主商号": "氏名",
+        "法人株主代表取締役": "代表者名",
+        "株主議決権数": "議決権数全角"
+      }
+    },
+    {
+      "templateFile": "提案書兼同意書_組合_取締役就任.docx",
+      "kind": "docx",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      },
+      "repeatOverFactList": "株主",
+      "itemFilter": {
+        "field": "種別",
+        "anyOf": [
+          "組合"
+        ]
+      },
+      "placeholders": {
+        "組合主たる事務所": "主たる事務所",
+        "組合名称": "名称",
+        "無限責任組合員": "無限責任組合員",
+        "組合員": "組合員",
+        "組合代表取締役": "代表取締役",
+        "株主議決権数": "議決権数全角"
+      }
+    },
+    {
+      "templateFile": "株主総会議事録_取締役就任.docx",
+      "kind": "docx",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    {
+      "templateFile": "株主リスト.xlsx",
+      "kind": "xlsx",
+      "repeatOverFactList": "株主",
+      "rowSlots": {
+        "株主氏名": "氏名",
+        "株主住所": "住所",
+        "株主株式数": "株式数",
+        "株主議決権数": "議決権数",
+        "株主議決権割合": "議決権割合"
+      }
+    },
+    {
+      "templateFile": "就任承諾書_取締役就任.docx",
+      "kind": "docx",
+      "repeatOverAnswerList": {
+        "questionId": "new_directors",
+        "fields": [
+          "氏名",
+          "住所"
+        ]
+      },
+      "placeholders": {
+        "役員氏名": "氏名",
+        "役員住所": "住所"
+      }
+    },
+    {
+      "templateFile": "委任状_取締役就任.docx",
+      "kind": "docx"
+    }
+  ],
+  "slots": {
+    "会社名": {
+      "type": "fact",
+      "key": "会社名"
+    },
+    "本店所在地": {
+      "type": "fact",
+      "key": "本店所在地"
+    },
+    "代表取締役氏名": {
+      "type": "fact",
+      "key": "代表取締役氏名"
+    },
+    "取締役総数": {
+      "type": "fact",
+      "key": "取締役総数（全角）"
+    },
+    "出席取締役数": {
+      "type": "fact",
+      "key": "出席取締役数（全角）"
+    },
+    "議決権株主数": {
+      "type": "fact",
+      "key": "議決権株主数（全角）"
+    },
+    "総議決権数": {
+      "type": "fact",
+      "key": "総議決権数（全角）"
+    },
+    "合計株式数": {
+      "type": "fact",
+      "key": "株主株式数合計"
+    },
+    "合計議決権数": {
+      "type": "fact",
+      "key": "株主議決権数合計"
+    },
+    "合計議決権割合": {
+      "type": "fact",
+      "key": "株主議決権割合合計"
+    },
+    "決定日": {
+      "type": "answer",
+      "questionId": "kettei_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "提案日": {
+      "type": "answer",
+      "questionId": "teian_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "同意日": {
+      "type": "answer",
+      "questionId": "doui_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "みなし決議日": {
+      "type": "answer",
+      "questionId": "minashi_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "就任日": {
+      "type": "answer",
+      "questionId": "shunin_date"
+    },
+    "新取締役一覧": {
+      "type": "answer",
+      "questionId": "new_directors",
+      "lineField": 0
+    },
+    "新代表取締役住所": {
+      "type": "answer",
+      "questionId": "new_daihyo_address"
+    },
+    "新代表取締役氏名": {
+      "type": "answer",
+      "questionId": "new_daihyo_name"
+    },
+    "報酬額": {
+      "type": "answer",
+      "questionId": "hoshu_gaku"
+    },
+    "報酬支給開始": {
+      "type": "answer",
+      "questionId": "hoshu_kaishi"
+    },
+    "申請日": {
+      "type": "answer",
+      "questionId": "minashi_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    },
+    "証明日付": {
+      "type": "answer",
+      "questionId": "minashi_date",
+      "when": {
+        "questionId": "kessai_hoho",
+        "anyOf": [
+          "書面決議（株主全員の同意・会社法319条1項）"
+        ]
+      }
+    }
+  }
+}
